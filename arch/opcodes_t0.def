@@ -1,7 +1,0 @@
-// LITTLE64_T0_OPCODE(enum_name, opcode_value, mnemonic_string)
-// T=0 instructions (type=0): 4-bit shared opcode space
-// The E bit (encoding) is determined by the second operand at assembly time:
-//   E=0 (register format):   second operand is Rx
-//   E=1 (PC-relative format): second operand is @label or @offset
-//
-// (Currently empty; add new T=0 instructions here as they are defined)

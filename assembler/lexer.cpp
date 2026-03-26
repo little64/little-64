@@ -65,31 +65,14 @@ Token Lexer::scanIdentifierOrRegister() {
         lexeme += consume();
     }
 
-    // Check for mask suffix [mask] on mnemonic (e.g., LOAD[3], STORE[BW])
-    if (peek() == '[') {
-        size_t bracket_start = lexeme.length();
-        lexeme += consume();  // '['
-        while (peek() != ']' && peek() != '\0') {
-            lexeme += consume();
-        }
-        if (peek() == ']') {
-            lexeme += consume();  // ']'
-        }
-    }
-
     // Check if it's a register (R0-R15)
-    // Registers don't have suffixes, so check the base name
-    std::string base_name = lexeme;
-    if (base_name.find('[') != std::string::npos) {
-        base_name = base_name.substr(0, base_name.find('['));
-    }
-    if ((base_name[0] == 'R' || base_name[0] == 'r') && base_name.length() <= 3) {
-        if (base_name.length() > 1 && std::isdigit(base_name[1])) {
-            int reg_num = std::stoi(base_name.substr(1));
+    if ((lexeme[0] == 'R' || lexeme[0] == 'r') && lexeme.length() <= 3) {
+        if (lexeme.length() > 1 && std::isdigit(lexeme[1])) {
+            int reg_num = std::stoi(lexeme.substr(1));
             if (reg_num >= 0 && reg_num <= 15) {
                 Token t;
                 t.kind = TokenKind::Register;
-                t.lexeme = base_name;
+                t.lexeme = lexeme;
                 t.int_value = reg_num;
                 t.line = start_line;
                 t.column = start_col;
@@ -150,6 +133,11 @@ std::vector<Token> Lexer::tokenize(const std::string& source_code) {
         if (peek() == ':') {
             consume();
             tokens.push_back(makeToken(TokenKind::Colon, ":"));
+            continue;
+        }
+        if (peek() == '+') {
+            consume();
+            tokens.push_back(makeToken(TokenKind::Plus, "+"));
             continue;
         }
         if (peek() == '[') {
@@ -224,13 +212,7 @@ std::vector<Token> Lexer::tokenize(const std::string& source_code) {
 
         // Identifiers/registers/directives (may start with . or letter, can include . within)
         if (std::isalpha(peek()) || peek() == '_' || peek() == '.') {
-            Token t = scanIdentifierOrRegister();
-            tokens.push_back(t);
-            // Check if followed by [ for mask suffix
-            skipWhitespace();
-            if (peek() == '[') {
-                // Don't consume the bracket here; let the parser handle it
-            }
+            tokens.push_back(scanIdentifierOrRegister());
             continue;
         }
 

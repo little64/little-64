@@ -7,31 +7,38 @@
 struct DisassembledInstruction {
     uint16_t address;           // address of this instruction
     uint16_t raw;               // raw 16-bit encoding
+    bool is_unknown;            // true if opcode not in any .def table
 
-    // Decoded fields (matches cpu.hpp Instruction struct layout)
-    bool type;                  // bit 15: 0 = T=0, 1 = T=1
-    bool encoding;              // bit 14: 0 = E=0, 1 = E=1
-    uint8_t opcode;             // 4 bits for T=0, 2 bits for T=1
-    uint8_t rd;                 // bits 3-0: destination register (all formats)
+    // Decoded fields
+    uint8_t format;             // bits[15:14]: 0=LS_REG, 1=LS_PCREL, 2=LDI, 3=GP
+    uint8_t rd;                 // bits[3:0]: destination (or source for stores)
 
-    // Format-specific (set based on type/encoding, zero otherwise)
-    uint8_t rs1;                // T=0, E=0: source register (bits 7-4)
-    int8_t  pc_rel;             // T=0 E=1 / T=1 E=1: signed 6-bit PC-rel field
-    uint8_t shift;              // T=1, E=0: byte-lane shift (0-3)
-    uint8_t imm6;               // T=1, E=0: 6-bit immediate address
-    uint8_t mask;               // T=1, E=1: byte mask (0-3)
+    // Formats 00 and 01
+    uint8_t opcode_ls;          // bits[13:10]: LS opcode (4 bits)
 
-    // Derived for display
-    uint16_t effective_address;  // for PC-rel: address + 2 + (pc_rel << 1)
-    std::string mnemonic;        // e.g. "LOAD", "INC_LOAD", or "" if unknown
-    std::string text;            // full disassembly text, e.g. "LOAD.S1 #4, R3"
-    bool is_unknown;             // true if opcode not in any .def table
+    // Format 00 only
+    uint8_t offset2;            // bits[9:8]: byte offset = offset2 * 2
+    uint8_t rs1;                // bits[7:4]: base register (also used by format 11)
+
+    // Format 01 only
+    int8_t  pc_rel;             // bits[9:4]: signed 6-bit; byte offset = pc_rel * 2
+    uint16_t effective_address; // address + 2 + (pc_rel * 2)
+
+    // Format 10 only
+    uint8_t shift;              // bits[13:12]
+    uint8_t imm8;               // bits[11:4]
+
+    // Format 11 only
+    uint8_t opcode_gp;          // bits[13:8]: GP opcode (6 bits)
+
+    // Display
+    std::string mnemonic;       // e.g. "LOAD", "JUMP.Z", "LDI", "ADD"
+    std::string text;           // full disassembly text
 };
 
 class Disassembler {
 public:
     // Disassemble one instruction word at a given address.
-    // All fields of DisassembledInstruction are populated.
     static DisassembledInstruction disassemble(uint16_t word, uint16_t address);
 
     // Disassemble a buffer of 16-bit little-endian words starting at base_address.

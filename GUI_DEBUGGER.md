@@ -71,17 +71,24 @@ ninja -C builddir
 ; Write this in the Assembler panel:
 .org 0x0000
 
-; Load immediate into R1
-LOAD #2, R1
+; Load immediate into R1 (LDI, format 10)
+LDI    #0x78, R1        ; R1 = 0x78
+LDI.S1 #0x56, R1       ; R1 = 0x5678
 
-; Load with shift
-LOAD.S1 #1, R2
+; ALU operation (GP, format 11)
+LDI    #10, R2
+ADD    R1, R2           ; R2 = R2 + R1
 
-; Store to memory
-STORE #10, R5
+; Load from a register with offset (LS Register, format 00)
+LDI    #0x20, R3
+LOAD   [R3], R4         ; R4 = MEM64[R3]
+STORE  [R3+2], R4       ; MEM64[R3+2] = R4
+
+; PC-relative load (LS PC-Relative, format 01)
+LOAD   @data, R5        ; R5 = MEM64[data label]
 
 ; Data section
-.org 0x000E
+data:
 .word 0xDEAD
 .word 0xBEEF
 ```
@@ -115,15 +122,13 @@ The GUI reuses the existing command-line tools as static libraries:
 
 ## Limitations
 
-- **CPU execution is a stub**: `dispatchInstruction()` does not actually execute instructions
 - **Memory model is temporary**: 64KB flat array; will be replaced with a proper MMU later
 - **No docking yet**: ImGui windows are independent; can be resized and moved but not docked together
 - **Keyboard shortcuts**: Escape to quit, Ctrl+O (open), Ctrl+S (save)
 
 ## Future Enhancements
 
-1. Implement `dispatchInstruction()` to actually execute instructions
-2. Add breakpoints and step-through debugging
+1. Add breakpoints and step-through debugging
 3. Add a memory editor (write to memory from GUI)
 4. Watchpoints and conditional breakpoints
 5. ImGui docking support for window management

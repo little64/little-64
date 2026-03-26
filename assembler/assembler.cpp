@@ -2,9 +2,6 @@
 #include "encoder.hpp"
 #include <sstream>
 #include <iomanip>
-#include <algorithm>
-#include <cctype>
-#include <cmath>
 
 std::vector<uint16_t> Assembler::assemble(const std::string& source) {
     Encoder::init();
@@ -37,20 +34,19 @@ void Assembler::pass1(const std::vector<Token>& tokens, SymbolTable& symbols) {
             continue;
         }
 
-        // Check for label definition
+        // Label definition
         if (tok.kind == TokenKind::Ident && idx + 1 < tokens.size() &&
             tokens[idx + 1].kind == TokenKind::Colon) {
             std::string label = tok.lexeme;
-            if (symbols.find(label) != symbols.end()) {
+            if (symbols.find(label) != symbols.end())
                 throw std::runtime_error("Duplicate label: " + label + " at line " +
-                                       std::to_string(tok.line));
-            }
+                                         std::to_string(tok.line));
             symbols[label] = current_address;
-            idx += 2;  // skip label and colon
+            idx += 2;
             continue;
         }
 
-        // Check for directive
+        // Directive
         if (tok.kind == TokenKind::Ident && tok.lexeme[0] == '.') {
             if (tok.lexeme == ".org") {
                 idx++;
@@ -59,7 +55,7 @@ void Assembler::pass1(const std::vector<Token>& tokens, SymbolTable& symbols) {
                     idx++;
                 } else {
                     throw std::runtime_error(".org requires an address at line " +
-                                           std::to_string(tok.line));
+                                             std::to_string(tok.line));
                 }
             } else if (tok.lexeme == ".word") {
                 idx++;
@@ -68,17 +64,15 @@ void Assembler::pass1(const std::vector<Token>& tokens, SymbolTable& symbols) {
                     idx++;
                 } else {
                     throw std::runtime_error(".word requires a value at line " +
-                                           std::to_string(tok.line));
+                                             std::to_string(tok.line));
                 }
             } else {
                 throw std::runtime_error("Unknown directive: " + tok.lexeme + " at line " +
-                                       std::to_string(tok.line));
+                                         std::to_string(tok.line));
             }
-            // Skip to next line
             while (idx < tokens.size() && tokens[idx].kind != TokenKind::Newline &&
-                   tokens[idx].kind != TokenKind::EndOfFile) {
+                   tokens[idx].kind != TokenKind::EndOfFile)
                 idx++;
-            }
             if (idx < tokens.size() && tokens[idx].kind == TokenKind::Newline) {
                 idx++;
                 line_count++;
@@ -86,19 +80,16 @@ void Assembler::pass1(const std::vector<Token>& tokens, SymbolTable& symbols) {
             continue;
         }
 
-        // It's an instruction
+        // Instruction
         int line_at_start = line_count;
-        ParsedInstruction parsed =
-            parseInstruction(tokens, idx, current_address, line_count);
+        ParsedInstruction parsed = parseInstruction(tokens, idx, current_address, line_count);
         parsed.line = line_at_start;
         instructions.push_back(parsed);
         current_address += 2;
 
-        // Skip to next line
         while (idx < tokens.size() && tokens[idx].kind != TokenKind::Newline &&
-               tokens[idx].kind != TokenKind::EndOfFile) {
+               tokens[idx].kind != TokenKind::EndOfFile)
             idx++;
-        }
         if (idx < tokens.size() && tokens[idx].kind == TokenKind::Newline) {
             idx++;
             line_count++;
@@ -111,12 +102,11 @@ void Assembler::pass2(const std::vector<Token>& tokens, const SymbolTable& symbo
     uint16_t current_address = origin;
 
     for (const auto& instr : instructions) {
-        uint16_t encoded = encodeInstruction(instr, symbols, current_address);
-        output.push_back(encoded);
+        output.push_back(encodeInstruction(instr, symbols, current_address));
         current_address += 2;
     }
 
-    // Also handle .word directives from the token stream
+    // Emit .word directives
     size_t idx = 0;
     int line_count = 0;
     current_address = origin;
@@ -125,11 +115,7 @@ void Assembler::pass2(const std::vector<Token>& tokens, const SymbolTable& symbo
         const Token& tok = tokens[idx];
 
         if (tok.kind == TokenKind::EndOfFile) break;
-        if (tok.kind == TokenKind::Newline) {
-            idx++;
-            line_count++;
-            continue;
-        }
+        if (tok.kind == TokenKind::Newline) { idx++; line_count++; continue; }
 
         if (tok.kind == TokenKind::Ident && idx + 1 < tokens.size() &&
             tokens[idx + 1].kind == TokenKind::Colon) {
@@ -147,16 +133,14 @@ void Assembler::pass2(const std::vector<Token>& tokens, const SymbolTable& symbo
             } else if (tok.lexeme == ".word") {
                 idx++;
                 if (idx < tokens.size() && tokens[idx].kind == TokenKind::ImmediateAbs) {
-                    uint16_t value = tokens[idx].int_value & 0xFFFF;
-                    output.push_back(value);
+                    output.push_back(tokens[idx].int_value & 0xFFFF);
                     current_address += 2;
                     idx++;
                 }
             }
             while (idx < tokens.size() && tokens[idx].kind != TokenKind::Newline &&
-                   tokens[idx].kind != TokenKind::EndOfFile) {
+                   tokens[idx].kind != TokenKind::EndOfFile)
                 idx++;
-            }
             if (idx < tokens.size() && tokens[idx].kind == TokenKind::Newline) {
                 idx++;
                 line_count++;
@@ -164,11 +148,10 @@ void Assembler::pass2(const std::vector<Token>& tokens, const SymbolTable& symbo
             continue;
         }
 
-        // Skip instruction (already processed)
+        // Skip over instruction tokens (already processed)
         while (idx < tokens.size() && tokens[idx].kind != TokenKind::Newline &&
-               tokens[idx].kind != TokenKind::EndOfFile) {
+               tokens[idx].kind != TokenKind::EndOfFile)
             idx++;
-        }
         if (idx < tokens.size() && tokens[idx].kind == TokenKind::Newline) {
             idx++;
             line_count++;
@@ -177,233 +160,276 @@ void Assembler::pass2(const std::vector<Token>& tokens, const SymbolTable& symbo
     }
 }
 
+// Helper: check if mnemonic is a JUMP.* variant
+static bool isJumpMnemonic(const std::string& m) {
+    return m == "JUMP.Z" || m == "JUMP.C" || m == "JUMP.S" || m == "JUMP.GT" || m == "JUMP.LT";
+}
+
 Assembler::ParsedInstruction Assembler::parseInstruction(const std::vector<Token>& tokens,
-                                                         size_t& idx, uint16_t address,
-                                                         int& line_count) {
+                                                          size_t& idx, uint16_t address,
+                                                          int& line_count) {
     ParsedInstruction result;
     result.address = address;
     result.line = line_count;
 
-    // Parse mnemonic (may include suffix like .S1 or [BW])
-    if (idx >= tokens.size() || tokens[idx].kind != TokenKind::Ident) {
-        throw std::runtime_error("Expected mnemonic");
-    }
+    if (idx >= tokens.size() || tokens[idx].kind != TokenKind::Ident)
+        throw std::runtime_error("Expected mnemonic at line " + std::to_string(line_count));
 
     std::string full_mnemonic = tokens[idx].lexeme;
     idx++;
 
-    // Parse mnemonic suffixes
-    // The full_mnemonic may contain .SN or [mask] suffix(es)
-    result.mnemonic = full_mnemonic;
-    result.shift_or_mask = 0;
-    result.is_mask = false;
-
-    // Look for [mask] first (appears after base mnemonic)
-    size_t bracket_pos = result.mnemonic.find('[');
-    if (bracket_pos != std::string::npos) {
-        size_t close_bracket = result.mnemonic.find(']', bracket_pos);
-        if (close_bracket != std::string::npos) {
-            std::string mask_str = result.mnemonic.substr(bracket_pos + 1, close_bracket - bracket_pos - 1);
-            result.is_mask = true;
-
-            // Parse mask value
-            if (mask_str == "B") {
-                result.shift_or_mask = 1;  // bit 0
-            } else if (mask_str == "W") {
-                result.shift_or_mask = 2;  // bit 1
-            } else if (mask_str == "BW") {
-                result.shift_or_mask = 3;  // both bits
-            } else if (mask_str == "0") {
-                result.shift_or_mask = 0;
-            } else {
-                throw std::runtime_error("Invalid mask: " + mask_str);
-            }
-
-            result.mnemonic = result.mnemonic.substr(0, bracket_pos);
+    // Strip .SN suffix from LDI (e.g. LDI.S2 → base="LDI", shift=2)
+    result.shift = 0;
+    std::string base_mnemonic = full_mnemonic;
+    size_t dot_pos = full_mnemonic.rfind('.');
+    if (dot_pos != std::string::npos && dot_pos + 2 == full_mnemonic.length()) {
+        char after_dot = full_mnemonic[dot_pos + 1];
+        if (after_dot == 'S' || after_dot == 's') {
+            // .S with no digit — not a shift suffix, keep as-is (e.g. JUMP.S)
+        } else if (after_dot >= '0' && after_dot <= '3') {
+            result.shift = after_dot - '0';
+            base_mnemonic = full_mnemonic.substr(0, dot_pos);
+        }
+    } else if (dot_pos != std::string::npos && dot_pos + 3 == full_mnemonic.length()) {
+        // Could be .S0-.S3
+        if ((full_mnemonic[dot_pos + 1] == 'S' || full_mnemonic[dot_pos + 1] == 's') &&
+            full_mnemonic[dot_pos + 2] >= '0' && full_mnemonic[dot_pos + 2] <= '3') {
+            result.shift = full_mnemonic[dot_pos + 2] - '0';
+            base_mnemonic = full_mnemonic.substr(0, dot_pos);
         }
     }
 
-    // Look for .S# suffix (appears after base mnemonic, before any bracket)
-    size_t dot_pos = result.mnemonic.rfind('.');
-    if (dot_pos != std::string::npos && dot_pos + 2 < result.mnemonic.length()) {
-        if (result.mnemonic[dot_pos + 1] == 'S' || result.mnemonic[dot_pos + 1] == 's') {
-            char shift_char = result.mnemonic[dot_pos + 2];
-            if (shift_char >= '0' && shift_char <= '3') {
-                result.shift_or_mask = shift_char - '0';
-                result.mnemonic = result.mnemonic.substr(0, dot_pos);
-            }
-        }
-    }
+    result.mnemonic = base_mnemonic;
 
-    // Collect operands until end of line
-    while (idx < tokens.size() && tokens[idx].kind != TokenKind::Newline &&
-           tokens[idx].kind != TokenKind::EndOfFile) {
-        if (tokens[idx].kind == TokenKind::Comma) {
+    // Stage 1: classify by mnemonic
+    if (Encoder::isLDIMnemonic(base_mnemonic)) {
+        // Format 10 (LDI): #imm8, Rd
+        result.detected_format = Format::LDI;
+        // Collect operands
+        while (idx < tokens.size() && tokens[idx].kind != TokenKind::Newline &&
+               tokens[idx].kind != TokenKind::EndOfFile) {
+            if (tokens[idx].kind != TokenKind::Comma)
+                result.operands.push_back(tokens[idx]);
             idx++;
-            continue;
         }
-        result.operands.push_back(tokens[idx]);
-        idx++;
+        return result;
     }
 
-    return result;
+    if (Encoder::isGPMnemonic(base_mnemonic)) {
+        // Format 11 (GP): Rs1, Rd
+        result.detected_format = Format::GP;
+        while (idx < tokens.size() && tokens[idx].kind != TokenKind::Newline &&
+               tokens[idx].kind != TokenKind::EndOfFile) {
+            if (tokens[idx].kind != TokenKind::Comma)
+                result.operands.push_back(tokens[idx]);
+            idx++;
+        }
+        return result;
+    }
+
+    if (!Encoder::isLSMnemonic(base_mnemonic))
+        throw std::runtime_error("Unknown mnemonic: " + base_mnemonic + " at line " +
+                                 std::to_string(line_count));
+
+    // Stage 2: LS mnemonic — sub-format from first operand token
+    // Skip whitespace-level: just peek at the next meaningful token
+    if (idx >= tokens.size() || tokens[idx].kind == TokenKind::Newline ||
+        tokens[idx].kind == TokenKind::EndOfFile)
+        throw std::runtime_error("Expected operands for " + base_mnemonic + " at line " +
+                                 std::to_string(line_count));
+
+    TokenKind first_kind = tokens[idx].kind;
+
+    if (first_kind == TokenKind::LeftBracket) {
+        // Format 00 (LS Register): [Rs1] or [Rs1+N]
+        result.detected_format = Format::LS_REG;
+        // Parse: [ Rs1 (+ N)? ] , Rd
+        // Store the bracket contents as operands for encodeInstruction to interpret
+        // We collect: Rs1 token, optionally the offset token, then Rd token
+        idx++;  // consume '['
+        if (idx >= tokens.size() || tokens[idx].kind != TokenKind::Register)
+            throw std::runtime_error("Expected register after '[' at line " +
+                                     std::to_string(line_count));
+        result.operands.push_back(tokens[idx++]);  // Rs1
+
+        if (idx < tokens.size() && tokens[idx].kind == TokenKind::Plus) {
+            idx++;  // consume '+'
+            if (idx >= tokens.size() || tokens[idx].kind != TokenKind::ImmediateAbs)
+                throw std::runtime_error("Expected offset after '+' at line " +
+                                         std::to_string(line_count));
+            result.operands.push_back(tokens[idx++]);  // offset (in bytes)
+        } else {
+            // No offset: push a synthetic zero token
+            Token zero;
+            zero.kind = TokenKind::ImmediateAbs;
+            zero.lexeme = "0";
+            zero.int_value = 0;
+            zero.line = line_count;
+            result.operands.push_back(zero);
+        }
+
+        if (idx >= tokens.size() || tokens[idx].kind != TokenKind::RightBracket)
+            throw std::runtime_error("Expected ']' at line " + std::to_string(line_count));
+        idx++;  // consume ']'
+
+        if (idx < tokens.size() && tokens[idx].kind == TokenKind::Comma) idx++;
+
+        if (idx >= tokens.size() || tokens[idx].kind != TokenKind::Register)
+            throw std::runtime_error("Expected destination register at line " +
+                                     std::to_string(line_count));
+        result.operands.push_back(tokens[idx++]);  // Rd
+        return result;
+    }
+
+    if (first_kind == TokenKind::PCRelLabel || first_kind == TokenKind::PCRelOffset) {
+        // Format 01 (LS PC-Relative): @label/offset , Rd (Rd defaults to R15 for JUMP.*)
+        result.detected_format = Format::LS_PCREL;
+        result.operands.push_back(tokens[idx++]);  // @label or @offset
+
+        // Optional comma and Rd
+        if (idx < tokens.size() && tokens[idx].kind == TokenKind::Comma) idx++;
+
+        if (idx < tokens.size() && tokens[idx].kind == TokenKind::Register) {
+            result.operands.push_back(tokens[idx++]);  // explicit Rd
+        } else if (isJumpMnemonic(base_mnemonic)) {
+            // JUMP.* with no explicit Rd: infer R15 (PC)
+            Token r15;
+            r15.kind = TokenKind::Register;
+            r15.lexeme = "R15";
+            r15.int_value = 15;
+            r15.line = line_count;
+            result.operands.push_back(r15);
+        } else {
+            throw std::runtime_error("Expected destination register at line " +
+                                     std::to_string(line_count));
+        }
+        return result;
+    }
+
+    if (first_kind == TokenKind::Register && isJumpMnemonic(base_mnemonic)) {
+        // Bare register form for JUMP.*: Rs1 (Rd=R15) or Rs1, Rd
+        result.detected_format = Format::LS_REG;
+        Token rs1_tok = tokens[idx++];  // Rs1
+
+        // Build synthetic operands: Rs1, zero_offset, Rd
+        result.operands.push_back(rs1_tok);
+
+        Token zero;
+        zero.kind = TokenKind::ImmediateAbs;
+        zero.lexeme = "0";
+        zero.int_value = 0;
+        zero.line = line_count;
+        result.operands.push_back(zero);
+
+        if (idx < tokens.size() && tokens[idx].kind == TokenKind::Comma) idx++;
+
+        if (idx < tokens.size() && tokens[idx].kind == TokenKind::Register) {
+            result.operands.push_back(tokens[idx++]);  // explicit Rd
+        } else {
+            // Infer R15
+            Token r15;
+            r15.kind = TokenKind::Register;
+            r15.lexeme = "R15";
+            r15.int_value = 15;
+            r15.line = line_count;
+            result.operands.push_back(r15);
+        }
+        return result;
+    }
+
+    throw std::runtime_error("Unexpected operand syntax for " + base_mnemonic + " at line " +
+                             std::to_string(line_count));
 }
 
 uint16_t Assembler::encodeInstruction(const ParsedInstruction& instr,
                                       const SymbolTable& symbols,
                                       uint16_t current_address) {
-    // Normalize mnemonic (remove .S suffix if present, keep base name)
-    std::string base_mnemonic = instr.mnemonic;
-    size_t dot_pos = base_mnemonic.find('.');
-    if (dot_pos != std::string::npos) {
-        base_mnemonic = base_mnemonic.substr(0, dot_pos);
-    }
+    auto err = [&](const std::string& msg) {
+        throw std::runtime_error(msg + " at line " + std::to_string(instr.line));
+    };
 
-    // Determine whether this is a T=0 or T=1 instruction
-    bool is_ls = (base_mnemonic == "LOAD" || base_mnemonic == "STORE" ||
-                  base_mnemonic == "INC_LOAD" || base_mnemonic == "DEC_STORE");
+    switch (instr.detected_format) {
+        case Format::LDI: {
+            if (instr.operands.size() < 2) err("LDI requires #imm8, Rd");
+            if (instr.operands[0].kind != TokenKind::ImmediateAbs) err("Expected #immediate");
+            uint32_t val = instr.operands[0].int_value;
+            if (val > 255) err("Immediate value out of range for LDI (max 255)");
+            if (instr.operands[1].kind != TokenKind::Register) err("Expected register");
+            uint8_t rd = instr.operands[1].int_value;
+            return Encoder::encodeLDI(instr.shift, (uint8_t)val, rd);
+        }
 
-    if (is_ls) {
-        // T=1 instruction (load/store)
-        uint8_t opcode = Encoder::getLSOpcode(base_mnemonic);
+        case Format::GP: {
+            if (instr.operands.size() < 2) err(instr.mnemonic + " requires Rs1, Rd");
+            if (instr.operands[0].kind != TokenKind::Register) err("Expected register for Rs1");
+            if (instr.operands[1].kind != TokenKind::Register) err("Expected register for Rd");
+            uint8_t opcode = Encoder::getGPOpcode(instr.mnemonic);
+            uint8_t rs1 = instr.operands[0].int_value;
+            uint8_t rd  = instr.operands[1].int_value;
+            return Encoder::encodeGP(opcode, rs1, rd);
+        }
 
-        if (instr.is_mask) {
-            // Format 4: T=1, E=1 (PC-relative with mask)
-            // Operands: @label/offset, Rd
-            if (instr.operands.size() < 2) {
-                throw std::runtime_error("Instruction requires 2 operands at line " +
-                                       std::to_string(instr.line));
-            }
+        case Format::LS_REG: {
+            // operands: [Rs1, offset_bytes, Rd]
+            if (instr.operands.size() < 3) err(instr.mnemonic + " requires [Rs1+N], Rd");
+            if (instr.operands[0].kind != TokenKind::Register) err("Expected register for Rs1");
+            if (instr.operands[1].kind != TokenKind::ImmediateAbs) err("Expected byte offset");
+            if (instr.operands[2].kind != TokenKind::Register) err("Expected register for Rd");
+
+            uint8_t rs1 = instr.operands[0].int_value;
+            uint32_t byte_offset = instr.operands[1].int_value;
+            uint8_t rd  = instr.operands[2].int_value;
+
+            if (byte_offset != 0 && byte_offset != 2 && byte_offset != 4 && byte_offset != 6)
+                err("Offset must be 0, 2, 4, or 6 bytes");
+            uint8_t offset2 = byte_offset / 2;
+
+            uint8_t opcode = Encoder::getLSOpcode(instr.mnemonic);
+            return Encoder::encodeLSReg(opcode, offset2, rs1, rd);
+        }
+
+        case Format::LS_PCREL: {
+            // operands: [@label_or_offset, Rd]
+            if (instr.operands.size() < 2) err(instr.mnemonic + " requires @label, Rd");
+            if (instr.operands[1].kind != TokenKind::Register) err("Expected register for Rd");
+
+            uint8_t rd = instr.operands[1].int_value;
+            int32_t raw_offset = 0;
 
             const Token& addr_tok = instr.operands[0];
-            uint8_t pcrel = 0;
-
             if (addr_tok.kind == TokenKind::PCRelLabel) {
                 auto it = symbols.find(addr_tok.lexeme);
-                if (it == symbols.end()) {
-                    throw std::runtime_error("Undefined label: " + addr_tok.lexeme +
-                                           " at line " + std::to_string(instr.line));
-                }
+                if (it == symbols.end())
+                    err("Undefined label: " + addr_tok.lexeme);
                 uint16_t target = it->second;
-                int32_t offset = (int32_t)target - (int32_t)(current_address + 2);
-                offset >>= 1;  // PC-rel offset is word-based
-                if (offset < -32 || offset > 31) {
-                    throw std::runtime_error("PC-relative offset out of range at line " +
-                                           std::to_string(instr.line));
-                }
-                pcrel = offset & 0x3F;
+                // pc_rel is in instruction units (×2 bytes), relative to next instruction
+                int32_t byte_diff = (int32_t)target - (int32_t)(current_address + 2);
+                if (byte_diff % 2 != 0) err("Target address is not instruction-aligned");
+                raw_offset = byte_diff / 2;
             } else if (addr_tok.kind == TokenKind::PCRelOffset) {
-                int32_t offset = addr_tok.int_value;
-                if (offset < -32 || offset > 31) {
-                    throw std::runtime_error("PC-relative offset out of range at line " +
-                                           std::to_string(instr.line));
-                }
-                pcrel = offset & 0x3F;
+                raw_offset = (int32_t)(int64_t)addr_tok.int_value;
             } else {
-                throw std::runtime_error("Expected @label or @offset at line " +
-                                       std::to_string(instr.line));
+                err("Expected @label or @offset");
             }
 
-            uint8_t rd = 0;
-            if (instr.operands[1].kind == TokenKind::Register) {
-                rd = instr.operands[1].int_value;
-            } else {
-                throw std::runtime_error("Expected register for destination at line " +
-                                       std::to_string(instr.line));
-            }
+            if (raw_offset < -32 || raw_offset > 31)
+                err("PC-relative offset out of range [-32, 31]");
 
-            return Encoder::encodeLS_mask(opcode, instr.shift_or_mask, pcrel, rd);
-        } else {
-            // Format 3: T=1, E=0 (immediate with shift)
-            // Operands: #imm6, Rd
-            if (instr.operands.size() < 2) {
-                throw std::runtime_error("Instruction requires 2 operands at line " +
-                                       std::to_string(instr.line));
-            }
-
-            const Token& imm_tok = instr.operands[0];
-            if (imm_tok.kind != TokenKind::ImmediateAbs) {
-                throw std::runtime_error("Expected #immediate at line " +
-                                       std::to_string(instr.line));
-            }
-
-            uint8_t imm6 = imm_tok.int_value & 0x3F;
-            uint8_t rd = 0;
-            if (instr.operands[1].kind == TokenKind::Register) {
-                rd = instr.operands[1].int_value;
-            } else {
-                throw std::runtime_error("Expected register for destination at line " +
-                                       std::to_string(instr.line));
-            }
-
-            return Encoder::encodeLS_shift(opcode, instr.shift_or_mask, imm6, rd);
+            uint8_t opcode = Encoder::getLSOpcode(instr.mnemonic);
+            return Encoder::encodeLSPCRel(opcode, (int8_t)raw_offset, rd);
         }
-    } else {
-        // T=0 instruction (general purpose)
-        uint8_t opcode = Encoder::getT0Opcode(base_mnemonic);
-
-        if (instr.operands.size() < 2) {
-            throw std::runtime_error("Instruction requires 2 operands at line " +
-                                   std::to_string(instr.line));
-        }
-
-        const Token& src_tok = instr.operands[0];
-        uint8_t src_val = 0;
-        bool is_register_operand = false;
-
-        if (src_tok.kind == TokenKind::Register) {
-            // E=0: register format
-            src_val = src_tok.int_value;
-            is_register_operand = true;
-        } else if (src_tok.kind == TokenKind::PCRelLabel) {
-            // E=1: PC-relative format
-            auto it = symbols.find(src_tok.lexeme);
-            if (it == symbols.end()) {
-                throw std::runtime_error("Undefined label: " + src_tok.lexeme +
-                                       " at line " + std::to_string(instr.line));
-            }
-            uint16_t target = it->second;
-            int32_t offset = (int32_t)target - (int32_t)(current_address + 2);
-            offset >>= 1;  // PC-rel offset is word-based
-            if (offset < -32 || offset > 31) {
-                throw std::runtime_error("PC-relative offset out of range at line " +
-                                       std::to_string(instr.line));
-            }
-            src_val = offset & 0x3F;
-            is_register_operand = false;
-        } else if (src_tok.kind == TokenKind::PCRelOffset) {
-            // E=1: raw PC-relative offset
-            int32_t offset = src_tok.int_value;
-            if (offset < -32 || offset > 31) {
-                throw std::runtime_error("PC-relative offset out of range at line " +
-                                       std::to_string(instr.line));
-            }
-            src_val = offset & 0x3F;
-            is_register_operand = false;
-        } else {
-            throw std::runtime_error("Expected register or @label/@offset at line " +
-                                   std::to_string(instr.line));
-        }
-
-        uint8_t rd = 0;
-        if (instr.operands[1].kind == TokenKind::Register) {
-            rd = instr.operands[1].int_value;
-        } else {
-            throw std::runtime_error("Expected register for destination at line " +
-                                   std::to_string(instr.line));
-        }
-
-        return Encoder::encodeT0(opcode, is_register_operand, src_val, rd);
     }
+
+    // Unreachable
+    err("Internal assembler error");
+    return 0;
 }
 
 std::string Assembler::getListing() const {
     std::ostringstream oss;
     oss << std::hex << std::setfill('0');
     for (const auto& instr : instructions) {
-        oss << "0x" << std::setw(4) << instr.address << "  ";
-        // Encoding would go here, but we'd need to re-compute it
-        oss << instr.mnemonic << "\n";
+        oss << "0x" << std::setw(4) << instr.address << "  " << instr.mnemonic << "\n";
     }
     return oss.str();
 }

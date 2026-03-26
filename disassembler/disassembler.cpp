@@ -4,138 +4,100 @@
 #include <iomanip>
 #include <unordered_map>
 
-// Build opcode lookup tables from the same .def files (reverse direction: opcode → mnemonic)
-static const std::unordered_map<uint8_t, std::string> kT0Opcodes = {
-#define LITTLE64_T0_OPCODE(name, value, mnemonic) { value, mnemonic },
-#include "opcodes_t0.def"
-#undef LITTLE64_T0_OPCODE
-};
-
+// Reverse lookup: opcode value → mnemonic string
 static const std::unordered_map<uint8_t, std::string> kLSOpcodes = {
 #define LITTLE64_LS_OPCODE(name, value, mnemonic) { value, mnemonic },
 #include "opcodes_ls.def"
 #undef LITTLE64_LS_OPCODE
 };
 
-// Helper: sign-extend a 6-bit value to a signed byte
-static int8_t signExtend6(uint8_t val) {
-    if (val & 0x20) {  // bit 5 set
-        return -(int8_t)(64 - val);
-    }
-    return (int8_t)val;
-}
-
-// Helper: convert mask bits to string representation
-static std::string maskToString(uint8_t mask) {
-    switch (mask) {
-        case 0: return "0";
-        case 1: return "B";
-        case 2: return "W";
-        case 3: return "BW";
-        default: return "";
-    }
-}
+static const std::unordered_map<uint8_t, std::string> kGPOpcodes = {
+#define LITTLE64_GP_OPCODE(name, value, mnemonic) { value, mnemonic },
+#include "opcodes_gp.def"
+#undef LITTLE64_GP_OPCODE
+};
 
 DisassembledInstruction Disassembler::disassemble(uint16_t word, uint16_t address) {
-    DisassembledInstruction result;
-    result.address = address;
-    result.raw = word;
+    DisassembledInstruction result = {};
+    result.address    = address;
+    result.raw        = word;
     result.is_unknown = false;
 
-    // Decode the instruction (mirror of cpu.hpp's Instruction(uint16_t raw) constructor)
-    result.type = (word >> 15) & 0x1;
-    result.encoding = (word >> 14) & 0x1;
-    result.rd = word & 0xF;
+    result.format = (word >> 14) & 0x3;
+    result.rd     = word & 0xF;
 
     std::ostringstream oss;
-    std::string mnemonic;
 
-    if (result.type == 0) {
-        // T=0: register or PC-relative
-        result.opcode = (word >> 10) & 0xF;
+    switch (result.format) {
+        case 0: { // LS Register
+            result.opcode_ls = (word >> 10) & 0xF;
+            result.offset2   = (word >> 8)  & 0x3;
+            result.rs1       = (word >> 4)  & 0xF;
 
-        // Look up mnemonic
-        auto it = kT0Opcodes.find(result.opcode);
-        if (it == kT0Opcodes.end()) {
-            mnemonic = "";
-            result.is_unknown = true;
-        } else {
-            mnemonic = it->second;
+            auto it = kLSOpcodes.find(result.opcode_ls);
+            if (it == kLSOpcodes.end()) {
+                result.is_unknown = true;
+                oss << ".word 0x" << std::hex << std::setw(4) << std::setfill('0') << word;
+                break;
+            }
+            result.mnemonic = it->second;
+
+            oss << result.mnemonic << " [R" << (int)result.rs1;
+            if (result.offset2 > 0)
+                oss << "+" << (int)(result.offset2 * 2);
+            oss << "], R" << (int)result.rd;
+            break;
         }
-        result.mnemonic = mnemonic;
+        case 1: { // LS PC-Relative
+            result.opcode_ls = (word >> 10) & 0xF;
+            uint8_t raw6 = (word >> 4) & 0x3F;
+            result.pc_rel = (raw6 & 0x20) ? (int8_t)(raw6 | 0xC0) : (int8_t)raw6;
+            result.effective_address = address + 2 + (int16_t)result.pc_rel * 2;
 
-        if (result.encoding == 0) {
-            // E=0: register format
-            result.rs1 = (word >> 4) & 0xF;
-            if (result.is_unknown) {
+            auto it = kLSOpcodes.find(result.opcode_ls);
+            if (it == kLSOpcodes.end()) {
+                result.is_unknown = true;
                 oss << ".word 0x" << std::hex << std::setw(4) << std::setfill('0') << word;
-            } else {
-                oss << mnemonic << " R" << (int)result.rs1 << ", R" << (int)result.rd;
+                break;
             }
-        } else {
-            // E=1: PC-relative format
-            uint8_t pc_rel_raw = (word >> 4) & 0x3F;
-            result.pc_rel = signExtend6(pc_rel_raw);
-            result.effective_address = address + 2 + ((uint32_t)result.pc_rel << 1);
+            result.mnemonic = it->second;
 
-            if (result.is_unknown) {
-                oss << ".word 0x" << std::hex << std::setw(4) << std::setfill('0') << word;
-            } else {
-                oss << mnemonic << " @";
-                if (result.pc_rel >= 0) {
-                    oss << "+" << (int)result.pc_rel;
-                } else {
-                    oss << (int)result.pc_rel;
-                }
-                oss << ", R" << (int)result.rd;
-            }
+            oss << result.mnemonic << " @";
+            if (result.pc_rel >= 0)
+                oss << "+" << (int)result.pc_rel;
+            else
+                oss << (int)result.pc_rel;
+            oss << ", R" << (int)result.rd;
+            oss << std::dec << "  ; 0x" << std::hex << std::setw(4) << std::setfill('0')
+                << result.effective_address;
+            break;
         }
-    } else {
-        // T=1: load/store
-        result.opcode = (word >> 12) & 0x3;
+        case 2: { // Load Immediate
+            result.shift    = (word >> 12) & 0x3;
+            result.imm8     = (word >> 4)  & 0xFF;
+            result.mnemonic = "LDI";
 
-        // Look up mnemonic
-        auto it = kLSOpcodes.find(result.opcode);
-        if (it == kLSOpcodes.end()) {
-            mnemonic = "";
-            result.is_unknown = true;
-        } else {
-            mnemonic = it->second;
+            oss << "LDI";
+            if (result.shift > 0)
+                oss << ".S" << (int)result.shift;
+            oss << " #0x" << std::hex << (int)result.imm8
+                << std::dec << ", R" << (int)result.rd;
+            break;
         }
-        result.mnemonic = mnemonic;
+        case 3: { // GP ALU
+            result.opcode_gp = (word >> 8) & 0x3F;
+            result.rs1       = (word >> 4) & 0xF;
 
-        if (result.encoding == 0) {
-            // E=0: shift format
-            result.shift = (word >> 10) & 0x3;
-            result.imm6 = (word >> 4) & 0x3F;
-
-            if (result.is_unknown) {
+            auto it = kGPOpcodes.find(result.opcode_gp);
+            if (it == kGPOpcodes.end()) {
+                result.is_unknown = true;
                 oss << ".word 0x" << std::hex << std::setw(4) << std::setfill('0') << word;
-            } else {
-                oss << mnemonic;
-                if (result.shift > 0) {
-                    oss << ".S" << (int)result.shift;
-                }
-                oss << " #" << std::dec << (int)result.imm6 << ", R" << (int)result.rd;
+                break;
             }
-        } else {
-            // E=1: mask format
-            result.mask = (word >> 10) & 0x3;
-            uint8_t pc_rel_raw = (word >> 4) & 0x3F;
-            result.pc_rel = signExtend6(pc_rel_raw);
-            result.effective_address = address + 2 + ((uint32_t)result.pc_rel << 1);
+            result.mnemonic = it->second;
 
-            if (result.is_unknown) {
-                oss << ".word 0x" << std::hex << std::setw(4) << std::setfill('0') << word;
-            } else {
-                oss << mnemonic << "[" << maskToString(result.mask) << "] @";
-                if (result.pc_rel >= 0) {
-                    oss << "+" << (int)result.pc_rel;
-                } else {
-                    oss << (int)result.pc_rel;
-                }
-                oss << std::dec << ", R" << (int)result.rd;
-            }
+            oss << result.mnemonic << " R" << (int)result.rs1 << ", R" << (int)result.rd;
+            break;
         }
     }
 
@@ -147,8 +109,7 @@ std::vector<DisassembledInstruction>
     Disassembler::disassembleBuffer(const uint16_t* words, size_t count, uint16_t base_address) {
     std::vector<DisassembledInstruction> result;
     result.reserve(count);
-    for (size_t i = 0; i < count; ++i) {
-        result.push_back(disassemble(words[i], base_address + (i * 2)));
-    }
+    for (size_t i = 0; i < count; ++i)
+        result.push_back(disassemble(words[i], base_address + (uint16_t)(i * 2)));
     return result;
 }

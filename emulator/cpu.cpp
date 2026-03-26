@@ -1,102 +1,213 @@
-#include <iostream>
 #include "cpu.hpp"
 #include "opcodes.hpp"
 
 Little64CPU::Little64CPU() {
-    // Initialize registers to zero
-    for (int i = 0; i < 16; ++i) {
+    for (int i = 0; i < 16; ++i)
         registers.regs[i] = 0;
-    }
+    registers.flags = 0;
 }
 
 void Little64CPU::cycle() {
-    if(!isRunning) {
+    if (!isRunning)
         return;
-    }
 
-    // Ensure R0 is always zero
+    // R0 is always zero
     registers.regs[0] = 0;
 
-    // Ensure that the PC is within bounds of memory
     if (registers.regs[15] >= 65536) {
-        std::cerr << "PC out of bounds: " << registers.regs[15] << std::endl;
         isRunning = false;
         return;
     }
 
-    // Fetch instruction
     uint16_t instr_word = mem[registers.regs[15]] | (mem[registers.regs[15] + 1] << 8);
     Instruction instr(instr_word);
 
-    // Increment PC for next instruction (will be updated by some instructions)
-    registers.regs[15] += 2;
+    registers.regs[15] += 2;  // advance PC before dispatch (so pc_rel is relative to next instruction)
 
-    // Dispatch instruction
     dispatchInstruction(instr);
+
+    registers.regs[0] = 0;  // enforce R0=0 after any write
 }
 
 void Little64CPU::dispatchInstruction(const Instruction& instr) {
-    // For now, just print the instruction details for debugging
-    std::cout << "Dispatching instruction: " << std::hex << instr.encode() << std::dec << std::endl;
-    std::cout << "Type: " << instr.type << ", Encoding: " << instr.encoding
-              << ", Opcode: " << static_cast<int>(instr.opcode)
-              << ", Rd: " << instr.rd << std::endl;
-
-    if(instr.type == 0) {
-        if(instr.encoding == 0) {
-            std::cout << "Rs1: " << static_cast<int>(instr.rs1) << std::endl;
-        } else {
-            std::cout << "PC Rel: " << static_cast<int>(instr.pc_rel) << std::endl;
-        }
-    } else {
-        if(instr.encoding == 0) {
-            std::cout << "Shift: " << static_cast<int>(instr.shift)
-                      << ", Imm6: " << static_cast<int>(instr.imm6) << std::endl;
-        } else {
-            std::cout << "Mask: " << static_cast<int>(instr.mask)
-                      << ", PC Rel: " << static_cast<int>(instr.pc_rel) << std::endl;
-        }
-    }
-
-    // Dispatch the instructions based on type
-    if (instr.type == 0) {
-        _dispatchType0(instr);
-    } else {
-        _dispatchType1(instr);
+    switch (instr.format) {
+        case 0: _dispatchLSReg(instr);   break;
+        case 1: _dispatchLSPCRel(instr); break;
+        case 2: _dispatchLDI(instr);     break;
+        case 3: _dispatchGP(instr);      break;
     }
 }
 
-void Little64CPU::_dispatchType0(const Instruction& instr) {
-    // Handle type 0 instructions based on opcode and encoding
-    // This is where the actual execution logic for type 0 instructions will go
-    // For now, we just print a message
-    std::cout << "Executing Type 0 instruction with opcode " << static_cast<int>(instr.opcode) << std::endl;
+// Flag bit positions
+static constexpr uint64_t FLAG_ZERO  = 1 << 0;
+static constexpr uint64_t FLAG_CARRY = 1 << 1;
+static constexpr uint64_t FLAG_SIGN  = 1 << 2;
+
+void Little64CPU::_updateFlags(uint64_t result, bool carry) {
+    registers.flags = 0;
+    if (result == 0)            registers.flags |= FLAG_ZERO;
+    if (carry)                  registers.flags |= FLAG_CARRY;
+    if (result >> 63)           registers.flags |= FLAG_SIGN;
 }
 
-// This function will handle type 1 (load/store) instructions based on opcode and encoding
-void Little64CPU::_dispatchType1(const Instruction& instr) {
-    uint64_t rd_val = registers.regs[instr.rd];
-    uint64_t second;
-
-    if (instr.encoding == 0) {
-        second = (static_cast<uint64_t>(instr.imm6) << (instr.shift * 8));
-    } else {
-        uint64_t second_addr = registers.regs[15] + (static_cast<int16_t>(instr.pc_rel) << 1); // PC-relative address
-        second = _readMemory64(second_addr);
+static bool checkCondition(uint64_t flags, LS::Opcode op) {
+    bool z = flags & FLAG_ZERO;
+    bool c = flags & FLAG_CARRY;
+    bool s = flags & FLAG_SIGN;
+    switch (op) {
+        case LS::Opcode::JUMP_Z:  return z;
+        case LS::Opcode::JUMP_C:  return c;
+        case LS::Opcode::JUMP_S:  return s;
+        case LS::Opcode::JUMP_GT: return !z && !s;
+        case LS::Opcode::JUMP_LT: return s;
+        default: return false;
     }
+}
 
-    switch(static_cast<LS::Opcode>(instr.opcode)) {
-        case LS::Opcode::LOAD: {
-            std::cout << "LOAD: R" << instr.rd << " = MEM[0x" << std::hex << second << std::dec << "]" << std::endl;
-            registers.regs[instr.rd] = _readMemory64(second);
+void Little64CPU::_dispatchLSReg(const Instruction& instr) {
+    uint64_t addr = registers.regs[instr.rs1] + (instr.offset2 * 2);
+
+    switch (static_cast<LS::Opcode>(instr.opcode_ls)) {
+        case LS::Opcode::LOAD:
+            registers.regs[instr.rd] = _readMemory64(addr);
+            break;
+        case LS::Opcode::STORE:
+            _writeMemory64(addr, registers.regs[instr.rd]);
+            break;
+        case LS::Opcode::INC_LOAD:
+            registers.regs[instr.rd] = _readMemory64(addr);
+            registers.regs[instr.rs1] += 8;
+            break;
+        case LS::Opcode::DEC_STORE:
+            registers.regs[instr.rs1] -= 8;
+            _writeMemory64(registers.regs[instr.rs1], registers.regs[instr.rd]);
+            break;
+        case LS::Opcode::MOVE:
+            registers.regs[instr.rd] = addr;
+            break;
+        case LS::Opcode::BYTE_LOAD:
+            registers.regs[instr.rd] = _readMemory8(addr);
+            break;
+        case LS::Opcode::BYTE_STORE:
+            _writeMemory8(addr, registers.regs[instr.rd] & 0xFF);
+            break;
+        case LS::Opcode::SHORT_LOAD:
+            registers.regs[instr.rd] = _readMemory16(addr);
+            break;
+        case LS::Opcode::SHORT_STORE:
+            _writeMemory16(addr, registers.regs[instr.rd] & 0xFFFF);
+            break;
+        case LS::Opcode::WORD_LOAD:
+            registers.regs[instr.rd] = _readMemory32(addr);
+            break;
+        case LS::Opcode::WORD_STORE:
+            _writeMemory32(addr, registers.regs[instr.rd] & 0xFFFFFFFF);
+            break;
+        case LS::Opcode::JUMP_Z:
+        case LS::Opcode::JUMP_C:
+        case LS::Opcode::JUMP_S:
+        case LS::Opcode::JUMP_GT:
+        case LS::Opcode::JUMP_LT:
+            if (checkCondition(registers.flags, static_cast<LS::Opcode>(instr.opcode_ls)))
+                registers.regs[instr.rd] = addr;
+            break;
+    }
+}
+
+void Little64CPU::_dispatchLSPCRel(const Instruction& instr) {
+    // pc is already post-incremented; pc_rel is in instruction units (×2 bytes)
+    uint64_t effective = registers.regs[15] + (static_cast<int64_t>(instr.pc_rel) * 2);
+
+    switch (static_cast<LS::Opcode>(instr.opcode_ls)) {
+        case LS::Opcode::LOAD:
+            registers.regs[instr.rd] = _readMemory64(effective);
+            break;
+        case LS::Opcode::STORE:
+            _writeMemory64(effective, registers.regs[instr.rd]);
+            break;
+        case LS::Opcode::INC_LOAD:
+            registers.regs[instr.rd] = _readMemory64(effective);
+            // effective address is not a register to increment in PC-rel mode; no-op increment
+            break;
+        case LS::Opcode::DEC_STORE:
+            _writeMemory64(effective, registers.regs[instr.rd]);
+            break;
+        case LS::Opcode::MOVE:
+            registers.regs[instr.rd] = effective;
+            break;
+        case LS::Opcode::BYTE_LOAD:
+            registers.regs[instr.rd] = _readMemory8(effective);
+            break;
+        case LS::Opcode::BYTE_STORE:
+            _writeMemory8(effective, registers.regs[instr.rd] & 0xFF);
+            break;
+        case LS::Opcode::SHORT_LOAD:
+            registers.regs[instr.rd] = _readMemory16(effective);
+            break;
+        case LS::Opcode::SHORT_STORE:
+            _writeMemory16(effective, registers.regs[instr.rd] & 0xFFFF);
+            break;
+        case LS::Opcode::WORD_LOAD:
+            registers.regs[instr.rd] = _readMemory32(effective);
+            break;
+        case LS::Opcode::WORD_STORE:
+            _writeMemory32(effective, registers.regs[instr.rd] & 0xFFFFFFFF);
+            break;
+        case LS::Opcode::JUMP_Z:
+        case LS::Opcode::JUMP_C:
+        case LS::Opcode::JUMP_S:
+        case LS::Opcode::JUMP_GT:
+        case LS::Opcode::JUMP_LT:
+            if (checkCondition(registers.flags, static_cast<LS::Opcode>(instr.opcode_ls)))
+                registers.regs[instr.rd] = effective;
+            break;
+    }
+}
+
+void Little64CPU::_dispatchLDI(const Instruction& instr) {
+    if (instr.shift == 0) {
+        registers.regs[instr.rd] = instr.imm8;
+    } else {
+        registers.regs[instr.rd] |= (static_cast<uint64_t>(instr.imm8) << (instr.shift * 8));
+    }
+}
+
+void Little64CPU::_dispatchGP(const Instruction& instr) {
+    uint64_t a = registers.regs[instr.rd];
+    uint64_t b = registers.regs[instr.rs1];
+
+    switch (static_cast<GP::Opcode>(instr.opcode_gp)) {
+        case GP::Opcode::ADD: {
+            uint64_t result = a + b;
+            bool carry = result < a;
+            _updateFlags(result, carry);
+            registers.regs[instr.rd] = result;
             break;
         }
-        case LS::Opcode::STORE: {
-            std::cout << "STORE: MEM[0x" << std::hex << second << std::dec << "] = R" << instr.rd << std::endl;
-            uint64_t value = registers.regs[instr.rd];
-            for (int i = 0; i < 8; ++i) {
-                mem[second + i] = (value >> (i * 8)) & 0xFF;
-            }
+        case GP::Opcode::SUB: {
+            uint64_t result = a - b;
+            bool borrow = b > a;
+            _updateFlags(result, borrow);
+            registers.regs[instr.rd] = result;
+            break;
+        }
+        case GP::Opcode::AND: {
+            uint64_t result = a & b;
+            _updateFlags(result);
+            registers.regs[instr.rd] = result;
+            break;
+        }
+        case GP::Opcode::OR: {
+            uint64_t result = a | b;
+            _updateFlags(result);
+            registers.regs[instr.rd] = result;
+            break;
+        }
+        case GP::Opcode::TEST: {
+            uint64_t result = a - b;
+            bool borrow = b > a;
+            _updateFlags(result, borrow);
+            // do not store result
             break;
         }
     }
@@ -105,7 +216,7 @@ void Little64CPU::_dispatchType1(const Instruction& instr) {
 void Little64CPU::loadProgram(const std::vector<uint16_t>& words, uint16_t base) {
     for (size_t i = 0; i < words.size() && base + i * 2 + 1 < 65536; ++i) {
         uint16_t word = words[i];
-        mem[base + i * 2] = word & 0xFF;          // little-endian: low byte first
+        mem[base + i * 2]     = word & 0xFF;
         mem[base + i * 2 + 1] = (word >> 8) & 0xFF;
     }
 }
@@ -117,4 +228,3 @@ const uint8_t* Little64CPU::getMemory() const {
 size_t Little64CPU::getMemorySize() const {
     return 65536;
 }
-

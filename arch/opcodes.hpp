@@ -1,16 +1,16 @@
 #pragma once
 #include <cstdint>
 
-// ---- Type 0 opcodes (4-bit, type=0, encoding selected by operand type) ----
-namespace T0 {
+// ---- GP opcodes (6-bit, format 11: bits[15:14]=11) ----
+namespace GP {
     enum class Opcode : uint8_t {
-#define LITTLE64_T0_OPCODE(name, value, mnemonic) name = value,
-#include "opcodes_t0.def"
-#undef LITTLE64_T0_OPCODE
+#define LITTLE64_GP_OPCODE(name, value, mnemonic) name = value,
+#include "opcodes_gp.def"
+#undef LITTLE64_GP_OPCODE
     };
 }
 
-// ---- Type 1 opcodes (2-bit, type=1: load/store) ----
+// ---- LS opcodes (4-bit, formats 00 and 01: bits[15:14]=00 or 01) ----
 namespace LS {
     enum class Opcode : uint8_t {
 #define LITTLE64_LS_OPCODE(name, value, mnemonic) name = value,

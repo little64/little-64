@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <stdexcept>
 #include <vector>
 
 class Little64CPU {
@@ -18,6 +19,11 @@ public:
         // R15 is the program counter (PC) and is updated automatically by the CPU when instructions are executed.
         uint64_t regs[16];
 
+        // Flag bits:
+        //   bit 0: Zero (Z)  — result was zero
+        //   bit 1: Carry (C) — unsigned overflow/borrow
+        //   bit 2: Sign (S)  — result was negative (MSB set)
+        // JUMP.GT fires when Z=0 and S=0; JUMP.LT fires when S=1.
         uint64_t flags;
     };
 
@@ -26,77 +32,85 @@ public:
             return _raw == other._raw;
         }
 
-        bool type = false;
-        bool encoding = false;
+        // bits[15:14]: 0=LS_REG, 1=LS_PCREL, 2=LDI, 3=GP
+        uint8_t format = 0;
 
-        uint8_t opcode : 4 = 0; // 2 bits for type 1, 4 bits for type 0
+        // Common to all formats
+        uint8_t rd = 0;         // bits[3:0]
 
-        union {
-            uint8_t rs1 : 4 = 0;
-            uint16_t imm6 : 6;
-            uint16_t pc_rel : 6;
-        };
+        // Formats 00 and 01: LS opcode (4 bits, bits[13:10])
+        uint8_t opcode_ls = 0;
 
-        // Specific to type 1 (load/store) instructions
-        union {
-            uint8_t shift : 2 = 0; // encode = 0
-            uint8_t mask : 2; // encode = 1
-        };
+        // Format 00 (LS Register)
+        uint8_t offset2 = 0;    // bits[9:8]: unsigned, byte offset = offset2 * 2
+        uint8_t rs1 = 0;        // bits[7:4]  (also used by format 11)
 
-        uint16_t rd = 0;
+        // Format 01 (LS PC-Relative)
+        int8_t pc_rel = 0;      // bits[9:4]: 6-bit signed, byte offset = pc_rel * 2
+
+        // Format 10 (Load Immediate)
+        uint8_t shift = 0;      // bits[13:12]
+        uint8_t imm8 = 0;       // bits[11:4]
+
+        // Format 11 (GP ALU)
+        uint8_t opcode_gp = 0;  // bits[13:8] (6 bits)
+        // rs1 reused at bits[7:4]
 
         Instruction() = default;
         Instruction(uint16_t raw) : _raw(raw) {
-            type = (raw >> 15) & 0x1;
-            encoding = (raw >> 14) & 0x1;
-            rd = raw & 0xF;
-                
-            if(type == 0) {
-                opcode = (raw >> 10) & 0xF;
-                if(encoding == 0) {
-                    rs1 = (raw >> 4) & 0xF;
-                } else { // encoding == 1
-                    pc_rel = (raw >> 4) & 0x3F;
+            format = (raw >> 14) & 0x3;
+            rd     = raw & 0xF;
+
+            switch (format) {
+                case 0: // LS Register
+                    opcode_ls = (raw >> 10) & 0xF;
+                    offset2   = (raw >> 8)  & 0x3;
+                    rs1       = (raw >> 4)  & 0xF;
+                    break;
+                case 1: { // LS PC-Relative
+                    opcode_ls = (raw >> 10) & 0xF;
+                    uint8_t raw6 = (raw >> 4) & 0x3F;
+                    pc_rel = (raw6 & 0x20) ? (int8_t)(raw6 | 0xC0) : (int8_t)raw6;
+                    break;
                 }
-            } else { // type == 1
-                opcode = (raw >> 12) & 0b11;
-                if(encoding == 0) {
-                    shift = (raw >> 10) & 0b11;
-                    imm6 = (raw >> 4) & 0x3F;
-                } else { // encoding == 1
-                    mask = (raw >> 10) & 0b11;
-                    pc_rel = (raw >> 4) & 0x3F;
-                }
+                case 2: // Load Immediate
+                    shift = (raw >> 12) & 0x3;
+                    imm8  = (raw >> 4)  & 0xFF;
+                    break;
+                case 3: // GP ALU
+                    opcode_gp = (raw >> 8) & 0x3F;
+                    rs1       = (raw >> 4) & 0xF;
+                    break;
             }
         }
-
 
         uint16_t encode() const {
             uint16_t raw = 0;
-            raw |= (type & 0x1) << 15;
-            raw |= (encoding & 0x1) << 14;
+            raw |= (format & 0x3) << 14;
             raw |= (rd & 0xF);
 
-            if(type == 0) {
-                raw |= (opcode & 0xF) << 10;
-                if(encoding == 0) {
-                    raw |= (rs1 & 0xF) << 4;
-                } else { // encoding == 1
-                    raw |= (pc_rel & 0x3F) << 4;
-                }
-            } else { // type == 1
-                raw |= (opcode & 0b11) << 12;
-                if(encoding == 0) {
-                    raw |= (shift & 0b11) << 10;
-                    raw |= (imm6 & 0x3F) << 4;
-                } else { // encoding == 1
-                    raw |= (mask & 0b11) << 10;
-                    raw |= (pc_rel & 0x3F) << 4;
-                }
+            switch (format) {
+                case 0:
+                    raw |= (opcode_ls & 0xF) << 10;
+                    raw |= (offset2   & 0x3) << 8;
+                    raw |= (rs1       & 0xF) << 4;
+                    break;
+                case 1:
+                    raw |= (opcode_ls         & 0xF)  << 10;
+                    raw |= ((uint8_t)pc_rel   & 0x3F) << 4;
+                    break;
+                case 2:
+                    raw |= (shift & 0x3)  << 12;
+                    raw |= (imm8  & 0xFF) << 4;
+                    break;
+                case 3:
+                    raw |= (opcode_gp & 0x3F) << 8;
+                    raw |= (rs1       & 0xF)  << 4;
+                    break;
             }
-
             return raw;
         }
+
     private:
         uint16_t _raw = 0;
     };
@@ -116,26 +130,57 @@ public:
     bool isRunning = true;
 private:
 
-    void _dispatchType0(const Instruction& instr);
-    void _dispatchType1(const Instruction& instr);
+    void _dispatchLSReg(const Instruction& instr);
+    void _dispatchLSPCRel(const Instruction& instr);
+    void _dispatchLDI(const Instruction& instr);
+    void _dispatchGP(const Instruction& instr);
+
+    void _updateFlags(uint64_t result, bool carry = false);
+
     uint64_t _readMemory64(uint64_t addr) const {
-        if (addr + 7 >= 65536) {
-            throw std::out_of_range("Memory read out of bounds");
-        }
+        if (addr + 7 >= 65536) throw std::out_of_range("Memory read out of bounds");
         uint64_t value = 0;
-        for (int i = 0; i < 8; ++i) {
+        for (int i = 0; i < 8; ++i)
             value |= static_cast<uint64_t>(mem[addr + i]) << (i * 8);
-        }
         return value;
     }
-
     void _writeMemory64(uint64_t addr, uint64_t value) {
-        if (addr + 7 >= 65536) {
-            throw std::out_of_range("Memory write out of bounds");
-        }
-        for (int i = 0; i < 8; ++i) {
+        if (addr + 7 >= 65536) throw std::out_of_range("Memory write out of bounds");
+        for (int i = 0; i < 8; ++i)
             mem[addr + i] = (value >> (i * 8)) & 0xFF;
-        }
     }
+
+    uint8_t _readMemory8(uint64_t addr) const {
+        if (addr >= 65536) throw std::out_of_range("Memory read out of bounds");
+        return mem[addr];
+    }
+    void _writeMemory8(uint64_t addr, uint8_t value) {
+        if (addr >= 65536) throw std::out_of_range("Memory write out of bounds");
+        mem[addr] = value;
+    }
+
+    uint16_t _readMemory16(uint64_t addr) const {
+        if (addr + 1 >= 65536) throw std::out_of_range("Memory read out of bounds");
+        return mem[addr] | (static_cast<uint16_t>(mem[addr + 1]) << 8);
+    }
+    void _writeMemory16(uint64_t addr, uint16_t value) {
+        if (addr + 1 >= 65536) throw std::out_of_range("Memory write out of bounds");
+        mem[addr]     = value & 0xFF;
+        mem[addr + 1] = (value >> 8) & 0xFF;
+    }
+
+    uint32_t _readMemory32(uint64_t addr) const {
+        if (addr + 3 >= 65536) throw std::out_of_range("Memory read out of bounds");
+        uint32_t value = 0;
+        for (int i = 0; i < 4; ++i)
+            value |= static_cast<uint32_t>(mem[addr + i]) << (i * 8);
+        return value;
+    }
+    void _writeMemory32(uint64_t addr, uint32_t value) {
+        if (addr + 3 >= 65536) throw std::out_of_range("Memory write out of bounds");
+        for (int i = 0; i < 4; ++i)
+            mem[addr + i] = (value >> (i * 8)) & 0xFF;
+    }
+
     uint8_t mem[65536] = {};  // 64KB flat memory, zero-initialized
 };

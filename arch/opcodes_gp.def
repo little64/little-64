@@ -1,0 +1,7 @@
+// LITTLE64_GP_OPCODE(enum_name, opcode_value, mnemonic_string)
+// Format 11 instructions (bits[15:14]=11): 6-bit opcode space for GP ALU operations
+LITTLE64_GP_OPCODE(ADD,  0, "ADD")
+LITTLE64_GP_OPCODE(SUB,  1, "SUB")
+LITTLE64_GP_OPCODE(AND,  2, "AND")
+LITTLE64_GP_OPCODE(OR,   3, "OR")
+LITTLE64_GP_OPCODE(TEST, 4, "TEST")

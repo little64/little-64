@@ -15,6 +15,7 @@ enum class TokenKind {
     // Syntax
     Comma,              // ,
     Colon,              // :
+    Plus,               // + (inside bracket address expressions, e.g. [R1+4])
     LeftBracket,        // [
     RightBracket,       // ]
 
