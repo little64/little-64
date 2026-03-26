@@ -1,0 +1,6 @@
+// LITTLE64_LS_OPCODE(enum_name, opcode_value, mnemonic_string)
+// T=1 instructions (type=1): 2-bit opcode space for load/store operations
+LITTLE64_LS_OPCODE(LOAD,      0, "LOAD")
+LITTLE64_LS_OPCODE(STORE,     1, "STORE")
+LITTLE64_LS_OPCODE(INC_LOAD,  2, "INC_LOAD")
+LITTLE64_LS_OPCODE(DEC_STORE, 3, "DEC_STORE")

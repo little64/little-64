@@ -1,0 +1,6 @@
+builddir/
+.~lock*
+*.bin
+
+.claude/
+.vscode/
