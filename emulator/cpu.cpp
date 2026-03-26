@@ -209,6 +209,11 @@ void Little64CPU::_dispatchGP(const Instruction& instr) {
             // do not store result
             break;
         }
+
+        case GP::Opcode::STOP: {
+            isRunning = false;
+            break;
+        }
     }
 }
 

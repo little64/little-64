@@ -24,6 +24,7 @@ public:
     // Opcode lookups
     static uint8_t getLSOpcode(const std::string& mnemonic);
     static uint8_t getGPOpcode(const std::string& mnemonic);
+    static uint8_t getGPNumRegs(const std::string& mnemonic);
     static bool isLSMnemonic(const std::string& mnemonic);
     static bool isGPMnemonic(const std::string& mnemonic);
     static bool isLDIMnemonic(const std::string& mnemonic);
@@ -31,4 +32,5 @@ public:
 private:
     static std::unordered_map<std::string, uint8_t> ls_mnemonics;
     static std::unordered_map<std::string, uint8_t> gp_mnemonics;
+    static std::unordered_map<std::string, uint8_t> gp_num_regs;
 };

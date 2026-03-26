@@ -216,13 +216,29 @@ Assembler::ParsedInstruction Assembler::parseInstruction(const std::vector<Token
     }
 
     if (Encoder::isGPMnemonic(base_mnemonic)) {
-        // Format 11 (GP): Rs1, Rd
         result.detected_format = Format::GP;
-        while (idx < tokens.size() && tokens[idx].kind != TokenKind::Newline &&
-               tokens[idx].kind != TokenKind::EndOfFile) {
-            if (tokens[idx].kind != TokenKind::Comma)
-                result.operands.push_back(tokens[idx]);
-            idx++;
+        uint8_t nregs = Encoder::getGPNumRegs(base_mnemonic);
+
+        if (nregs == 0) {
+            // No register operands — consume nothing (any trailing tokens are an error)
+        } else if (nregs == 1) {
+            // Rd only
+            if (idx >= tokens.size() || tokens[idx].kind == TokenKind::Newline ||
+                tokens[idx].kind == TokenKind::EndOfFile)
+                throw std::runtime_error(base_mnemonic + " requires Rd at line " +
+                                         std::to_string(line_count));
+            if (tokens[idx].kind != TokenKind::Register)
+                throw std::runtime_error("Expected register for Rd at line " +
+                                         std::to_string(line_count));
+            result.operands.push_back(tokens[idx++]);  // Rd
+        } else {
+            // Rs1, Rd
+            while (idx < tokens.size() && tokens[idx].kind != TokenKind::Newline &&
+                   tokens[idx].kind != TokenKind::EndOfFile) {
+                if (tokens[idx].kind != TokenKind::Comma)
+                    result.operands.push_back(tokens[idx]);
+                idx++;
+            }
         }
         return result;
     }
@@ -360,12 +376,23 @@ uint16_t Assembler::encodeInstruction(const ParsedInstruction& instr,
         }
 
         case Format::GP: {
-            if (instr.operands.size() < 2) err(instr.mnemonic + " requires Rs1, Rd");
-            if (instr.operands[0].kind != TokenKind::Register) err("Expected register for Rs1");
-            if (instr.operands[1].kind != TokenKind::Register) err("Expected register for Rd");
             uint8_t opcode = Encoder::getGPOpcode(instr.mnemonic);
-            uint8_t rs1 = instr.operands[0].int_value;
-            uint8_t rd  = instr.operands[1].int_value;
+            uint8_t nregs  = Encoder::getGPNumRegs(instr.mnemonic);
+            uint8_t rs1 = 0, rd = 0;
+
+            if (nregs == 0) {
+                if (!instr.operands.empty()) err(instr.mnemonic + " takes no operands");
+            } else if (nregs == 1) {
+                if (instr.operands.size() < 1) err(instr.mnemonic + " requires Rd");
+                if (instr.operands[0].kind != TokenKind::Register) err("Expected register for Rd");
+                rd = instr.operands[0].int_value;
+            } else {
+                if (instr.operands.size() < 2) err(instr.mnemonic + " requires Rs1, Rd");
+                if (instr.operands[0].kind != TokenKind::Register) err("Expected register for Rs1");
+                if (instr.operands[1].kind != TokenKind::Register) err("Expected register for Rd");
+                rs1 = instr.operands[0].int_value;
+                rd  = instr.operands[1].int_value;
+            }
             return Encoder::encodeGP(opcode, rs1, rd);
         }
 

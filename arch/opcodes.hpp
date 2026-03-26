@@ -4,7 +4,7 @@
 // ---- GP opcodes (6-bit, format 11: bits[15:14]=11) ----
 namespace GP {
     enum class Opcode : uint8_t {
-#define LITTLE64_GP_OPCODE(name, value, mnemonic) name = value,
+#define LITTLE64_GP_OPCODE(name, value, mnemonic, num_regs) name = value,
 #include "opcodes_gp.def"
 #undef LITTLE64_GP_OPCODE
     };

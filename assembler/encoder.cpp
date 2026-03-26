@@ -4,6 +4,7 @@
 
 std::unordered_map<std::string, uint8_t> Encoder::ls_mnemonics;
 std::unordered_map<std::string, uint8_t> Encoder::gp_mnemonics;
+std::unordered_map<std::string, uint8_t> Encoder::gp_num_regs;
 
 void Encoder::init() {
 #define LITTLE64_LS_OPCODE(name, value, mnemonic) \
@@ -11,8 +12,9 @@ void Encoder::init() {
 #include "opcodes_ls.def"
 #undef LITTLE64_LS_OPCODE
 
-#define LITTLE64_GP_OPCODE(name, value, mnemonic) \
-    gp_mnemonics[mnemonic] = value;
+#define LITTLE64_GP_OPCODE(name, value, mnemonic, nregs) \
+    gp_mnemonics[mnemonic] = value; \
+    gp_num_regs[mnemonic]  = nregs;
 #include "opcodes_gp.def"
 #undef LITTLE64_GP_OPCODE
 }
@@ -68,6 +70,13 @@ uint8_t Encoder::getLSOpcode(const std::string& mnemonic) {
 uint8_t Encoder::getGPOpcode(const std::string& mnemonic) {
     auto it = gp_mnemonics.find(mnemonic);
     if (it == gp_mnemonics.end())
+        throw std::runtime_error("Unknown GP mnemonic: " + mnemonic);
+    return it->second;
+}
+
+uint8_t Encoder::getGPNumRegs(const std::string& mnemonic) {
+    auto it = gp_num_regs.find(mnemonic);
+    if (it == gp_num_regs.end())
         throw std::runtime_error("Unknown GP mnemonic: " + mnemonic);
     return it->second;
 }

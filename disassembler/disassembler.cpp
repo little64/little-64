@@ -12,7 +12,13 @@ static const std::unordered_map<uint8_t, std::string> kLSOpcodes = {
 };
 
 static const std::unordered_map<uint8_t, std::string> kGPOpcodes = {
-#define LITTLE64_GP_OPCODE(name, value, mnemonic) { value, mnemonic },
+#define LITTLE64_GP_OPCODE(name, value, mnemonic, num_regs) { value, mnemonic },
+#include "opcodes_gp.def"
+#undef LITTLE64_GP_OPCODE
+};
+
+static const std::unordered_map<uint8_t, uint8_t> kGPNumRegs = {
+#define LITTLE64_GP_OPCODE(name, value, mnemonic, num_regs) { value, num_regs },
 #include "opcodes_gp.def"
 #undef LITTLE64_GP_OPCODE
 };
@@ -96,7 +102,12 @@ DisassembledInstruction Disassembler::disassemble(uint16_t word, uint16_t addres
             }
             result.mnemonic = it->second;
 
-            oss << result.mnemonic << " R" << (int)result.rs1 << ", R" << (int)result.rd;
+            uint8_t nregs = kGPNumRegs.at(result.opcode_gp);
+            oss << result.mnemonic;
+            if (nregs >= 2)
+                oss << " R" << (int)result.rs1 << ",";
+            if (nregs >= 1)
+                oss << " R" << (int)result.rd;
             break;
         }
     }

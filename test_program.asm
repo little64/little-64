@@ -46,6 +46,7 @@ loop:
         JUMP.Z R14              ; if Z, PC = R14 (branch to address in link register)
         JUMP.Z R14, R1          ; if Z, R1 = R14 (conditional move, not a branch)
 
+        STOP                    ; halt execution
 data:
         .word 0xBEEF
         .word 0xDEAD
