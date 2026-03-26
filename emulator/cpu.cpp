@@ -1,5 +1,8 @@
 #include "cpu.hpp"
 #include "opcodes.hpp"
+#include "ram_region.hpp"
+#include "rom_region.hpp"
+#include <memory>
 
 Little64CPU::Little64CPU() {
     for (int i = 0; i < 16; ++i)
@@ -14,12 +17,8 @@ void Little64CPU::cycle() {
     // R0 is always zero
     registers.regs[0] = 0;
 
-    if (registers.regs[15] >= 65536) {
-        isRunning = false;
-        return;
-    }
-
-    uint16_t instr_word = mem[registers.regs[15]] | (mem[registers.regs[15] + 1] << 8);
+    uint64_t pc = registers.regs[15];
+    uint16_t instr_word = _bus.read16(pc);
     Instruction instr(instr_word);
 
     registers.regs[15] += 2;  // advance PC before dispatch (so pc_rel is relative to next instruction)
@@ -115,7 +114,7 @@ void Little64CPU::_dispatchLSReg(const Instruction& instr) {
 }
 
 void Little64CPU::_dispatchLSPCRel(const Instruction& instr) {
-    // pc is already post-incremented; pc_rel is in instruction units (×2 bytes)
+    // PC is already post-incremented; pc_rel is in instruction units (×2 bytes)
     uint64_t effective = registers.regs[15] + (static_cast<int64_t>(instr.pc_rel) * 2);
 
     switch (static_cast<LS::Opcode>(instr.opcode_ls)) {
@@ -213,18 +212,41 @@ void Little64CPU::_dispatchGP(const Instruction& instr) {
     }
 }
 
-void Little64CPU::loadProgram(const std::vector<uint16_t>& words, uint16_t base) {
-    for (size_t i = 0; i < words.size() && base + i * 2 + 1 < 65536; ++i) {
-        uint16_t word = words[i];
-        mem[base + i * 2]     = word & 0xFF;
-        mem[base + i * 2 + 1] = (word >> 8) & 0xFF;
+void Little64CPU::loadProgram(const std::vector<uint16_t>& words, uint64_t base) {
+    // Convert 16-bit words to bytes (little-endian)
+    std::vector<uint8_t> bytes;
+    bytes.reserve(words.size() * 2);
+    for (uint16_t w : words) {
+        bytes.push_back(w & 0xFF);
+        bytes.push_back((w >> 8) & 0xFF);
     }
+
+    // Align ROM size up to 4K boundary
+    constexpr uint64_t PAGE = 4096;
+    uint64_t rom_size = (bytes.size() + PAGE - 1) / PAGE * PAGE;
+    if (rom_size == 0) rom_size = PAGE;
+    bytes.resize(rom_size, 0);
+
+    constexpr uint64_t RAM_SIZE = 64 * 1024 * 1024;  // 64MB
+    constexpr uint64_t SERIAL_BASE = 0xFFFFFFFFFFFF0000ULL;
+
+    _bus.clearRegions();
+    _bus.addRegion(std::make_unique<RomRegion>(base, std::move(bytes), "ROM"));
+    _bus.addRegion(std::make_unique<RamRegion>(base + rom_size, RAM_SIZE, "RAM"));
+    _bus.addRegion(std::make_unique<SerialDevice>(SERIAL_BASE, "SERIAL"));
+
+    // Reset CPU state
+    for (int i = 0; i < 16; ++i)
+        registers.regs[i] = 0;
+    registers.flags = 0;
+    registers.regs[15] = base;
+    isRunning = true;
 }
 
-const uint8_t* Little64CPU::getMemory() const {
-    return mem;
-}
-
-size_t Little64CPU::getMemorySize() const {
-    return 65536;
+SerialDevice* Little64CPU::getSerial() {
+    for (auto& r : _bus.regions()) {
+        if (auto* s = dynamic_cast<SerialDevice*>(r.get()))
+            return s;
+    }
+    return nullptr;
 }

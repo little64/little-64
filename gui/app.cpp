@@ -4,7 +4,10 @@
 #include "panels/disassembly_panel.hpp"
 #include "panels/register_panel.hpp"
 #include "panels/memory_panel.hpp"
+#include "panels/serial_output_panel.hpp"
+#include "panels/memmap_panel.hpp"
 
+#include "../emulator/serial_device.hpp"
 #include <SDL2/SDL.h>
 #include <GL/gl.h>
 #include <imgui.h>
@@ -83,11 +86,13 @@ bool App::init() {
     loadLastFile();
 
     // Initialize panels
-    assembler_panel   = std::make_unique<AssemblerPanel>(state);
-    control_panel     = std::make_unique<ControlPanel>(state);
-    disassembly_panel = std::make_unique<DisassemblyPanel>(state);
-    register_panel    = std::make_unique<RegisterPanel>(state);
-    memory_panel      = std::make_unique<MemoryPanel>(state);
+    assembler_panel     = std::make_unique<AssemblerPanel>(state);
+    control_panel       = std::make_unique<ControlPanel>(state);
+    disassembly_panel   = std::make_unique<DisassemblyPanel>(state);
+    register_panel      = std::make_unique<RegisterPanel>(state);
+    memory_panel        = std::make_unique<MemoryPanel>(state);
+    serial_output_panel = std::make_unique<SerialOutputPanel>(state);
+    memmap_panel        = std::make_unique<MemoryMapPanel>(state);
 
     running = true;
     return true;
@@ -121,11 +126,15 @@ void App::run() {
             ImGui::NewFrame();
 
             // Render all panels (using simple Begin/End windows)
+            updateSerialOutput();
+
             if (assembler_panel) assembler_panel->render();
             if (control_panel) control_panel->render();
             if (disassembly_panel) disassembly_panel->render();
             if (register_panel) register_panel->render();
             if (memory_panel) memory_panel->render();
+            if (serial_output_panel) serial_output_panel->render();
+            if (memmap_panel) memmap_panel->render();
 
             // Rendering
             ImGui::Render();
@@ -154,6 +163,8 @@ void App::shutdown() {
     disassembly_panel.reset();
     register_panel.reset();
     memory_panel.reset();
+    serial_output_panel.reset();
+    memmap_panel.reset();
 
     // Cleanup ImGui
     ImGui_ImplOpenGL3_Shutdown();
@@ -173,6 +184,16 @@ void App::shutdown() {
 
     // Cleanup NFD
     NFD_Quit();
+}
+
+void App::updateSerialOutput() {
+    SerialDevice* serial = state.cpu.getSerial();
+    if (!serial) return;
+    const std::string& buf = serial->txBuffer();
+    if (!buf.empty()) {
+        state.serial_output += buf;
+        serial->clearTxBuffer();
+    }
 }
 
 void App::loadLastFile() {

@@ -4,6 +4,7 @@ builddir/
 
 .claude/
 .vscode/
+.cache/
 
 subprojects/*
 !subprojects/*.wrap

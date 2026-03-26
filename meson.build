@@ -6,7 +6,14 @@ arch_inc = include_directories('arch')
 
 # --- Emulator (static library) ---
 emulator_lib = static_library('little-64-cpu',
-  ['emulator/cpu.cpp'],
+  [
+    'emulator/cpu.cpp',
+    'emulator/memory_region.cpp',
+    'emulator/memory_bus.cpp',
+    'emulator/ram_region.cpp',
+    'emulator/rom_region.cpp',
+    'emulator/serial_device.cpp',
+  ],
   include_directories : [include_directories('emulator'), arch_inc],
   install : false,
 )
@@ -71,6 +78,8 @@ gui_src = [
   'gui/panels/disassembly_panel.cpp',
   'gui/panels/register_panel.cpp',
   'gui/panels/memory_panel.cpp',
+  'gui/panels/serial_output_panel.cpp',
+  'gui/panels/memmap_panel.cpp',
 ]
 
 executable('little-64-gui',

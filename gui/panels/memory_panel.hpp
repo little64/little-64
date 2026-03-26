@@ -11,5 +11,7 @@ public:
 
 private:
     AppState& state;
-    uint16_t scroll_offset = 0;
+    uint64_t  page_base  = 0;
+    bool      follow_pc  = true;
+    char      addr_input[17] = "0000000000000000";  // hex input buffer
 };

@@ -73,7 +73,7 @@ void AssemblerPanel::render() {
 
                 // Disassemble for display
                 state.disassembly = Disassembler::disassembleBuffer(
-                    reinterpret_cast<const uint16_t*>(state.cpu.getMemory()),
+                    output.data(),
                     output.size(),
                     0
                 );

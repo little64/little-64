@@ -1,8 +1,9 @@
 #pragma once
 
 #include <cstdint>
-#include <stdexcept>
 #include <vector>
+#include "memory_bus.hpp"
+#include "serial_device.hpp"
 
 class Little64CPU {
 public:
@@ -118,18 +119,23 @@ public:
     void cycle();
     void dispatchInstruction(const Instruction& instr);
 
-    // Memory interface
-    void loadProgram(const std::vector<uint16_t>& words, uint16_t base = 0);
-    const uint8_t* getMemory() const;
-    size_t getMemorySize() const;
+    // Load program words as a ROM region (4K-aligned) at base address.
+    // Creates ROM + 64MB RAM + serial device. Resets CPU state.
+    void loadProgram(const std::vector<uint16_t>& words, uint64_t base = 0);
 
-    // Public register and PC access for GUI
+    // Memory bus access for GUI panels and external tooling
+    MemoryBus&       getMemoryBus()       { return _bus; }
+    const MemoryBus& getMemoryBus() const { return _bus; }
+
+    // Returns a pointer to the serial device if one is present, or nullptr.
+    SerialDevice* getSerial();
+
+    // Public register state for GUI panels
     Registers registers;
-    uint16_t pc = 0;
 
     bool isRunning = true;
-private:
 
+private:
     void _dispatchLSReg(const Instruction& instr);
     void _dispatchLSPCRel(const Instruction& instr);
     void _dispatchLDI(const Instruction& instr);
@@ -137,50 +143,14 @@ private:
 
     void _updateFlags(uint64_t result, bool carry = false);
 
-    uint64_t _readMemory64(uint64_t addr) const {
-        if (addr + 7 >= 65536) throw std::out_of_range("Memory read out of bounds");
-        uint64_t value = 0;
-        for (int i = 0; i < 8; ++i)
-            value |= static_cast<uint64_t>(mem[addr + i]) << (i * 8);
-        return value;
-    }
-    void _writeMemory64(uint64_t addr, uint64_t value) {
-        if (addr + 7 >= 65536) throw std::out_of_range("Memory write out of bounds");
-        for (int i = 0; i < 8; ++i)
-            mem[addr + i] = (value >> (i * 8)) & 0xFF;
-    }
+    uint8_t  _readMemory8 (uint64_t addr) const { return _bus.read8(addr);  }
+    void     _writeMemory8(uint64_t addr, uint8_t v)  { _bus.write8(addr, v);  }
+    uint16_t _readMemory16(uint64_t addr) const { return _bus.read16(addr); }
+    void     _writeMemory16(uint64_t addr, uint16_t v) { _bus.write16(addr, v); }
+    uint32_t _readMemory32(uint64_t addr) const { return _bus.read32(addr); }
+    void     _writeMemory32(uint64_t addr, uint32_t v) { _bus.write32(addr, v); }
+    uint64_t _readMemory64(uint64_t addr) const { return _bus.read64(addr); }
+    void     _writeMemory64(uint64_t addr, uint64_t v) { _bus.write64(addr, v); }
 
-    uint8_t _readMemory8(uint64_t addr) const {
-        if (addr >= 65536) throw std::out_of_range("Memory read out of bounds");
-        return mem[addr];
-    }
-    void _writeMemory8(uint64_t addr, uint8_t value) {
-        if (addr >= 65536) throw std::out_of_range("Memory write out of bounds");
-        mem[addr] = value;
-    }
-
-    uint16_t _readMemory16(uint64_t addr) const {
-        if (addr + 1 >= 65536) throw std::out_of_range("Memory read out of bounds");
-        return mem[addr] | (static_cast<uint16_t>(mem[addr + 1]) << 8);
-    }
-    void _writeMemory16(uint64_t addr, uint16_t value) {
-        if (addr + 1 >= 65536) throw std::out_of_range("Memory write out of bounds");
-        mem[addr]     = value & 0xFF;
-        mem[addr + 1] = (value >> 8) & 0xFF;
-    }
-
-    uint32_t _readMemory32(uint64_t addr) const {
-        if (addr + 3 >= 65536) throw std::out_of_range("Memory read out of bounds");
-        uint32_t value = 0;
-        for (int i = 0; i < 4; ++i)
-            value |= static_cast<uint32_t>(mem[addr + i]) << (i * 8);
-        return value;
-    }
-    void _writeMemory32(uint64_t addr, uint32_t value) {
-        if (addr + 3 >= 65536) throw std::out_of_range("Memory write out of bounds");
-        for (int i = 0; i < 4; ++i)
-            mem[addr + i] = (value >> (i * 8)) & 0xFF;
-    }
-
-    uint8_t mem[65536] = {};  // 64KB flat memory, zero-initialized
+    MemoryBus _bus;
 };
