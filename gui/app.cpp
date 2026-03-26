@@ -17,6 +17,7 @@
 #include <iostream>
 #include <fstream>
 #include <sys/stat.h>
+#include <cmath>
 #include <cstring>
 
 App::App() {}
@@ -125,15 +126,48 @@ void App::run() {
             ImGui_ImplSDL2_NewFrame();
             ImGui::NewFrame();
 
-            // Render all panels (using simple Begin/End windows)
             updateSerialOutput();
 
-            if (assembler_panel) assembler_panel->render();
+            // Fixed layout: tile all panels to fill the window
+            float W = io.DisplaySize.x;
+            float H = io.DisplaySize.y;
+            const float ctrl_h  = 90.0f;
+            float left_w  = std::round(W * 0.55f);
+            float right_w = W - left_w;
+            float main_h  = H - ctrl_h;
+            float asm_h     = std::round(main_h * 0.65f);
+            float mem_h     = main_h - asm_h;
+            float reg_h     = std::round(main_h * 0.28f);
+            float disasm_h  = std::round(main_h * 0.40f);
+            float serial_h  = std::round(main_h * 0.16f);
+            float memmap_h  = main_h - reg_h - disasm_h - serial_h;
+
+            ImGui::SetNextWindowPos({0,      0},                                  ImGuiCond_Always);
+            ImGui::SetNextWindowSize({W,      ctrl_h},                             ImGuiCond_Always);
             if (control_panel) control_panel->render();
-            if (disassembly_panel) disassembly_panel->render();
-            if (register_panel) register_panel->render();
+
+            ImGui::SetNextWindowPos({0,      ctrl_h},                              ImGuiCond_Always);
+            ImGui::SetNextWindowSize({left_w, asm_h},                              ImGuiCond_Always);
+            if (assembler_panel) assembler_panel->render();
+
+            ImGui::SetNextWindowPos({0,      ctrl_h + asm_h},                     ImGuiCond_Always);
+            ImGui::SetNextWindowSize({left_w, mem_h},                              ImGuiCond_Always);
             if (memory_panel) memory_panel->render();
+
+            ImGui::SetNextWindowPos({left_w, ctrl_h},                              ImGuiCond_Always);
+            ImGui::SetNextWindowSize({right_w, reg_h},                             ImGuiCond_Always);
+            if (register_panel) register_panel->render();
+
+            ImGui::SetNextWindowPos({left_w, ctrl_h + reg_h},                     ImGuiCond_Always);
+            ImGui::SetNextWindowSize({right_w, disasm_h},                          ImGuiCond_Always);
+            if (disassembly_panel) disassembly_panel->render();
+
+            ImGui::SetNextWindowPos({left_w, ctrl_h + reg_h + disasm_h},          ImGuiCond_Always);
+            ImGui::SetNextWindowSize({right_w, serial_h},                          ImGuiCond_Always);
             if (serial_output_panel) serial_output_panel->render();
+
+            ImGui::SetNextWindowPos({left_w, ctrl_h + reg_h + disasm_h + serial_h}, ImGuiCond_Always);
+            ImGui::SetNextWindowSize({right_w, memmap_h},                          ImGuiCond_Always);
             if (memmap_panel) memmap_panel->render();
 
             // Rendering
@@ -141,7 +175,7 @@ void App::run() {
 
             // Clear and render
             glViewport(0, 0, (int)io.DisplaySize.x, (int)io.DisplaySize.y);
-            glClearColor(0.45f, 0.55f, 0.60f, 1.00f);
+            glClearColor(0.10f, 0.10f, 0.10f, 1.00f);
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
             ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
