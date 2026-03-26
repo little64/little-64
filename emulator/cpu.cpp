@@ -4,7 +4,7 @@
 Little64CPU::Little64CPU() {
     // Initialize registers to zero
     for (int i = 0; i < 16; ++i) {
-        registers.gpr[i] = 0;
+        registers.regs[i] = 0;
     }
 }
 

@@ -10,8 +10,15 @@ public:
 
     struct Registers {
         // R0 is defined to always be zero, and writes to it are ignored.
-        // This is implemented by just setting gpr[0] to zero at the beginning of every instruction execution.
-        uint64_t gpr[16];
+        //  This is implemented by just setting regs[0] to zero at the beginning of every instruction execution.
+        // R1-R10 are general-purpose registers.
+        // R11 and R12 are reserved for now.
+        // R13 is the stack pointer (SP) used for function calls and local variable storage.
+        // R14 is the link register (LR) used for function calls.
+        // R15 is the program counter (PC) and is updated automatically by the CPU when instructions are executed.
+        uint64_t regs[16];
+
+        uint64_t flags;
     };
 
     struct Instruction {

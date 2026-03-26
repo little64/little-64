@@ -1,6 +1,6 @@
 project('little-64', 'cpp',
   version : '0.1.0',
-  default_options : ['cpp_std=c++17'])
+  default_options : ['cpp_std=c++26'])
 
 arch_inc = include_directories('arch')
 
@@ -59,10 +59,15 @@ imgui_dep = dependency('imgui',
   fallback : ['imgui', 'imgui_dep'],
 )
 
+nfd_dep = dependency('nativefiledialog-extended',
+  fallback : ['nativefiledialog-extended', 'nfde_dep'],
+)
+
 gui_src = [
   'gui/main.cpp',
   'gui/app.cpp',
   'gui/panels/assembler_panel.cpp',
+  'gui/panels/control_panel.cpp',
   'gui/panels/disassembly_panel.cpp',
   'gui/panels/register_panel.cpp',
   'gui/panels/memory_panel.cpp',
@@ -79,6 +84,6 @@ executable('little-64-gui',
     include_directories('disassembler'),
     arch_inc,
   ],
-  dependencies : [sdl2_dep, gl_dep, imgui_dep],
+  dependencies : [sdl2_dep, gl_dep, imgui_dep, nfd_dep],
   install : true,
 )

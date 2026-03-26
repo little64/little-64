@@ -35,7 +35,7 @@ void RegisterPanel::render() {
                 // Format as hex
                 std::ostringstream oss;
                 oss << "0x" << std::hex << std::setfill('0') << std::setw(16)
-                    << state.cpu.registers.gpr[i];
+                    << state.cpu.registers.regs[i];
                 ImGui::Text("%s", oss.str().c_str());
             }
 
@@ -44,7 +44,7 @@ void RegisterPanel::render() {
             ImGui::TableSetColumnIndex(0);
             ImGui::Text("PC");
             ImGui::TableSetColumnIndex(1);
-            ImGui::Text("0x%04X", state.pc);
+            ImGui::Text("0x%08lX", state.cpu.registers.regs[15]); // PC is R15
 
             ImGui::EndTable();
         }

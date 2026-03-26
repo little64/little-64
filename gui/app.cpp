@@ -1,5 +1,6 @@
 #include "app.hpp"
 #include "panels/assembler_panel.hpp"
+#include "panels/control_panel.hpp"
 #include "panels/disassembly_panel.hpp"
 #include "panels/register_panel.hpp"
 #include "panels/memory_panel.hpp"
@@ -9,7 +10,11 @@
 #include <imgui.h>
 #include <imgui_impl_sdl2.h>
 #include <imgui_impl_opengl3.h>
+#include <nfd.h>
 #include <iostream>
+#include <fstream>
+#include <sys/stat.h>
+#include <cstring>
 
 App::App() {}
 
@@ -18,9 +23,13 @@ App::~App() {
 }
 
 bool App::init() {
+    // Initialize NFD
+    NFD_Init();
+
     // Initialize SDL2
     if (SDL_Init(SDL_INIT_VIDEO) < 0) {
         std::cerr << "Failed to initialize SDL2: " << SDL_GetError() << std::endl;
+        NFD_Quit();
         return false;
     }
 
@@ -70,8 +79,12 @@ bool App::init() {
     const char* glsl_version = "#version 330 core";
     ImGui_ImplOpenGL3_Init(glsl_version);
 
+    // Load last edited file into state before constructing panels
+    loadLastFile();
+
     // Initialize panels
     assembler_panel   = std::make_unique<AssemblerPanel>(state);
+    control_panel     = std::make_unique<ControlPanel>(state);
     disassembly_panel = std::make_unique<DisassemblyPanel>(state);
     register_panel    = std::make_unique<RegisterPanel>(state);
     memory_panel      = std::make_unique<MemoryPanel>(state);
@@ -109,6 +122,7 @@ void App::run() {
 
             // Render all panels (using simple Begin/End windows)
             if (assembler_panel) assembler_panel->render();
+            if (control_panel) control_panel->render();
             if (disassembly_panel) disassembly_panel->render();
             if (register_panel) register_panel->render();
             if (memory_panel) memory_panel->render();
@@ -132,6 +146,9 @@ void App::run() {
 }
 
 void App::shutdown() {
+    // Save last edited file
+    saveLastFile();
+
     // Cleanup panels
     assembler_panel.reset();
     disassembly_panel.reset();
@@ -153,4 +170,49 @@ void App::shutdown() {
         window = nullptr;
     }
     SDL_Quit();
+
+    // Cleanup NFD
+    NFD_Quit();
+}
+
+void App::loadLastFile() {
+    // Read config path: ~/.config/little-64/last_file
+    const char* home = std::getenv("HOME");
+    if (!home) return;
+
+    std::string config_path = std::string(home) + "/.config/little-64/last_file";
+    std::ifstream config_file(config_path);
+    if (!config_file.is_open()) return;
+
+    std::string path;
+    if (!std::getline(config_file, path) || path.empty()) return;
+
+    // Check if the file exists
+    std::ifstream check_file(path);
+    if (!check_file.is_open()) return;
+
+    // Read file contents into state.editor_source
+    std::string contents((std::istreambuf_iterator<char>(check_file)),
+                         std::istreambuf_iterator<char>());
+    state.editor_source = contents;
+    state.current_file = path;
+}
+
+void App::saveLastFile() {
+    if (state.current_file.empty()) return;
+
+    const char* home = std::getenv("HOME");
+    if (!home) return;
+
+    std::string config_dir = std::string(home) + "/.config/little-64";
+    std::string config_path = config_dir + "/last_file";
+
+    // Create directory if it doesn't exist
+    mkdir(config_dir.c_str(), 0755);
+
+    // Write the current file path to config
+    std::ofstream config_file(config_path);
+    if (config_file.is_open()) {
+        config_file << state.current_file;
+    }
 }

@@ -18,7 +18,7 @@ void DisassemblyPanel::render() {
                 ImGui::TableNextRow();
 
                 // Highlight row if PC matches this instruction's address
-                if (instr.address == state.pc) {
+                if (instr.address == state.cpu.registers.regs[15]) { // PC is R15
                     ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0,
                                           ImGui::GetColorU32(ImVec4(0.3f, 0.7f, 1.0f, 0.3f)));
                 }
@@ -37,11 +37,6 @@ void DisassemblyPanel::render() {
             }
 
             ImGui::EndTable();
-        }
-
-        // Step button (stub)
-        if (ImGui::Button("Step")) {
-            // No-op for now; will execute next instruction when implemented
         }
     }
     ImGui::End();

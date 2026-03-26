@@ -35,7 +35,16 @@ ninja -C builddir
 
 ## Usage
 
-1. **Write assembly** in the **Assembler Panel** text editor
+### Assembler Panel
+
+1. **Open/Save files**:
+   - **Ctrl+O** or click **Open** → native GTK/KDE file dialog for loading `.asm` or `.s` files
+   - **Ctrl+S** or click **Save** → writes to the current file (or launches Save As if no file is open)
+   - **Save As** → native dialog to choose a new path
+   - The window title shows the filename with a `*` suffix if there are unsaved changes
+   - **Last-file persistence**: The last opened/saved file path is remembered in `~/.config/little-64/last_file` and automatically loaded on next startup
+
+2. **Write assembly** in the **Assembler Panel** text editor
    - Use standard Little-64 syntax: mnemonics, registers (R0–R15), immediates, labels, directives
    - Click "Assemble" to parse and compile to binary
    - Errors appear in red below the button
@@ -109,7 +118,7 @@ The GUI reuses the existing command-line tools as static libraries:
 - **CPU execution is a stub**: `dispatchInstruction()` does not actually execute instructions
 - **Memory model is temporary**: 64KB flat array; will be replaced with a proper MMU later
 - **No docking yet**: ImGui windows are independent; can be resized and moved but not docked together
-- **Keyboard shortcuts**: Only Escape to quit
+- **Keyboard shortcuts**: Escape to quit, Ctrl+O (open), Ctrl+S (save)
 
 ## Future Enhancements
 
@@ -149,6 +158,26 @@ The memory panel uses virtual scrolling (ImGuiListClipper) to only render visibl
 - Ensure `libSDL2-devel` is installed
 - Run `meson setup builddir --reconfigure` to refresh the build
 - Check `builddir/meson-logs/meson-log.txt` for detailed errors
+
+## Implementation Details
+
+### File I/O & Persistence
+
+- **File dialogs**: Uses `nativefiledialog-extended` from WrapDB (GTK3 on Linux, native portals)
+- **Session config**: Last-opened file path stored in `$HOME/.config/little-64/last_file`
+- **Unsaved changes**: Tracked by comparing current buffer with last-saved content; shown as `*` in title
+- **Auto-reload**: On startup, the previous session file is automatically loaded (if it still exists on disk)
+
+### Architecture
+
+- **AppState**: Central shared state struct passed to all panels by reference (dependency injection)
+  - `current_file`: absolute path to the open file, or empty string if untitled
+  - `editor_source`: copy of text in assembler (kept in sync with buffer)
+  - All panels read from/write to this single state object
+- **AssemblerPanel**: Manages editor buffer, file I/O, and keyboard shortcuts (Ctrl+O/S)
+- **App lifecycle**: `loadLastFile()` on init, `saveLastFile()` on shutdown
+
+---
 
 ## Contributing
 
