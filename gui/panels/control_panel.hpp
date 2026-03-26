@@ -12,4 +12,5 @@ public:
 
 private:
     AppState& state;
+    std::string error_text = "";
 };

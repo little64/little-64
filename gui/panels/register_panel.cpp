@@ -24,7 +24,15 @@ void RegisterPanel::render() {
                     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7f, 0.7f, 0.7f, 1.0f));
                 }
 
-                ImGui::Text("R%d", i);
+                std::string name;
+                switch(i) {
+                    case 13: name = "SP"; break;
+                    case 14: name = "LR"; break;
+                    case 15: name = "PC"; break;
+                    default: name = "R" + std::to_string(i);
+                }
+
+                ImGui::Text("%s", name.c_str());
 
                 if (i == 0) {
                     ImGui::PopStyleColor();
@@ -38,13 +46,6 @@ void RegisterPanel::render() {
                     << state.cpu.registers.regs[i];
                 ImGui::Text("%s", oss.str().c_str());
             }
-
-            // Display PC
-            ImGui::TableNextRow();
-            ImGui::TableSetColumnIndex(0);
-            ImGui::Text("PC");
-            ImGui::TableSetColumnIndex(1);
-            ImGui::Text("0x%08lX", state.cpu.registers.regs[15]); // PC is R15
 
             ImGui::EndTable();
         }

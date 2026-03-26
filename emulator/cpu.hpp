@@ -101,6 +101,7 @@ public:
         uint16_t _raw = 0;
     };
 
+    void cycle();
     void dispatchInstruction(const Instruction& instr);
 
     // Memory interface
@@ -112,6 +113,29 @@ public:
     Registers registers;
     uint16_t pc = 0;
 
+    bool isRunning = true;
 private:
+
+    void _dispatchType0(const Instruction& instr);
+    void _dispatchType1(const Instruction& instr);
+    uint64_t _readMemory64(uint64_t addr) const {
+        if (addr + 7 >= 65536) {
+            throw std::out_of_range("Memory read out of bounds");
+        }
+        uint64_t value = 0;
+        for (int i = 0; i < 8; ++i) {
+            value |= static_cast<uint64_t>(mem[addr + i]) << (i * 8);
+        }
+        return value;
+    }
+
+    void _writeMemory64(uint64_t addr, uint64_t value) {
+        if (addr + 7 >= 65536) {
+            throw std::out_of_range("Memory write out of bounds");
+        }
+        for (int i = 0; i < 8; ++i) {
+            mem[addr + i] = (value >> (i * 8)) & 0xFF;
+        }
+    }
     uint8_t mem[65536] = {};  // 64KB flat memory, zero-initialized
 };
