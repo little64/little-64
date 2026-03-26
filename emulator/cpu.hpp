@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <vector>
 
 class Little64CPU {
 public:
@@ -94,6 +95,16 @@ public:
     };
 
     void dispatchInstruction(const Instruction& instr);
-private:
+
+    // Memory interface
+    void loadProgram(const std::vector<uint16_t>& words, uint16_t base = 0);
+    const uint8_t* getMemory() const;
+    size_t getMemorySize() const;
+
+    // Public register and PC access for GUI
     Registers registers;
+    uint16_t pc = 0;
+
+private:
+    uint8_t mem[65536] = {};  // 64KB flat memory, zero-initialized
 };

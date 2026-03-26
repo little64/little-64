@@ -4,28 +4,34 @@ project('little-64', 'cpp',
 
 arch_inc = include_directories('arch')
 
-# --- Emulator ---
-emulator_src = [
-  'emulator/main.cpp',
-  'emulator/cpu.cpp',
-]
+# --- Emulator (static library) ---
+emulator_lib = static_library('little-64-cpu',
+  ['emulator/cpu.cpp'],
+  include_directories : [include_directories('emulator'), arch_inc],
+  install : false,
+)
 
 executable('little-64',
-  emulator_src,
+  ['emulator/main.cpp'],
+  link_with : emulator_lib,
   include_directories : [include_directories('emulator'), arch_inc],
   install : true,
 )
 
-# --- Assembler ---
-assembler_src = [
-  'assembler/main.cpp',
-  'assembler/lexer.cpp',
-  'assembler/encoder.cpp',
-  'assembler/assembler.cpp',
-]
+# --- Assembler (static library) ---
+asm_lib = static_library('little-64-asm-lib',
+  [
+    'assembler/lexer.cpp',
+    'assembler/encoder.cpp',
+    'assembler/assembler.cpp',
+  ],
+  include_directories : [include_directories('assembler'), arch_inc],
+  install : false,
+)
 
 executable('little-64-asm',
-  assembler_src,
+  ['assembler/main.cpp'],
+  link_with : asm_lib,
   include_directories : [include_directories('assembler'), arch_inc],
   install : true,
 )
@@ -42,5 +48,37 @@ executable('little-64-disasm',
   ['disassembler/main.cpp'],
   link_with : disasm_lib,
   include_directories : [include_directories('disassembler'), arch_inc],
+  install : true,
+)
+
+# --- GUI Debugger/Emulator/Assembler ---
+sdl2_dep = dependency('sdl2')
+gl_dep   = dependency('gl')
+
+imgui_dep = dependency('imgui',
+  fallback : ['imgui', 'imgui_dep'],
+)
+
+gui_src = [
+  'gui/main.cpp',
+  'gui/app.cpp',
+  'gui/panels/assembler_panel.cpp',
+  'gui/panels/disassembly_panel.cpp',
+  'gui/panels/register_panel.cpp',
+  'gui/panels/memory_panel.cpp',
+]
+
+executable('little-64-gui',
+  gui_src,
+  link_with : [asm_lib, disasm_lib, emulator_lib],
+  include_directories : [
+    include_directories('gui'),
+    include_directories('gui/panels'),
+    include_directories('emulator'),
+    include_directories('assembler'),
+    include_directories('disassembler'),
+    arch_inc,
+  ],
+  dependencies : [sdl2_dep, gl_dep, imgui_dep],
   install : true,
 )

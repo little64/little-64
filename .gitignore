@@ -4,3 +4,6 @@ builddir/
 
 .claude/
 .vscode/
+
+subprojects/*
+!subprojects/*.wrap
