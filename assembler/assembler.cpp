@@ -4,6 +4,7 @@
 #include <sstream>
 #include <iomanip>
 #include <functional>
+#include <stdexcept>
 
 // ---------------------------------------------------------------------------
 // Synthetic token helpers — used by pseudo-instruction expanders
@@ -205,7 +206,7 @@ static void appendU64(std::vector<uint8_t>& data, uint64_t v) {
 }
 
 static std::vector<uint8_t> makeElfObject(const std::vector<uint16_t>& words,
-                                          const std::unordered_map<std::string,uint16_t>& symbols,
+                                          const std::unordered_map<std::string, SymbolInfo>& symbols,
                                           const std::vector<Assembler::RelocEntry>& relocs) {
     // Convert mapped words to bytes (little-endian)
     std::vector<uint8_t> text;
@@ -218,7 +219,20 @@ static std::vector<uint8_t> makeElfObject(const std::vector<uint16_t>& words,
     std::string strtab_contents;
     strtab_contents.push_back('\0');
     std::unordered_map<std::string, uint32_t> sym_name_offset;
-    for (const auto& [name, address] : symbols) {
+
+    // include defined global symbols plus externs from symbols map and reloc refs
+    std::vector<std::string> symbol_names;
+    for (const auto& [name, info] : symbols) {
+        symbol_names.push_back(name);
+    }
+    for (const auto& r : relocs) {
+        if (std::find(symbol_names.begin(), symbol_names.end(), r.symbol) == symbol_names.end())
+            symbol_names.push_back(r.symbol);
+    }
+    std::sort(symbol_names.begin(), symbol_names.end());
+    symbol_names.erase(std::unique(symbol_names.begin(), symbol_names.end()), symbol_names.end());
+
+    for (const auto& name : symbol_names) {
         sym_name_offset[name] = static_cast<uint32_t>(strtab_contents.size());
         strtab_contents += name;
         strtab_contents.push_back('\0');
@@ -240,10 +254,7 @@ static std::vector<uint8_t> makeElfObject(const std::vector<uint16_t>& words,
     uint32_t sh_name_shstr   = shname(".shstrtab");
 
     // Build symbol table (.symtab): first null entry, then each label.
-    std::vector<std::string> symbol_names;
-    symbol_names.reserve(symbols.size());
-    for (const auto& [name, _] : symbols) symbol_names.push_back(name);
-    std::sort(symbol_names.begin(), symbol_names.end());
+    // symbol_names already built above from symbols+relocs
 
     std::vector<uint8_t> symtab;
     // Elf64_Sym layout: st_name(4), st_info(1), st_other(1), st_shndx(2), st_value(8), st_size(8)
@@ -261,15 +272,20 @@ static std::vector<uint8_t> makeElfObject(const std::vector<uint16_t>& words,
     append_sym(0, 0, 0, 0, 0);
 
     for (const auto& name : symbol_names) {
-        uint16_t address = symbols.at(name);
+        auto it = symbols.find(name);
+        bool defined = it != symbols.end() && it->second.defined;
+        bool glob = (it != symbols.end() && it->second.global);
+        uint16_t value = (defined ? it->second.value : 0);
         uint32_t name_off = sym_name_offset.at(name);
-        uint8_t info = (1 << 4) | 0; // STB_GLOBAL, STT_NOTYPE
-        append_sym(name_off, info, 1, address, 0);
+        uint8_t bind = glob ? (1 << 4) : 0; // STB_GLOBAL or STB_LOCAL
+        uint8_t info = bind | 0; // STT_NOTYPE
+        uint16_t shndx = defined ? 1 : 0;
+        append_sym(name_off, info, shndx, value, 0);
     }
 
     // Section header table entries
     const uint16_t shnum = 6;
-    const uint16_t shstrndx = 5;
+    const uint16_t shstrndx = 4;
 
     // Build .rela.text contents
     std::vector<uint8_t> rela_text;
@@ -467,10 +483,11 @@ void Assembler::pass1(const std::vector<Token>& tokens, SymbolTable& symbols) {
         if (tok.kind == TokenKind::Ident && idx + 1 < tokens.size() &&
             tokens[idx + 1].kind == TokenKind::Colon) {
             std::string label = tok.lexeme;
-            if (symbols.find(label) != symbols.end())
+            auto it = symbols.find(label);
+            if (it != symbols.end() && it->second.defined)
                 throw std::runtime_error("Duplicate label: " + label + " at line " +
                                          std::to_string(tok.line));
-            symbols[label] = current_address;
+            symbols[label] = {current_address, true, true};
             idx += 2;
             continue;
         }
@@ -544,13 +561,19 @@ void Assembler::pass1(const std::vector<Token>& tokens, SymbolTable& symbols) {
                 }
             } else if (tok.lexeme == ".long") {
                 idx++;
-                if (idx < tokens.size() && tokens[idx].kind == TokenKind::ImmediateAbs) {
+                if (idx < tokens.size() && (tokens[idx].kind == TokenKind::ImmediateAbs || tokens[idx].kind == TokenKind::Ident)) {
                     if (current_address % 2 != 0) current_address += 1;
                     DataDirective dd;
                     dd.kind    = DataDirective::Kind::Long;
-                    dd.value   = tokens[idx].int_value;
                     dd.address = current_address;
                     dd.line    = tok.line;
+                    if (tokens[idx].kind == TokenKind::ImmediateAbs) {
+                        dd.value = tokens[idx].int_value;
+                        dd.isSymbol = false;
+                    } else {
+                        dd.isSymbol = true;
+                        dd.symbol = tokens[idx].lexeme;
+                    }
                     EmitItem item;
                     item.is_instruction = false;
                     item.data = std::move(dd);
@@ -558,7 +581,7 @@ void Assembler::pass1(const std::vector<Token>& tokens, SymbolTable& symbols) {
                     current_address += 8;
                     idx++;
                 } else {
-                    throw std::runtime_error(".long requires a value at line " +
+                    throw std::runtime_error(".long requires a value or symbol at line " +
                                              std::to_string(tok.line));
                 }
             } else if (tok.lexeme == ".ascii" || tok.lexeme == ".asciiz") {
@@ -581,6 +604,22 @@ void Assembler::pass1(const std::vector<Token>& tokens, SymbolTable& symbols) {
                     idx++;
                 } else {
                     throw std::runtime_error(tok.lexeme + " requires a string literal at line " +
+                                             std::to_string(tok.line));
+                }
+            } else if (tok.lexeme == ".global" || tok.lexeme == ".extern") {
+                bool is_global = (tok.lexeme == ".global");
+                idx++;
+                if (idx < tokens.size() && tokens[idx].kind == TokenKind::Ident) {
+                    std::string name = tokens[idx].lexeme;
+                    auto it = symbols.find(name);
+                    if (it == symbols.end()) {
+                        symbols[name] = {0, false, is_global};
+                    } else {
+                        it->second.global = it->second.global || is_global;
+                    }
+                    idx++;
+                } else {
+                    throw std::runtime_error(tok.lexeme + " requires a symbol name at line " +
                                              std::to_string(tok.line));
                 }
             } else {
@@ -743,10 +782,31 @@ void Assembler::pass2(const SymbolTable& symbols, std::vector<uint16_t>& output,
                     align2();
                     emit_le(item.data.value, 4);
                     break;
-                case DataDirective::Kind::Long:
+                case DataDirective::Kind::Long: {
                     align2();
-                    emit_le(item.data.value, 8);
+                    if (item.data.isSymbol) {
+                        if (elf_mode) {
+                            // relocation for .long symbol ref
+                            if (out_relocs) {
+                                out_relocs->push_back({
+                                    static_cast<uint64_t>(buf.size()),
+                                    item.data.symbol,
+                                    RelocType::ABS64,
+                                    0
+                                });
+                            }
+                            emit_le(0, 8);
+                        } else {
+                            auto sym_it = symbols.find(item.data.symbol);
+                            if (sym_it == symbols.end() || !sym_it->second.defined)
+                                throw std::runtime_error("Undefined symbol in .long: " + item.data.symbol);
+                            emit_le(sym_it->second.value, 8);
+                        }
+                    } else {
+                        emit_le(item.data.value, 8);
+                    }
                     break;
+                }
                 case DataDirective::Kind::Ascii:
                     for (unsigned char c : item.data.text) buf.push_back(c);
                     break;
@@ -1106,10 +1166,10 @@ uint16_t Assembler::encodeInstruction(const ParsedInstruction& instr,
             const Token& addr_tok = instr.operands[0];
             if (addr_tok.kind == TokenKind::PCRelLabel) {
                 auto it = symbols.find(addr_tok.lexeme);
-                if (it == symbols.end())
+                if (it == symbols.end() || !it->second.defined)
                     err("Undefined label: " + addr_tok.lexeme);
                 if (!elf_mode) {
-                    uint16_t target = it->second;
+                    uint16_t target = it->second.value;
                     // pc_rel is in instruction units (×2 bytes), relative to next instruction
                     int32_t byte_diff = (int32_t)target - (int32_t)(current_address + 2);
                     if (byte_diff % 2 != 0) err("Target address is not instruction-aligned");

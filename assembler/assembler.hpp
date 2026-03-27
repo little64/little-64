@@ -12,8 +12,16 @@ struct DataDirective {
     Kind kind;
     uint64_t value = 0;    // Byte / Short / Int / Long
     std::string text;      // Ascii / Asciiz (unescaped content)
+    bool isSymbol = false; // .long SYMBOL
+    std::string symbol;
     uint16_t address = 0;  // byte address at point of emission (from pass1)
     int line = 0;
+};
+
+struct SymbolInfo {
+    uint16_t value = 0;
+    bool defined = false;
+    bool global = false;
 };
 
 // Instruction encoding format, determined during parsing.
@@ -68,7 +76,7 @@ public:
     static std::vector<std::string> getAllMnemonics();
 
 private:
-    using SymbolTable = std::unordered_map<std::string, uint16_t>;
+    using SymbolTable = std::unordered_map<std::string, SymbolInfo>;
 
     // A single item to be emitted: either an instruction or a data directive.
     // Items are stored in source order so pass2 can emit them interleaved.

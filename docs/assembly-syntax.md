@@ -452,6 +452,19 @@ Emits a **64-bit value** in little-endian byte order (four 16-bit words). Auto-p
 
 ```
 .long 0x0123456789ABCDEF
+.long some_label    ; relocatable in ELF mode; value of some_label
+```
+
+### `.global <symbol>` and `.extern <symbol>`
+
+Controls symbol visibility for ELF object output.
+
+- `.global name` marks `name` as a global symbol (exported in the symbol table).
+- `.extern name` declares `name` as an undefined external symbol reference.
+
+```
+.extern printf
+.global start
 ```
 
 ### `.ascii <string>`

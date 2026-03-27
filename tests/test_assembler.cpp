@@ -6,6 +6,7 @@
 // Group J (.ascii/.asciiz) is added after the lexer/assembler rework.
 
 #include "assembler.hpp"
+#include <algorithm>
 #include <cstdio>
 #include <stdexcept>
 #include <string>
@@ -232,6 +233,22 @@ static void test_ldi64_pseudo() {
     CHECK_EQ(out[6], 0xFF00, "LDI64 following STOP");
 }
 
+static uint16_t read_u16(const std::vector<uint8_t>& buf, size_t off) {
+    return static_cast<uint16_t>(buf[off]) | (static_cast<uint16_t>(buf[off + 1]) << 8);
+}
+
+static uint32_t read_u32(const std::vector<uint8_t>& buf, size_t off) {
+    return static_cast<uint32_t>(buf[off]) |
+           (static_cast<uint32_t>(buf[off+1]) << 8) |
+           (static_cast<uint32_t>(buf[off+2]) << 16) |
+           (static_cast<uint32_t>(buf[off+3]) << 24);
+}
+
+static uint64_t read_u64(const std::vector<uint8_t>& buf, size_t off) {
+    return static_cast<uint64_t>(read_u32(buf, off)) |
+           (static_cast<uint64_t>(read_u32(buf, off+4)) << 32);
+}
+
 static void test_elf_output() {
     auto elf = assembleElf(".org 0\nstart: STOP\n");
 
@@ -246,11 +263,136 @@ static void test_elf_output() {
     CHECK_EQ(e_type, 1, "ELF file type ET_REL");
 
     uint16_t e_shnum = 0;
-    if (elf.size() >= 0x3E) e_shnum = static_cast<uint16_t>(elf[0x3C]) | (static_cast<uint16_t>(elf[0x3D]) << 8);
+    if (elf.size() >= 0x3E) e_shnum = read_u16(elf, 0x3C);
     CHECK_EQ(e_shnum, 6, "ELF section count (includes .rela.text)");
 
     std::string elf_str(elf.begin(), elf.end());
     CHECK_EQ(elf_str.find(".rela.text") != std::string::npos, true, "ELF contains .rela.text");
+}
+
+static void test_elf_relocations() {
+    auto elf = assembleElf(".org 0\nJUMP @target\nSTOP\nSTOP\ntarget:\nSTOP\n");
+
+    uint64_t e_shoff = read_u64(elf, 0x28);
+    uint16_t e_shnum = read_u16(elf, 0x3C);
+    uint16_t e_shentsize = read_u16(elf, 0x3A);
+    uint16_t e_shstrndx = read_u16(elf, 0x3E);
+
+    CHECK_EQ(e_shnum, 6, "ELF should still have 6 sections");
+
+    // Find .shstrtab content
+    uint64_t shstr_offset = read_u64(elf, e_shoff + e_shentsize * e_shstrndx + 0x18);
+    uint64_t shstr_size = read_u64(elf, e_shoff + e_shentsize * e_shstrndx + 0x20);
+    CHECK_EQ(shstr_offset + shstr_size <= elf.size(), true, "shstrtab bounds check");
+    std::string shstr(reinterpret_cast<const char*>(&elf[shstr_offset]), (size_t)shstr_size);
+
+    int rela_index = -1;
+    int symtab_index = -1;
+    uint64_t rela_offset = 0, rela_size = 0;
+    uint64_t symtab_offset = 0, symtab_size = 0;
+    uint64_t strtab_offset = 0;
+
+    for (int i = 0; i < e_shnum; i++) {
+        uint64_t sh_base = e_shoff + (uint64_t)i * e_shentsize;
+        uint32_t name_off = read_u32(elf, sh_base);
+        uint64_t off = read_u64(elf, sh_base + 0x18);
+        uint64_t size = read_u64(elf, sh_base + 0x20);
+
+        if (name_off >= shstr.size()) continue;
+        const char* name_ptr = shstr.c_str() + name_off;
+        std::string name(name_ptr);
+
+        if (name == ".rela.text") { rela_index = i; rela_offset = off; rela_size = size; }
+        if (name == ".symtab") { symtab_index = i; symtab_offset = off; symtab_size = size; }
+        if (name == ".strtab") { strtab_offset = off; }
+    }
+
+    CHECK_EQ(rela_index >= 0, true, "Found .rela.text");
+    CHECK_EQ(symtab_index >= 0, true, "Found .symtab");
+    CHECK_EQ(rela_size, 24, "One relocation entry in .rela.text");
+
+    uint64_t r_offset = read_u64(elf, rela_offset);
+    uint64_t r_info = read_u64(elf, rela_offset + 8);
+    int64_t r_addend = static_cast<int64_t>(read_u64(elf, rela_offset + 16));
+    CHECK_EQ(r_offset, 0, "Relocation target offset in .text");
+    CHECK_EQ(r_addend, 0, "Relocation addend=0");
+
+    uint32_t sym_idx = static_cast<uint32_t>(r_info >> 32);
+    uint32_t reltype = static_cast<uint32_t>(r_info & 0xFFFFFFFF);
+    CHECK_EQ(reltype, 1, "Relocation type is PCREL6");
+
+    CHECK_EQ(sym_idx > 0, true, "Relocation symbol index should be nonzero");
+
+    // Validate symbol points to target label
+    uint64_t sym_entry = symtab_offset + (sym_idx * 24);
+    uint32_t sym_name_off = read_u32(elf, sym_entry);
+    std::string sym_name(reinterpret_cast<const char*>(&elf[strtab_offset + sym_name_off]));
+    if (sym_name == "target") {
+        _pass++;
+    } else {
+        std::fprintf(stderr, "FAIL [%s:%d] Relocation target symbol expected 'target', got '%s'\n",
+                     __FILE__, __LINE__, sym_name.c_str());
+        _fail++;
+    }
+}
+
+static void test_elf_global_extern_and_long_reloc() {
+    auto elf = assembleElf(".org 0\n.extern ext_fn\n.global start\nstart:\n.long ext_fn\nJUMP @start\n");
+
+    uint64_t e_shoff = read_u64(elf, 0x28);
+    uint16_t e_shnum = read_u16(elf, 0x3C);
+    uint16_t e_shentsize = read_u16(elf, 0x3A);
+    uint16_t e_shstrndx = read_u16(elf, 0x3E);
+
+    uint64_t shstr_offset = read_u64(elf, e_shoff + e_shentsize * e_shstrndx + 0x18);
+    uint64_t shstr_size = read_u64(elf, e_shoff + e_shentsize * e_shstrndx + 0x20);
+    std::string shstr(reinterpret_cast<const char*>(&elf[shstr_offset]), (size_t)shstr_size);
+
+    uint64_t symtab_offset = 0, symtab_size = 0, rela_offset = 0, rela_size = 0;
+    for (int i = 0; i < e_shnum; i++) {
+        uint64_t sh_base = e_shoff + (uint64_t)i * e_shentsize;
+        uint32_t name_off = read_u32(elf, sh_base);
+        if (name_off >= shstr.size()) continue;
+        std::string name(&shstr[name_off]);
+        uint64_t off = read_u64(elf, sh_base + 0x18);
+        uint64_t size = read_u64(elf, sh_base + 0x20);
+        if (name == ".symtab") { symtab_offset = off; symtab_size = size; }
+        if (name == ".rela.text") { rela_offset = off; rela_size = size; }
+    }
+
+    CHECK_EQ(symtab_offset != 0, true, "symtab exists");
+    CHECK_EQ(rela_offset != 0, true, "rela.text exists");
+
+    // Locate .strtab for symbol names.
+    uint64_t strtab_offset = 0;
+    for (int i = 0; i < e_shnum; i++) {
+        uint64_t sh_base = e_shoff + (uint64_t)i * e_shentsize;
+        uint32_t name_off = read_u32(elf, sh_base);
+        if (name_off >= shstr.size()) continue;
+        std::string name(&shstr[name_off]);
+        if (name == ".strtab") {
+            strtab_offset = read_u64(elf, sh_base + 0x18);
+            break;
+        }
+    }
+
+    CHECK_EQ(strtab_offset != 0, true, "strtab exists");
+
+    // Collect symbol names from symtab
+    std::vector<std::string> sym_names;
+    if (symtab_offset != 0) {
+        for (uint64_t base = symtab_offset + 24; base + 24 <= symtab_offset + symtab_size; base += 24) {
+            uint32_t name_off = read_u32(elf, base);
+            if (strtab_offset + name_off >= elf.size()) continue;
+            sym_names.emplace_back(reinterpret_cast<const char*>(&elf[strtab_offset + name_off]));
+        }
+    }
+
+    CHECK_EQ(std::find(sym_names.begin(), sym_names.end(), "start") != sym_names.end(), true, "start symbol present");
+    CHECK_EQ(std::find(sym_names.begin(), sym_names.end(), "ext_fn") != sym_names.end(), true, "ext_fn symbol present");
+
+    // At least 2 relocations expected: reference from .long ext_fn + JUMP @start.
+    CHECK_EQ(rela_size >= 48, true, "At least two relocations (long + JUMP)");
 }
 
 // ---------------------------------------------------------------------------
@@ -526,6 +668,12 @@ int main() {
 
     std::printf("E3: ELF output\n");
     test_elf_output();
+
+    std::printf("E4: ELF relocations\n");
+    test_elf_relocations();
+
+    std::printf("E5: ELF global/extern/.long reloc\n");
+    test_elf_global_extern_and_long_reloc();
 
     std::printf("F: Conditional jumps\n");
     test_conditional_jumps();
