@@ -195,6 +195,13 @@ void Little64CPU::_dispatchGP(const Instruction& instr) {
             registers.regs[instr.rd] = result;
             break;
         }
+        case GP::Opcode::TEST: {
+            uint64_t result = a - b;
+            bool borrow = b > a;
+            _updateFlags(result, borrow);
+            // do not store result
+            break;
+        }
         case GP::Opcode::AND: {
             uint64_t result = a & b;
             _updateFlags(result);
@@ -207,11 +214,31 @@ void Little64CPU::_dispatchGP(const Instruction& instr) {
             registers.regs[instr.rd] = result;
             break;
         }
-        case GP::Opcode::TEST: {
-            uint64_t result = a - b;
-            bool borrow = b > a;
-            _updateFlags(result, borrow);
-            // do not store result
+        case GP::Opcode::XOR: {
+            uint64_t result = a ^ b;
+            _updateFlags(result);
+            registers.regs[instr.rd] = result;
+            break;
+        }
+        case GP::Opcode::SLL: {
+            uint64_t result = a << b;
+            bool carry = (a >> (64 - b)) != 0;
+            _updateFlags(result, carry);
+            registers.regs[instr.rd] = result;
+            break;
+        }
+        case GP::Opcode::SRL: {
+            uint64_t result = a >> b;
+            bool carry = (a >> (b - 1)) & 1;
+            _updateFlags(result, carry);
+            registers.regs[instr.rd] = result;
+            break;
+        }
+        case GP::Opcode::SRA: {
+            uint64_t result = (int64_t(a) >> b);
+            bool carry = (a >> (b - 1)) & 1;
+            _updateFlags(result, carry);
+            registers.regs[instr.rd] = result;
             break;
         }
 
