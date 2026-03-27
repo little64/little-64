@@ -795,8 +795,8 @@ std::vector<std::string> Assembler::getAllMnemonics() {
                           "ST", "ST.B", "ST.S", "ST.W", "ST.I"})
         result.push_back(s);
 
-    // Conditional JUMP variants (JUMP itself is already in ls_mnemonics)
-    for (const char* s : {"JUMP.Z", "JUMP.C", "JUMP.S", "JUMP.GT", "JUMP.LT"})
+    // JUMP and Conditional JUMP variants
+    for (const char* s : {"JUMP", "JUMP.Z", "JUMP.C", "JUMP.S", "JUMP.GT", "JUMP.LT"})
         result.push_back(s);
 
     // Pseudo-instructions from the table
