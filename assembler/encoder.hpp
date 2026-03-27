@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 class Encoder {
 public:
@@ -28,6 +29,9 @@ public:
     static bool isLSMnemonic(const std::string& mnemonic);
     static bool isGPMnemonic(const std::string& mnemonic);
     static bool isLDIMnemonic(const std::string& mnemonic);
+
+    // Return all real-instruction mnemonics from the LS and GP maps.
+    static std::vector<std::string> getMnemonics();
 
 private:
     static std::unordered_map<std::string, uint8_t> ls_mnemonics;

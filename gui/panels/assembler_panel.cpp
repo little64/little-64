@@ -18,23 +18,11 @@ static TextEditor::LanguageDefinition buildLanguageDef() {
     lang.mCaseSensitive = false;
     lang.mPreprocChar = 0;  // '#' is an immediate sigil here, not a preprocessor char
 
-    // Opcodes → Keyword colour
-    // LDI accepts .SN and .N suffix forms (N = 0–3)
-    // JUMP is a pseudo-instruction (encodes as MOVE with implicit R15 dest)
-    static const char* const opcodes[] = {
-        "ADD", "SUB", "AND", "OR", "TEST", "STOP",
-        "LOAD", "STORE", "PUSH", "POP", "MOVE",
-        "BYTE_LOAD", "BYTE_STORE", "SHORT_LOAD", "SHORT_STORE",
-        "WORD_LOAD", "WORD_STORE",
-        "JUMP",
-        "JUMP.Z", "JUMP.C", "JUMP.S", "JUMP.GT", "JUMP.LT",
-        "LDI",
-        "LDI.S0", "LDI.S1", "LDI.S2", "LDI.S3",
-        "LDI.0",  "LDI.1",  "LDI.2",  "LDI.3",
-        nullptr
-    };
-    for (auto kw = opcodes; *kw; ++kw)
-        lang.mKeywords.insert(*kw);
+    // Opcodes → Keyword colour — derived from Assembler::getAllMnemonics() so that
+    // real instructions (from .def files) and pseudo-instructions stay in sync
+    // automatically; no manual updates needed here when the instruction set changes.
+    for (const auto& mnemonic : Assembler::getAllMnemonics())
+        lang.mKeywords.insert(mnemonic);
 
     // Registers R0–R15 → KnownIdentifier colour
     for (int i = 0; i <= 15; ++i) {

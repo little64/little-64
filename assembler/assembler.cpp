@@ -2,6 +2,127 @@
 #include "encoder.hpp"
 #include <sstream>
 #include <iomanip>
+#include <functional>
+
+// ---------------------------------------------------------------------------
+// Synthetic token helpers — used by pseudo-instruction expanders
+// ---------------------------------------------------------------------------
+
+static Token makeRegToken(uint8_t reg, int line) {
+    Token t;
+    t.kind = TokenKind::Register;
+    t.lexeme = "R" + std::to_string(reg);
+    t.int_value = reg;
+    t.line = line;
+    t.column = 0;
+    return t;
+}
+
+static Token makeImmToken(int32_t val, int line) {
+    Token t;
+    t.kind = TokenKind::ImmediateAbs;
+    t.lexeme = std::to_string(val);
+    t.int_value = static_cast<uint64_t>(val);
+    t.line = line;
+    t.column = 0;
+    return t;
+}
+
+// ---------------------------------------------------------------------------
+// Pseudo-instruction table
+//
+// To add a new pseudo-instruction, add one entry here.
+//   arity  — expected number of source operands (tokens, not counting commas)
+//   expand — returns a vector of ParsedInstruction objects in emission order;
+//             each instruction's address is set relative to base addr
+// ---------------------------------------------------------------------------
+
+struct PseudoDef {
+    int arity;
+    std::function<std::vector<ParsedInstruction>(
+        const std::vector<Token>&, uint16_t addr, int line)> expand;
+};
+
+static const std::unordered_map<std::string, PseudoDef> pseudo_table = {
+    // JAL @target → MOVE R15+2, R14  ;  JUMP @target
+    //
+    // When MOVE executes, R15 already points at the JUMP (next instr), so
+    // R15+2 = address after JUMP = the return address stored in R14 (LR).
+    {"JAL", {1, [](const std::vector<Token>& ops, uint16_t addr, int line) {
+        ParsedInstruction move;
+        move.mnemonic        = "MOVE";
+        move.detected_format = Format::LS_REG;
+        move.operands        = {makeRegToken(15, line), makeImmToken(2, line), makeRegToken(14, line)};
+        move.address         = addr;
+        move.line            = line;
+
+        ParsedInstruction jump;
+        jump.mnemonic        = "JUMP";
+        jump.detected_format = Format::LS_PCREL;
+        jump.operands        = {ops[0], makeRegToken(15, line)};
+        jump.address         = static_cast<uint16_t>(addr + 2);
+        jump.line            = line;
+
+        return std::vector<ParsedInstruction>{move, jump};
+    }}},
+
+    // CALL @target →
+    //   PUSH R14           addr+0  save caller LR on stack
+    //   MOVE R15+2, R14    addr+2  R15 points at JUMP (addr+4) → R15+2 = addr+6 = POP below
+    //   JUMP @target       addr+4  jump to callee
+    //   POP R14            addr+6  ← return address; restores caller LR when callee does RET
+    //
+    // This embeds the LR restore AT the return address, so after callee returns via
+    //   RET (MOVE R14, R15), the POP R14 executes automatically and R14 is restored.
+    {"CALL", {1, [](const std::vector<Token>& ops, uint16_t addr, int line) {
+        ParsedInstruction push;
+        push.mnemonic        = "PUSH";
+        push.detected_format = Format::LS_REG;
+        push.operands        = {makeRegToken(14, line), makeImmToken(0, line), makeRegToken(13, line)};
+        push.address         = addr;
+        push.line            = line;
+
+        ParsedInstruction move;
+        move.mnemonic        = "MOVE";
+        move.detected_format = Format::LS_REG;
+        move.operands        = {makeRegToken(15, line), makeImmToken(2, line), makeRegToken(14, line)};
+        move.address         = static_cast<uint16_t>(addr + 2);
+        move.line            = line;
+
+        ParsedInstruction jump;
+        jump.mnemonic        = "JUMP";
+        jump.detected_format = Format::LS_PCREL;
+        jump.operands        = {ops[0], makeRegToken(15, line)};
+        jump.address         = static_cast<uint16_t>(addr + 4);
+        jump.line            = line;
+
+        ParsedInstruction pop;
+        pop.mnemonic        = "POP";
+        pop.detected_format = Format::LS_REG;
+        pop.operands        = {makeRegToken(14, line), makeImmToken(0, line), makeRegToken(13, line)};
+        pop.address         = static_cast<uint16_t>(addr + 6);
+        pop.line            = line;
+
+        return std::vector<ParsedInstruction>{push, move, jump, pop};
+    }}},
+
+    // RET → MOVE R14, R15
+    //
+    // Jumps to the link register (R14).  When paired with CALL, control lands on
+    // the POP R14 embedded by CALL, transparently restoring the caller's LR.
+    {"RET", {0, [](const std::vector<Token>&, uint16_t addr, int line) {
+        ParsedInstruction move;
+        move.mnemonic        = "MOVE";
+        move.detected_format = Format::LS_REG;
+        move.operands        = {makeRegToken(14, line), makeImmToken(0, line), makeRegToken(15, line)};
+        move.address         = addr;
+        move.line            = line;
+
+        return std::vector<ParsedInstruction>{move};
+    }}},
+};
+
+// ---------------------------------------------------------------------------
 
 std::vector<uint16_t> Assembler::assemble(const std::string& source) {
     Encoder::init();
@@ -168,16 +289,40 @@ void Assembler::pass1(const std::vector<Token>& tokens, SymbolTable& symbols) {
             continue;
         }
 
-        // Instruction
+        // Instruction (real or pseudo)
         int line_at_start = line_count;
-        ParsedInstruction parsed = parseInstruction(tokens, idx, current_address, line_count);
-        parsed.line = line_at_start;
+        std::string first_lexeme = (tokens[idx].kind == TokenKind::Ident) ? tokens[idx].lexeme : "";
+        auto pseudo_it = pseudo_table.find(first_lexeme);
 
-        EmitItem item;
-        item.is_instruction = true;
-        item.instr = std::move(parsed);
-        emit_items.push_back(std::move(item));
-        current_address += 2;
+        if (pseudo_it != pseudo_table.end()) {
+            idx++;  // consume mnemonic
+            std::vector<Token> operands;
+            while (idx < tokens.size() && tokens[idx].kind != TokenKind::Newline &&
+                   tokens[idx].kind != TokenKind::EndOfFile) {
+                if (tokens[idx].kind != TokenKind::Comma)
+                    operands.push_back(tokens[idx]);
+                idx++;
+            }
+            const auto& def = pseudo_it->second;
+            if (static_cast<int>(operands.size()) != def.arity)
+                throw std::runtime_error(first_lexeme + " expects " + std::to_string(def.arity) +
+                                         " operand(s) at line " + std::to_string(line_at_start));
+            for (auto& instr : def.expand(operands, current_address, line_at_start)) {
+                EmitItem item;
+                item.is_instruction = true;
+                item.instr = std::move(instr);
+                emit_items.push_back(std::move(item));
+                current_address += 2;
+            }
+        } else {
+            ParsedInstruction parsed = parseInstruction(tokens, idx, current_address, line_count);
+            parsed.line = line_at_start;
+            EmitItem item;
+            item.is_instruction = true;
+            item.instr = std::move(parsed);
+            emit_items.push_back(std::move(item));
+            current_address += 2;
+        }
 
         while (idx < tokens.size() && tokens[idx].kind != TokenKind::Newline &&
                tokens[idx].kind != TokenKind::EndOfFile)
@@ -268,9 +413,27 @@ static bool isPushPopMnemonic(const std::string& m) {
     return m == "PUSH" || m == "POP";
 }
 
-Assembler::ParsedInstruction Assembler::parseInstruction(const std::vector<Token>& tokens,
-                                                          size_t& idx, uint16_t address,
-                                                          int& line_count) {
+// Resolve LD/ST pseudo-mnemonics (with width suffixes) to their canonical LS forms.
+// Bare "LD" is handled separately at the call site because it routes to LDI when
+// followed by an immediate operand.
+// LD.B → BYTE_LOAD   LD.S / LD.W → SHORT_LOAD   LD.I → WORD_LOAD   LD → LOAD
+// ST   → STORE       ST.B → BYTE_STORE           ST.S / ST.W → SHORT_STORE
+// ST.I → WORD_STORE
+static std::string normalizeMnemonic(const std::string& m) {
+    if (m == "LD")                   return "LOAD";
+    if (m == "LD.B")                 return "BYTE_LOAD";
+    if (m == "LD.S" || m == "LD.W") return "SHORT_LOAD";
+    if (m == "LD.I")                 return "WORD_LOAD";
+    if (m == "ST")                   return "STORE";
+    if (m == "ST.B")                 return "BYTE_STORE";
+    if (m == "ST.S" || m == "ST.W") return "SHORT_STORE";
+    if (m == "ST.I")                 return "WORD_STORE";
+    return m;
+}
+
+ParsedInstruction Assembler::parseInstruction(const std::vector<Token>& tokens,
+                                               size_t& idx, uint16_t address,
+                                               int& line_count) {
     ParsedInstruction result;
     result.address = address;
     result.line = line_count;
@@ -302,6 +465,15 @@ Assembler::ParsedInstruction Assembler::parseInstruction(const std::vector<Token
         }
     }
 
+    // Resolve LD/ST pseudo-mnemonics.
+    // Bare "LD" maps to LDI when the next token is an immediate; otherwise to LOAD.
+    // Width-suffixed forms (LD.B, LD.S, etc.) always map to LS memory instructions.
+    if (base_mnemonic == "LD" && idx < tokens.size() &&
+        tokens[idx].kind == TokenKind::ImmediateAbs) {
+        base_mnemonic = "LDI";
+    } else {
+        base_mnemonic = normalizeMnemonic(base_mnemonic);
+    }
     result.mnemonic = base_mnemonic;
 
     // Stage 1: classify by mnemonic
@@ -603,4 +775,33 @@ std::string Assembler::getListing() const {
                 << "  " << item.instr.mnemonic << "\n";
     }
     return oss.str();
+}
+
+std::vector<std::string> Assembler::getAllMnemonics() {
+    Encoder::init();
+    std::vector<std::string> result = Encoder::getMnemonics();
+
+    // LDI and LD with numeric suffix forms (.SN and .N, N = 0–3)
+    for (const std::string base : {"LDI", "LD"}) {
+        result.push_back(base);
+        for (int n = 0; n <= 3; ++n) {
+            result.push_back(base + "." + std::to_string(n));
+            result.push_back(base + ".S" + std::to_string(n));
+        }
+    }
+
+    // LD/ST width suffix aliases (map to LS memory instructions)
+    for (const char* s : {"LD.B", "LD.S", "LD.W", "LD.I",
+                          "ST", "ST.B", "ST.S", "ST.W", "ST.I"})
+        result.push_back(s);
+
+    // Conditional JUMP variants (JUMP itself is already in ls_mnemonics)
+    for (const char* s : {"JUMP.Z", "JUMP.C", "JUMP.S", "JUMP.GT", "JUMP.LT"})
+        result.push_back(s);
+
+    // Pseudo-instructions from the table
+    for (const auto& kv : pseudo_table)
+        result.push_back(kv.first);
+
+    return result;
 }

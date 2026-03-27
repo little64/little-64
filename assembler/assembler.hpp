@@ -16,6 +16,19 @@ struct DataDirective {
     int line = 0;
 };
 
+// Instruction encoding format, determined during parsing.
+enum class Format { LS_REG, LS_PCREL, LDI, GP };
+
+// A fully-parsed instruction ready for pass2 encoding.
+struct ParsedInstruction {
+    std::string mnemonic;   // base mnemonic, e.g. "LOAD", "JUMP.Z", "LDI", "ADD"
+    uint8_t shift = 0;      // LDI only: shift value from .SN suffix (0-3)
+    Format detected_format = Format::GP;
+    std::vector<Token> operands;
+    uint16_t address = 0;   // byte address assigned in pass1 (accounts for .org)
+    int line = 0;
+};
+
 class Assembler {
 public:
     // Assemble source code and return the binary output
@@ -25,19 +38,13 @@ public:
     // Return a string representation of assembled instructions for listing
     std::string getListing() const;
 
+    // Return all known mnemonics (real instructions + pseudo-instructions).
+    // Used by the GUI panel for syntax highlighting — call this instead of
+    // maintaining a separate hardcoded list.
+    static std::vector<std::string> getAllMnemonics();
+
 private:
     using SymbolTable = std::unordered_map<std::string, uint16_t>;
-
-    enum class Format { LS_REG, LS_PCREL, LDI, GP };
-
-    struct ParsedInstruction {
-        std::string mnemonic;   // base mnemonic, e.g. "LOAD", "JUMP.Z", "LDI", "ADD"
-        uint8_t shift = 0;      // LDI only: shift value from .SN suffix (0-3)
-        Format detected_format = Format::GP;
-        std::vector<Token> operands;
-        uint16_t address = 0;   // byte address assigned in pass1 (accounts for .org)
-        int line = 0;
-    };
 
     // A single item to be emitted: either an instruction or a data directive.
     // Items are stored in source order so pass2 can emit them interleaved.

@@ -136,9 +136,9 @@ static void test_ls_reg_encoding() {
     // 0x1400 | 0x0100 | 0x0030 | 0x0004 = 0x1534
     CHECK_EQ(assemble("BYTE_LOAD [R3+2], R4")[0], 0x1534, "BYTE_LOAD [R3+2], R4");
 
-    // MOVE [R5+6], R7 → op=4, offset2=3, rs1=5, rd=7
+    // MOVE R5+6, R7 → op=4, offset2=3, rs1=5, rd=7
     // 0x1000 | 0x0300 | 0x0050 | 0x0007 = 0x1357
-    CHECK_EQ(assemble("MOVE [R5+6], R7")[0], 0x1357, "MOVE [R5+6], R7");
+    CHECK_EQ(assemble("MOVE R5+6, R7")[0], 0x1357, "MOVE R5+6, R7");
 
     // Maximum offset: LOAD [R15+6], R15 → op=0, offset2=3, rs1=15, rd=15
     // 0x0000 | 0x0300 | 0x00F0 | 0x000F = 0x03FF
@@ -202,9 +202,9 @@ static void test_jump_pseudo() {
     // (4<<10) | (0<<8) | (3<<4) | 15 = 0x1000 | 0x0030 | 0x000F = 0x103F
     CHECK_EQ(assemble("JUMP R3")[0], 0x103F, "JUMP R3");
 
-    // JUMP [R2+4] → MOVE LS_REG, offset2=2, rs1=2, rd=15
+    // JUMP R2+4 → MOVE LS_REG, offset2=2, rs1=2, rd=15
     // (4<<10) | (2<<8) | (2<<4) | 15 = 0x1000|0x0200|0x0020|0x000F = 0x122F
-    CHECK_EQ(assemble("JUMP [R2+4], R15")[0], 0x122F, "JUMP [R2+4], R15");
+    CHECK_EQ(assemble("JUMP R2+4, R15")[0], 0x122F, "JUMP R2+4, R15");
 
     // JUMP label forward: resolves same as MOVE @label, R15
     {

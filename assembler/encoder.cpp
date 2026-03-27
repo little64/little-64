@@ -19,6 +19,13 @@ void Encoder::init() {
 #undef LITTLE64_GP_OPCODE
 }
 
+std::vector<std::string> Encoder::getMnemonics() {
+    std::vector<std::string> result;
+    for (const auto& kv : ls_mnemonics) result.push_back(kv.first);
+    for (const auto& kv : gp_mnemonics) result.push_back(kv.first);
+    return result;
+}
+
 // Format 00: bits[15:14]=00
 uint16_t Encoder::encodeLSReg(uint8_t opcode_ls, uint8_t offset2, uint8_t rs1, uint8_t rd) {
     uint16_t raw = 0;

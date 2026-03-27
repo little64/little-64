@@ -203,6 +203,7 @@ MNEMONIC Rs1, Rd            ; 2-register form
 
 ```
 LDI[.SN]  #imm8, Rd
+LD[.SN]   #imm8, Rd   ; LD is an alias for LDI when the first operand is an immediate
 ```
 
 `imm8` is an 8-bit unsigned value (0–255). `SN` is an optional shift index 0–3.
@@ -221,6 +222,123 @@ MNEMONIC [Rs1+offset], Rd
 ```
 MNEMONIC @label,  Rd
 MNEMONIC @±N,     Rd
+```
+
+---
+
+## Subroutine pseudo-instructions
+
+Three pseudo-instructions provide a structured call/return mechanism. Each expands to one or more real instructions at assembly time; no new opcodes are needed.
+
+### `JAL @target` — Jump and link (2 instructions)
+
+```
+MOVE R15+2, R14    ; LR = return address (instruction after the JUMP)
+JUMP @target       ; jump to target
+```
+
+Sets the link register (R14 / LR) to the address immediately following the `JAL` and then jumps. Use `JAL` when calling a leaf function or when the current link register does not need to be preserved.
+
+```
+JAL @my_function
+; R14 = return address here
+```
+
+### `CALL @target` — Subroutine call (4 instructions)
+
+```
+PUSH R14           ; save caller's LR on the stack
+MOVE R15+2, R14    ; LR = address of POP below (the return address)
+JUMP @target       ; jump to target
+POP R14            ; ← return address — restores caller's LR on return
+```
+
+The `POP R14` instruction is **embedded at the return address**. When the callee executes `RET` (`MOVE R14, R15`), control jumps to this `POP R14`, which restores the caller's original link register before continuing. The stack is balanced on return and `R14` is transparent to the caller.
+
+This self-embedding pattern makes `CALL`/`RET` fully composable: nested calls work correctly without any manual push/pop around the call site.
+
+```
+CALL @some_function
+; R14 is automatically restored here, stack is balanced
+```
+
+### `RET` — Return from subroutine (1 instruction)
+
+```
+MOVE R14, R15      ; PC = LR — jump to the link register
+```
+
+Returns to the address in `R14`. When paired with `CALL`, control lands on the `POP R14` embedded by the caller, restoring the caller's link register. When paired with `JAL`, returns directly to the instruction after the `JAL`.
+
+### Calling convention summary
+
+| Instruction | Preserves LR? | Stack effect | Paired with |
+|-------------|---------------|--------------|-------------|
+| `JAL`       | No            | None         | `RET`       |
+| `CALL`      | Yes (auto)    | Balanced     | `RET`       |
+| `RET`       | —             | None         | `JAL`/`CALL` |
+
+### Example: nested calls
+
+```
+main:
+    JAL  @foo          ; R14 = ret_A, no stack push
+    ; ... continues here after foo returns ...
+
+foo:
+    CALL @bar          ; saves R14, jumps bar; POP R14 at return addr
+    ; R14 restored automatically when bar returns via RET
+    RET                ; return to main (MOVE R14, R15)
+
+bar:
+    ; ... leaf function ...
+    RET                ; MOVE R14, R15 → lands on POP R14 in foo's CALL
+```
+
+---
+
+## LD / ST pseudo-instructions
+
+`LD` and `ST` are pseudo-instructions that dispatch to the appropriate underlying instruction based on width suffix and operand type. They are intended as a more familiar alternative to the explicit mnemonic names.
+
+### LD — unified load
+
+| Form | Resolves to | Width |
+|------|-------------|-------|
+| `LD #imm8, Rd` | `LDI #imm8, Rd` | immediate (8-bit slot) |
+| `LD[.SN] #imm8, Rd` | `LDI[.SN] #imm8, Rd` | immediate with byte-slot shift |
+| `LD …` | `LOAD …` | 64-bit memory load |
+| `LD.B …` | `BYTE_LOAD …` | 8-bit memory load |
+| `LD.S …` / `LD.W …` | `SHORT_LOAD …` | 16-bit memory load |
+| `LD.I …` | `WORD_LOAD …` | 32-bit memory load |
+
+The distinction between immediate and memory forms is made automatically: if the first operand begins with `#`, the instruction resolves to `LDI`; otherwise it resolves to the appropriate memory-load mnemonic.
+
+```
+LD   #42, R1            ; LDI #42, R1
+LD.S1 #0xAB, R1         ; LDI.S1 #0xAB, R1  (shift = 1)
+LD   [R3], R4           ; LOAD [R3], R4
+LD.B [R3], R4           ; BYTE_LOAD [R3], R4
+LD.S [R3+2], R4         ; SHORT_LOAD [R3+2], R4
+LD.W [R3+2], R4         ; SHORT_LOAD [R3+2], R4  (alias for .S)
+LD.I [R3], R4           ; WORD_LOAD [R3], R4
+LD   @label, R4         ; LOAD @label, R4
+```
+
+### ST — unified store
+
+| Form | Resolves to | Width |
+|------|-------------|-------|
+| `ST …` | `STORE …` | 64-bit memory store |
+| `ST.B …` | `BYTE_STORE …` | 8-bit memory store |
+| `ST.S …` / `ST.W …` | `SHORT_STORE …` | 16-bit memory store |
+| `ST.I …` | `WORD_STORE …` | 32-bit memory store |
+
+```
+ST   [R3], R4           ; STORE [R3], R4
+ST.B [R3], R4           ; BYTE_STORE [R3], R4
+ST.S [R3+2], R4         ; SHORT_STORE [R3+2], R4
+ST.I [R3], R4           ; WORD_STORE [R3], R4
 ```
 
 ---
