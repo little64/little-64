@@ -97,17 +97,17 @@ static void test_gp_encoding() {
     // 0xC000 | 0x0100 | 0x0030 | 0x0004 = 0xC134
     CHECK_EQ(assemble("SUB R3, R4")[0], 0xC134, "SUB R3, R4");
 
-    // AND R2, R1 → op=2, rs1=2, rd=1
-    // 0xC000 | 0x0200 | 0x0020 | 0x0001 = 0xC221
-    CHECK_EQ(assemble("AND R2, R1")[0], 0xC221, "AND R2, R1");
+    // AND R2, R1 → op=16, rs1=2, rd=1
+    // 0xC000 | 0x1000 | 0x0020 | 0x0001 = 0xD021
+    CHECK_EQ(assemble("AND R2, R1")[0], 0xD021, "AND R2, R1");
 
-    // OR R0, R5 → op=3, rs1=0, rd=5
-    // 0xC000 | 0x0300 | 0x0000 | 0x0005 = 0xC305
-    CHECK_EQ(assemble("OR R0, R5")[0], 0xC305, "OR R0, R5");
+    // OR R0, R5 → op=17, rs1=0, rd=5
+    // 0xC000 | 0x1100 | 0x0000 | 0x0005 = 0xD105
+    CHECK_EQ(assemble("OR R0, R5")[0], 0xD105, "OR R0, R5");
 
-    // TEST R7, R7 → op=4, rs1=7, rd=7
-    // 0xC000 | 0x0400 | 0x0070 | 0x0007 = 0xC477
-    CHECK_EQ(assemble("TEST R7, R7")[0], 0xC477, "TEST R7, R7");
+    // TEST R7, R7 → op=2, rs1=7, rd=7
+    // 0xC000 | 0x0200 | 0x0070 | 0x0007 = 0xC277
+    CHECK_EQ(assemble("TEST R7, R7")[0], 0xC277, "TEST R7, R7");
 
     // STOP → op=63, rs1=0, rd=0
     // 0xC000 | 0x3F00 | 0x0000 | 0x0000 = 0xFF00
@@ -212,6 +212,19 @@ static void test_jump_pseudo() {
         // MOVE pc_rel=2, rd=15: 0x4000|0x1000|(2<<4)|0xF = 0x500F|0x20 = 0x502F
         CHECK_EQ(out[0], 0x502F, "JUMP @label forward (=MOVE @label, R15)");
     }
+}
+
+static void test_ldi64_pseudo() {
+    auto out = assemble("LDI64 #0x0011223344556677, R3\nSTOP\n");
+
+    // LDI64 expands to 2 instructions + 8-byte constant
+    CHECK_EQ(out[0], 0x4013, "LDI64 load instruction");   // LOAD @+1, R3
+    CHECK_EQ(out[1], 0x504F, "LDI64 jump instruction");   // JUMP @+4, R15
+    CHECK_EQ(out[2], 0x6677, "LDI64 constant word0 (lower)");
+    CHECK_EQ(out[3], 0x4455, "LDI64 constant word1");
+    CHECK_EQ(out[4], 0x2233, "LDI64 constant word2");
+    CHECK_EQ(out[5], 0x0011, "LDI64 constant word3 (upper)");
+    CHECK_EQ(out[6], 0xFF00, "LDI64 following STOP");
 }
 
 // ---------------------------------------------------------------------------
@@ -481,6 +494,9 @@ int main() {
 
     std::printf("E: JUMP pseudo\n");
     test_jump_pseudo();
+
+    std::printf("E2: LDI64 pseudo\n");
+    test_ldi64_pseudo();
 
     std::printf("F: Conditional jumps\n");
     test_conditional_jumps();

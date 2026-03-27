@@ -48,12 +48,14 @@ private:
 
     // A single item to be emitted: either an instruction or a data directive.
     // Items are stored in source order so pass2 can emit them interleaved.
+public:
     struct EmitItem {
         bool is_instruction = true;
         ParsedInstruction instr;  // valid when is_instruction == true
         DataDirective data;       // valid when is_instruction == false
     };
 
+private:
     void pass1(const std::vector<Token>& tokens, SymbolTable& symbols);
     void pass2(const SymbolTable& symbols, std::vector<uint16_t>& output);
 

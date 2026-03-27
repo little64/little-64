@@ -33,15 +33,29 @@ static Token makeImmToken(int32_t val, int line) {
 //
 // To add a new pseudo-instruction, add one entry here.
 //   arity  — expected number of source operands (tokens, not counting commas)
-//   expand — returns a vector of ParsedInstruction objects in emission order;
-//             each instruction's address is set relative to base addr
+//   expand — returns a vector of Assembler::EmitItem objects in emission order;
+//             each item's address is computed by pass1 based on current address
 // ---------------------------------------------------------------------------
 
 struct PseudoDef {
     int arity;
-    std::function<std::vector<ParsedInstruction>(
+    std::function<std::vector<Assembler::EmitItem>(
         const std::vector<Token>&, uint16_t addr, int line)> expand;
 };
+
+static Assembler::EmitItem makeInstrItem(const ParsedInstruction& instr) {
+    Assembler::EmitItem item;
+    item.is_instruction = true;
+    item.instr = instr;
+    return item;
+}
+
+static Assembler::EmitItem makeDataItem(const DataDirective& data) {
+    Assembler::EmitItem item;
+    item.is_instruction = false;
+    item.data = data;
+    return item;
+}
 
 static const std::unordered_map<std::string, PseudoDef> pseudo_table = {
     // JAL @target → MOVE R15+2, R14  ;  JUMP @target
@@ -53,17 +67,18 @@ static const std::unordered_map<std::string, PseudoDef> pseudo_table = {
         move.mnemonic        = "MOVE";
         move.detected_format = Format::LS_REG;
         move.operands        = {makeRegToken(15, line), makeImmToken(2, line), makeRegToken(14, line)};
-        move.address         = addr;
         move.line            = line;
 
         ParsedInstruction jump;
         jump.mnemonic        = "JUMP";
         jump.detected_format = Format::LS_PCREL;
         jump.operands        = {ops[0], makeRegToken(15, line)};
-        jump.address         = static_cast<uint16_t>(addr + 2);
         jump.line            = line;
 
-        return std::vector<ParsedInstruction>{move, jump};
+        return std::vector<Assembler::EmitItem>{
+            makeInstrItem(move),
+            makeInstrItem(jump),
+        };
     }}},
 
     // CALL @target →
@@ -79,31 +94,79 @@ static const std::unordered_map<std::string, PseudoDef> pseudo_table = {
         push.mnemonic        = "PUSH";
         push.detected_format = Format::LS_REG;
         push.operands        = {makeRegToken(14, line), makeImmToken(0, line), makeRegToken(13, line)};
-        push.address         = addr;
         push.line            = line;
 
         ParsedInstruction move;
         move.mnemonic        = "MOVE";
         move.detected_format = Format::LS_REG;
         move.operands        = {makeRegToken(15, line), makeImmToken(2, line), makeRegToken(14, line)};
-        move.address         = static_cast<uint16_t>(addr + 2);
         move.line            = line;
 
         ParsedInstruction jump;
         jump.mnemonic        = "JUMP";
         jump.detected_format = Format::LS_PCREL;
         jump.operands        = {ops[0], makeRegToken(15, line)};
-        jump.address         = static_cast<uint16_t>(addr + 4);
         jump.line            = line;
 
         ParsedInstruction pop;
         pop.mnemonic        = "POP";
         pop.detected_format = Format::LS_REG;
         pop.operands        = {makeRegToken(14, line), makeImmToken(0, line), makeRegToken(13, line)};
-        pop.address         = static_cast<uint16_t>(addr + 6);
         pop.line            = line;
 
-        return std::vector<ParsedInstruction>{push, move, jump, pop};
+        return std::vector<Assembler::EmitItem>{
+            makeInstrItem(push),
+            makeInstrItem(move),
+            makeInstrItem(jump),
+            makeInstrItem(pop),
+        };
+    }}},
+
+    // LDI64 #imm64, Rd
+    // Expands to:
+    //   LOAD @+1, Rd   ; load value at constant location (1 instruction unit after next)
+    //   JUMP @+4      ; skip the 8-byte constant and continue
+    //   .long imm64
+    {"LDI64", {2, [](const std::vector<Token>& ops, uint16_t addr, int line) {
+        if (ops[0].kind != TokenKind::ImmediateAbs)
+            throw std::runtime_error("LDI64 requires a 64-bit immediate value");
+        if (ops[1].kind != TokenKind::Register)
+            throw std::runtime_error("LDI64 requires a destination register");
+
+        Token pcrel_val;
+        pcrel_val.kind = TokenKind::PCRelOffset;
+        pcrel_val.lexeme = "@+1";
+        pcrel_val.int_value = 1;
+        pcrel_val.line = line;
+
+        Token pcrel_after;
+        pcrel_after.kind = TokenKind::PCRelOffset;
+        pcrel_after.lexeme = "@+4";
+        pcrel_after.int_value = 4;
+        pcrel_after.line = line;
+
+        ParsedInstruction load;
+        load.mnemonic = "LOAD";
+        load.detected_format = Format::LS_PCREL;
+        load.operands = {pcrel_val, ops[1]};
+        load.line = line;
+
+        ParsedInstruction jump;
+        jump.mnemonic = "JUMP";
+        jump.detected_format = Format::LS_PCREL;
+        jump.operands = {pcrel_after, makeRegToken(15, line)};
+        jump.line = line;
+
+        DataDirective dd;
+        dd.kind = DataDirective::Kind::Long;
+        dd.value = ops[0].int_value;
+        dd.line = line;
+
+        return std::vector<Assembler::EmitItem>{
+            makeInstrItem(load),
+            makeInstrItem(jump),
+            makeDataItem(dd),
+        };
     }}},
 
     // RET → MOVE R14, R15
@@ -115,10 +178,9 @@ static const std::unordered_map<std::string, PseudoDef> pseudo_table = {
         move.mnemonic        = "MOVE";
         move.detected_format = Format::LS_REG;
         move.operands        = {makeRegToken(14, line), makeImmToken(0, line), makeRegToken(15, line)};
-        move.address         = addr;
         move.line            = line;
 
-        return std::vector<ParsedInstruction>{move};
+        return std::vector<Assembler::EmitItem>{makeInstrItem(move)};
     }}},
 };
 
@@ -304,16 +366,48 @@ void Assembler::pass1(const std::vector<Token>& tokens, SymbolTable& symbols) {
                 idx++;
             }
             const auto& def = pseudo_it->second;
-            if (static_cast<int>(operands.size()) != def.arity)
-                throw std::runtime_error(first_lexeme + " expects " + std::to_string(def.arity) +
-                                         " operand(s) at line " + std::to_string(line_at_start));
-            for (auto& instr : def.expand(operands, current_address, line_at_start)) {
-                EmitItem item;
-                item.is_instruction = true;
-                item.instr = std::move(instr);
+        if (static_cast<int>(operands.size()) != def.arity)
+            throw std::runtime_error(first_lexeme + " expects " + std::to_string(def.arity) +
+                                     " operand(s) at line " + std::to_string(line_at_start));
+
+        for (auto item : def.expand(operands, current_address, line_at_start)) {
+            if (item.is_instruction) {
+                item.instr.address = current_address;
                 emit_items.push_back(std::move(item));
                 current_address += 2;
+            } else {
+                // Align 2-byte-access directives to even addresses.
+                if ((item.data.kind == DataDirective::Kind::Short ||
+                     item.data.kind == DataDirective::Kind::Int ||
+                     item.data.kind == DataDirective::Kind::Long) &&
+                    (current_address % 2 != 0)) {
+                    current_address += 1;
+                }
+                item.data.address = current_address;
+                emit_items.push_back(std::move(item));
+
+                switch (item.data.kind) {
+                    case DataDirective::Kind::Byte:
+                        current_address += 1;
+                        break;
+                    case DataDirective::Kind::Short:
+                        current_address += 2;
+                        break;
+                    case DataDirective::Kind::Int:
+                        current_address += 4;
+                        break;
+                    case DataDirective::Kind::Long:
+                        current_address += 8;
+                        break;
+                    case DataDirective::Kind::Ascii:
+                        current_address += static_cast<uint16_t>(item.data.text.length());
+                        break;
+                    case DataDirective::Kind::Asciiz:
+                        current_address += static_cast<uint16_t>(item.data.text.length() + 1);
+                        break;
+                }
             }
+        }
         } else {
             ParsedInstruction parsed = parseInstruction(tokens, idx, current_address, line_count);
             parsed.line = line_at_start;
