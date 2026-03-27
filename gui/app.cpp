@@ -76,10 +76,18 @@ bool App::init() {
 
     ImGui::StyleColorsDark();
 
-    // Load a crisp monospace TTF for better readability
-    ImFont* font = io.Fonts->AddFontFromFileTTF(
-        "/usr/share/fonts/truetype/DejaVuSansMono.ttf", 16.0f);
-    if (!font)
+    // Load multiple sizes of the monospace TTF for the resizable editor.
+    // Index 3 (16px) is the default and is also used as the global UI font.
+    static const float kEditorFontSizes[] = {10.0f, 12.0f, 14.0f, 16.0f, 18.0f, 20.0f, 24.0f};
+    const char* font_path = "/usr/share/fonts/truetype/DejaVuSansMono.ttf";
+    for (float sz : kEditorFontSizes) {
+        ImFont* f = io.Fonts->AddFontFromFileTTF(font_path, sz);
+        state.editor_fonts.push_back(f);
+    }
+    // Use the 16px entry as the global UI font; fall back to built-in default if TTF is missing.
+    if (state.editor_fonts[3])
+        io.FontDefault = state.editor_fonts[3];
+    else
         io.Fonts->AddFontDefault();
 
     // Setup ImGui SDL2 backend

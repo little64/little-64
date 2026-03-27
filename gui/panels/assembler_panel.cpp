@@ -109,12 +109,28 @@ void AssemblerPanel::render() {
         if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_O)) openFile();
         if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S)) saveFile();
 
+        // Ctrl+scroll to resize editor font
+        if (io.KeyCtrl && ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows)) {
+            if (io.MouseWheel > 0.0f)
+                state.editor_font_idx = std::min(state.editor_font_idx + 1,
+                                                 (int)state.editor_fonts.size() - 1);
+            else if (io.MouseWheel < 0.0f)
+                state.editor_font_idx = std::max(state.editor_font_idx - 1, 0);
+        }
+
         // Toolbar
         if (ImGui::Button("Open", ImVec2(60, 0))) openFile();
         ImGui::SameLine();
         if (ImGui::Button("Save", ImVec2(60, 0))) saveFile();
         ImGui::SameLine();
         if (ImGui::Button("Save As", ImVec2(70, 0))) saveFileAs();
+        ImGui::SameLine();
+        if (ImGui::Button("A-", ImVec2(28, 0)))
+            state.editor_font_idx = std::max(state.editor_font_idx - 1, 0);
+        ImGui::SameLine();
+        if (ImGui::Button("A+", ImVec2(28, 0)))
+            state.editor_font_idx = std::min(state.editor_font_idx + 1,
+                                             (int)state.editor_fonts.size() - 1);
         ImGui::SameLine(ImGui::GetWindowWidth() - 250);
         ImGui::TextDisabled("File: ");
         ImGui::SameLine();
@@ -134,7 +150,13 @@ void AssemblerPanel::render() {
         ImGui::Separator();
 
         // Syntax-highlighting editor (leaves ~55px for the button row below)
+        ImFont* editor_font = (!state.editor_fonts.empty() &&
+                               state.editor_font_idx < (int)state.editor_fonts.size() &&
+                               state.editor_fonts[state.editor_font_idx])
+                              ? state.editor_fonts[state.editor_font_idx] : nullptr;
+        if (editor_font) ImGui::PushFont(editor_font);
         editor.Render("##editor", ImVec2(-1, -55));
+        if (editor_font) ImGui::PopFont();
         state.editor_source = editor.GetText();
 
         // Assemble button
