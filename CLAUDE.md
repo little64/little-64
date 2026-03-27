@@ -6,18 +6,31 @@ This projet uses meson. The build folder is located in `builddir/`.
 
 ## Changing instructions
 
-When adding, removing, or renaming an instruction, update all of the following:
+### LS instructions (Formats 00/01 — load/store/move/jump)
 
 | File | What to change |
 |---|---|
-| `arch/opcodes_ls.def` or `arch/opcodes_gp.def` | Add/remove/rename the `LITTLE64_*_OPCODE` entry (enum name, opcode value, mnemonic string) |
-| `emulator/cpu.cpp` | Add/update the `case LS::Opcode::*` or `case GP::Opcode::*` in both `_dispatchLSReg` and `_dispatchLSPCRel` (LS instructions have different behaviour per format) |
-| `assembler/assembler.cpp` | Add a parse path if the instruction needs non-standard syntax (e.g. bare registers instead of `[Rs1], Rd`); update any mnemonic-classification helpers |
-| `disassembler/disassembler.cpp` | Add a special-case if the instruction's disassembly text differs from the default `[Rs1+N], Rd` pattern |
-| `gui/panels/assembler_panel.cpp` | No change needed — the keyword list is built automatically from `Assembler::getAllMnemonics()` |
-| `CPU_ARCH.md` | Update the OPCODE_LS or OPCODE_GP table and any associated notes |
-| `docs/assembly-syntax.md` | Update examples if the syntax is affected |
+| `arch/opcodes_ls.def` | `LITTLE64_LS_OPCODE(enum_name, opcode_value, "mnemonic")` |
+| `emulator/cpu.cpp` | Add/update the `case LS::Opcode::*` in **both** `_dispatchLSReg` (Format 00) and `_dispatchLSPCRel` (Format 01) — the two formats share an opcode but can behave differently |
+| `assembler/assembler.cpp` | Only if the instruction needs non-standard syntax (e.g. bare registers instead of `[Rs1], Rd`) or a new mnemonic-classification helper |
+| `disassembler/disassembler.cpp` | Only if the disassembly text differs from the default `[Rs1+N], Rd` pattern |
+| `CPU_ARCH.md` | Update the OPCODE_LS table |
+| `docs/assembly-syntax.md` | Update if the syntax is affected |
 | `test_program.asm` | Update any uses of the changed instruction |
+
+### GP instructions (Format 11 — ALU)
+
+| File | What to change |
+|---|---|
+| `arch/opcodes_gp.def` | `LITTLE64_GP_OPCODE(enum_name, opcode_value, "mnemonic", num_regs)` where `num_regs` is 2 (Rs1+Rd), 1 (Rd only), or 0 (no registers) |
+| `emulator/cpu.cpp` | Add/update the `case GP::Opcode::*` in `_dispatchGP` only |
+| `assembler/assembler.cpp` | Rarely needed — the `num_regs` field in the `.def` drives operand parsing automatically |
+| `disassembler/disassembler.cpp` | Only if the disassembly text differs from the default pattern |
+| `CPU_ARCH.md` | Update the OPCODE_GP table |
+| `docs/assembly-syntax.md` | Update if the syntax is affected |
+| `test_program.asm` | Update any uses of the changed instruction |
+
+`gui/panels/assembler_panel.cpp` never needs updating — the keyword list is built automatically from `Assembler::getAllMnemonics()`.
 
 ## Adding pseudo-instructions
 
