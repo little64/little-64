@@ -123,6 +123,12 @@ public:
     // Creates ROM + 64MB RAM + serial device. Resets CPU state.
     void loadProgram(const std::vector<uint16_t>& words, uint64_t base = 0);
 
+    // Resets basic CPU state. Does not modify memory or devices.
+    void reset() {
+        registers = {};
+        isRunning = true;
+    }
+
     // Memory bus access for GUI panels and external tooling
     MemoryBus&       getMemoryBus()       { return _bus; }
     const MemoryBus& getMemoryBus() const { return _bus; }

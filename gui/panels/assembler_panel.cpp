@@ -6,19 +6,86 @@
 #include <nfd.h>
 #include <algorithm>
 #include <fstream>
-#include <cstring>
 #include <unistd.h>
 #include <climits>
 
+static TextEditor::LanguageDefinition buildLanguageDef() {
+    TextEditor::LanguageDefinition lang;
+    lang.mName = "Little-64 ASM";
+    lang.mSingleLineComment = ";";
+    lang.mCaseSensitive = false;
+
+    // Opcodes → Keyword colour
+    // LDI accepts .SN and .N suffix forms (N = 0–3)
+    static const char* const opcodes[] = {
+        "ADD", "SUB", "AND", "OR", "TEST", "STOP",
+        "LOAD", "STORE", "INC_LOAD", "DEC_STORE", "MOVE",
+        "BYTE_LOAD", "BYTE_STORE", "SHORT_LOAD", "SHORT_STORE",
+        "WORD_LOAD", "WORD_STORE",
+        "JUMP.Z", "JUMP.C", "JUMP.S", "JUMP.GT", "JUMP.LT",
+        "LDI",
+        "LDI.S0", "LDI.S1", "LDI.S2", "LDI.S3",
+        "LDI.0",  "LDI.1",  "LDI.2",  "LDI.3",
+        nullptr
+    };
+    for (auto kw = opcodes; *kw; ++kw)
+        lang.mKeywords.insert(*kw);
+
+    // Registers R0–R15 → KnownIdentifier colour
+    for (int i = 0; i <= 15; ++i) {
+        std::string reg = "R" + std::to_string(i);
+        lang.mIdentifiers[reg] = TextEditor::Identifier{};
+    }
+
+    // Regex tokens (matched in order, first match wins):
+    // Label definitions (identifier:) — must come before bare identifier matching
+    lang.mTokenRegexStrings.push_back({ "[a-zA-Z_][a-zA-Z0-9_.]*:",  TextEditor::PaletteIndex::CharLiteral });
+    // Directives (.org, .word)
+    lang.mTokenRegexStrings.push_back({ "\\.org|\\.word",             TextEditor::PaletteIndex::Preprocessor });
+    // PC-relative operands: @label, @+N, @-N (label names may contain dots)
+    lang.mTokenRegexStrings.push_back({ "@[+\\-]?[a-zA-Z0-9_.]+",    TextEditor::PaletteIndex::String });
+    // Hex numbers (#0xFF / 0xFF)
+    lang.mTokenRegexStrings.push_back({ "#?0[xX][0-9a-fA-F]+",       TextEditor::PaletteIndex::Number });
+    // Binary numbers (#0b101 / 0b101)
+    lang.mTokenRegexStrings.push_back({ "#?0[bB][01]+",               TextEditor::PaletteIndex::Number });
+    // Decimal numbers (#123 / 123)
+    lang.mTokenRegexStrings.push_back({ "#?[0-9]+",                   TextEditor::PaletteIndex::Number });
+
+    return lang;
+}
+
+// VS Code-inspired palette — bright, high-contrast colours on a dark background
+static TextEditor::Palette buildPalette() {
+    auto p = TextEditor::GetDarkPalette();
+    // Default text and identifiers (labels, unknown names) — near-white
+    p[(int)TextEditor::PaletteIndex::Default]          = IM_COL32(0xD4, 0xD4, 0xD4, 0xFF);
+    p[(int)TextEditor::PaletteIndex::Identifier]       = IM_COL32(0xD4, 0xD4, 0xD4, 0xFF);
+    // Opcodes — warm yellow (VS Code function colour)
+    p[(int)TextEditor::PaletteIndex::Keyword]          = IM_COL32(0xDC, 0xDC, 0xAA, 0xFF);
+    // Registers — sky blue (VS Code variable colour)
+    p[(int)TextEditor::PaletteIndex::KnownIdentifier]  = IM_COL32(0x9C, 0xDC, 0xFE, 0xFF);
+    // Numeric literals — soft green (VS Code number colour)
+    p[(int)TextEditor::PaletteIndex::Number]           = IM_COL32(0xB5, 0xCE, 0xA8, 0xFF);
+    // Comments — muted green (VS Code comment colour)
+    p[(int)TextEditor::PaletteIndex::Comment]          = IM_COL32(0x6A, 0x99, 0x55, 0xFF);
+    p[(int)TextEditor::PaletteIndex::MultiLineComment] = IM_COL32(0x6A, 0x99, 0x55, 0xFF);
+    // Directives (.org, .word) — orchid purple (VS Code keyword colour)
+    p[(int)TextEditor::PaletteIndex::Preprocessor]     = IM_COL32(0xC5, 0x86, 0xC0, 0xFF);
+    // PC-relative operands (@label, @+N) — warm orange (VS Code string colour)
+    p[(int)TextEditor::PaletteIndex::String]           = IM_COL32(0xCE, 0x91, 0x78, 0xFF);
+    // Label definitions (identifier:) — bright gold
+    p[(int)TextEditor::PaletteIndex::CharLiteral]      = IM_COL32(0xFF, 0xD7, 0x00, 0xFF);
+    // Line numbers — dim grey
+    p[(int)TextEditor::PaletteIndex::LineNumber]       = IM_COL32(0x85, 0x85, 0x85, 0xFF);
+    return p;
+}
+
 AssemblerPanel::AssemblerPanel(AppState& state)
     : state(state) {
-    // Initialize editor buffer from editor_source if available
-    if (!state.editor_source.empty()) {
-        size_t len = std::min(state.editor_source.size(), size_t(65535));
-        std::copy(state.editor_source.begin(), state.editor_source.begin() + len, editor_buf);
-        editor_buf[len] = '\0';
-        last_saved_content = state.editor_source;
-    }
+    editor.SetLanguageDefinition(buildLanguageDef());
+    editor.SetPalette(buildPalette());
+    editor.SetText(state.editor_source);
+    last_saved_content = state.editor_source;
 }
 
 void AssemblerPanel::render() {
@@ -40,49 +107,51 @@ void AssemblerPanel::render() {
 
         // Display file name (or <untitled>)
         std::string display_name = state.current_file.empty() ? "<untitled>" : state.current_file;
-        // Extract basename
         size_t last_slash = display_name.find_last_of("/\\");
-        if (last_slash != std::string::npos) {
+        if (last_slash != std::string::npos)
             display_name = display_name.substr(last_slash + 1);
-        }
 
-        // Add unsaved indicator if modified
-        bool has_unsaved = (editor_buf != last_saved_content);
-        if (has_unsaved) {
+        // Unsaved indicator
+        if (editor.GetText() != last_saved_content)
             display_name += " *";
-        }
 
         ImGui::TextWrapped("%s", display_name.c_str());
 
         ImGui::Separator();
 
-        // Text editor
-        ImGuiInputTextFlags flags = ImGuiInputTextFlags_AllowTabInput;
-        ImGui::InputTextMultiline("##editor", editor_buf, sizeof(editor_buf),
-                                  ImVec2(-1, -55), flags);
+        // Syntax-highlighting editor (leaves ~55px for the button row below)
+        editor.Render("##editor", ImVec2(-1, -55));
+        state.editor_source = editor.GetText();
 
         // Assemble button
         if (ImGui::Button("Assemble", ImVec2(100, 0))) {
             try {
                 state.assemble_error.clear();
                 Assembler assembler;
-                std::vector<uint16_t> output = assembler.assemble(editor_buf);
+                std::vector<uint16_t> output = assembler.assemble(state.editor_source);
 
-                // Load program into CPU memory
                 state.cpu.loadProgram(output);
-
-                // Disassemble for display
                 state.disassembly = Disassembler::disassembleBuffer(
-                    output.data(),
-                    output.size(),
-                    0
-                );
+                    output.data(), output.size(), 0);
+
+                editor.SetErrorMarkers({});
             } catch (const std::exception& e) {
                 state.assemble_error = std::string("Error: ") + e.what();
+
+                // Parse "at line N" to highlight the offending line
+                TextEditor::ErrorMarkers markers;
+                auto pos = state.assemble_error.rfind("at line ");
+                if (pos != std::string::npos) {
+                    try {
+                        int line = std::stoi(state.assemble_error.substr(pos + 8));
+                        markers[line] = e.what();
+                    } catch (...) {}
+                }
+                editor.SetErrorMarkers(markers);
             }
         }
 
-        // Display error message if present
+        // Error message
         if (!state.assemble_error.empty()) {
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.0f, 0.0f, 1.0f));
             ImGui::TextWrapped("%s", state.assemble_error.c_str());
@@ -93,7 +162,6 @@ void AssemblerPanel::render() {
 }
 
 // Returns the directory to use as the NFD default path.
-// If a file is open, returns its parent directory; otherwise returns CWD.
 static std::string dialogDefaultDir(const std::string& current_file) {
     if (!current_file.empty()) {
         size_t last_slash = current_file.find_last_of("/\\");
@@ -132,8 +200,7 @@ void AssemblerPanel::saveFileAs() {
     nfdchar_t* out = nullptr;
     std::string dir = dialogDefaultDir(state.current_file);
     nfdresult_t res = NFD_SaveDialog(&out, filters, 1,
-        dir.empty() ? nullptr : dir.c_str(),
-        nullptr);
+        dir.empty() ? nullptr : dir.c_str(), nullptr);
     if (res == NFD_OKAY) {
         state.current_file = out;
         NFD_FreePath(out);
@@ -151,14 +218,11 @@ void AssemblerPanel::loadFileIntoBuffer(const std::string& path) {
     std::string contents((std::istreambuf_iterator<char>(file)),
                          std::istreambuf_iterator<char>());
 
-    // Truncate to buffer size if needed
-    size_t len = std::min(contents.size(), size_t(65535));
-    std::copy(contents.begin(), contents.begin() + len, editor_buf);
-    editor_buf[len] = '\0';
-
+    editor.SetText(contents);
     last_saved_content = contents;
     state.editor_source = contents;
     state.assemble_error.clear();
+    editor.SetErrorMarkers({});
 }
 
 void AssemblerPanel::writeBufferToFile(const std::string& path) {
@@ -168,10 +232,11 @@ void AssemblerPanel::writeBufferToFile(const std::string& path) {
         return;
     }
 
-    file.write(editor_buf, std::strlen(editor_buf));
+    std::string text = editor.GetText();
+    file.write(text.c_str(), text.size());
     file.close();
 
-    last_saved_content = editor_buf;
-    state.editor_source = editor_buf;
+    last_saved_content = text;
+    state.editor_source = text;
     state.assemble_error.clear();
 }

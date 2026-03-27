@@ -76,6 +76,12 @@ bool App::init() {
 
     ImGui::StyleColorsDark();
 
+    // Load a crisp monospace TTF for better readability
+    ImFont* font = io.Fonts->AddFontFromFileTTF(
+        "/usr/share/fonts/truetype/DejaVuSansMono.ttf", 16.0f);
+    if (!font)
+        io.Fonts->AddFontDefault();
+
     // Setup ImGui SDL2 backend
     ImGui_ImplSDL2_InitForOpenGL(window, gl_ctx);
 

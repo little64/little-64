@@ -1,7 +1,7 @@
 #pragma once
 
-#include <cstdint>
 #include <string>
+#include "TextEditor.h"
 
 struct AppState;
 
@@ -12,7 +12,7 @@ public:
 
 private:
     AppState& state;
-    char editor_buf[65536] = {};  // Text buffer for ImGui::InputTextMultiline
+    TextEditor editor;
     std::string last_saved_content;  // for unsaved-changes detection
 
     void openFile();

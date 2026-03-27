@@ -80,6 +80,7 @@ gui_src = [
   'gui/panels/memory_panel.cpp',
   'gui/panels/serial_output_panel.cpp',
   'gui/panels/memmap_panel.cpp',
+  'gui/vendor/TextEditor.cpp',
 ]
 
 executable('little-64-gui',
@@ -88,6 +89,7 @@ executable('little-64-gui',
   include_directories : [
     include_directories('gui'),
     include_directories('gui/panels'),
+    include_directories('gui/vendor'),
     include_directories('emulator'),
     include_directories('assembler'),
     include_directories('disassembler'),
