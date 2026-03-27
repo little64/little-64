@@ -14,10 +14,23 @@ When adding, removing, or renaming an instruction, update all of the following:
 | `emulator/cpu.cpp` | Add/update the `case LS::Opcode::*` or `case GP::Opcode::*` in both `_dispatchLSReg` and `_dispatchLSPCRel` (LS instructions have different behaviour per format) |
 | `assembler/assembler.cpp` | Add a parse path if the instruction needs non-standard syntax (e.g. bare registers instead of `[Rs1], Rd`); update any mnemonic-classification helpers |
 | `disassembler/disassembler.cpp` | Add a special-case if the instruction's disassembly text differs from the default `[Rs1+N], Rd` pattern |
-| `gui/panels/assembler_panel.cpp` | Add/remove the mnemonic string from the `opcodes[]` keyword list for syntax highlighting |
+| `gui/panels/assembler_panel.cpp` | No change needed — the keyword list is built automatically from `Assembler::getAllMnemonics()` |
 | `CPU_ARCH.md` | Update the OPCODE_LS or OPCODE_GP table and any associated notes |
 | `docs/assembly-syntax.md` | Update examples if the syntax is affected |
 | `test_program.asm` | Update any uses of the changed instruction |
+
+## Adding pseudo-instructions
+
+Pseudo-instructions expand to one or more real instructions at assembly time. They live in the `pseudo_table` in `assembler/assembler.cpp` — adding a new one requires no changes anywhere else (syntax highlighting and documentation aside).
+
+| File | What to change |
+|---|---|
+| `assembler/assembler.cpp` | Add an entry to `pseudo_table` (mnemonic → arity + expander lambda) |
+| `docs/assembly-syntax.md` | Document the expansion and intended usage |
+
+The expander lambda receives the source operand tokens, the base address of the first emitted instruction, and the source line number. It returns a `std::vector<ParsedInstruction>` in emission order; each instruction's `.address` field must be set to `base_addr + 2*index`. Use `makeRegToken()` and `makeImmToken()` to build synthetic operand tokens.
+
+Pseudo-instructions are detected in `pass1()` before `parseInstruction()` is called, so they are fully transparent to the encoder and disassembler.
 
 ## LS instruction specifics
 

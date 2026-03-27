@@ -6,11 +6,10 @@ _stack_base:
 .long 0x4000000
 
 start:
-	LOAD @_stack_base, R13
+	LD @_stack_base, R13
 	MOVE @hello_world, R10
 	; Call with link
-	MOVE R15+2, R14
-	JUMP @serial_print
+	JAL @serial_print
 	STOP
 
 hello_world:
@@ -25,17 +24,18 @@ serial_print:
 	PUSH R9
 	
 	LOAD @_serial_base, R9 ; Load the pointer to the serial device
-	LDI #1, R3
+	LD #1, R3
 	_loop:
-	BYTE_LOAD [R10], R2 ; Read the current char byte
+	LD.B [R10], R2 ; Read the current char byte
 	TEST R2, R0 ; Test if it is zero
 	JUMP.Z @_exit ; Return if it is zero
-	BYTE_STORE [R9], R2 ; Write it to serial
+	ST.B [R9], R2 ; Write it to serial
 	ADD R3, R10
 	JUMP @_loop
 	
 	_exit:
 	POP R9
 	POP R10
-	MOVE R14, R15 ; Return
+	RET
+
 
