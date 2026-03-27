@@ -50,6 +50,11 @@ DisassembledInstruction Disassembler::disassemble(uint16_t word, uint16_t addres
 
             if (result.mnemonic == "PUSH" || result.mnemonic == "POP") {
                 oss << result.mnemonic << " R" << (int)result.rs1 << ", R" << (int)result.rd;
+            } else if (result.mnemonic == "MOVE") {
+                oss << "MOVE R" << (int)result.rs1;
+                if (result.offset2 > 0)
+                    oss << "+" << (int)(result.offset2 * 2);
+                oss << ", R" << (int)result.rd;
             } else {
                 oss << result.mnemonic << " [R" << (int)result.rs1;
                 if (result.offset2 > 0)

@@ -37,7 +37,15 @@ R0   R1   R2   ...   R14   R15
 r0   r1   ...                    ; lowercase prefix is accepted
 ```
 
-Register `R15` is the program counter (PC). It can be named explicitly in operands and is implicitly used as the destination by conditional jump instructions when no destination register is given.
+Three symbolic aliases are also recognised (case-insensitive):
+
+| Alias | Register | Role |
+|-------|----------|------|
+| `SP`  | R13      | Stack pointer |
+| `LR`  | R14      | Link register |
+| `PC`  | R15      | Program counter |
+
+Register `R15` (PC) is implicitly used as the destination by jump instructions and by `MOVE` when no destination is given.
 
 ---
 
@@ -142,6 +150,22 @@ MNEMONIC [Rs1+offset], Rd
 MNEMONIC [Rs1], Rd          ; offset defaults to 0
 ```
 
+`MOVE`, `JUMP`, `PUSH`, and `POP` do **not** use the bracket form (see their sections below).
+
+### Register address `Rs1` / `Rs1+offset`
+
+Used by `MOVE` and `JUMP` for register-relative address computation (format LS-REG), without implying a memory dereference:
+
+```
+R2          ; base register, offset = 0
+R2+2        ; base register + 2-byte offset
+```
+
+```
+MOVE Rs1, Rd
+MOVE Rs1+offset, Rd
+```
+
 ### PC-relative address `@label` / `@±N`
 
 Used by load/store and jump instructions with PC-relative addressing (format LS-PCREL):
@@ -186,11 +210,11 @@ LDI[.SN]  #imm8, Rd
 ### LS-REG — Load/store, register-relative
 
 ```
-MNEMONIC [Rs1],       Rd
+MNEMONIC [Rs1],        Rd
 MNEMONIC [Rs1+offset], Rd
 ```
 
-Also used for the bare-register jump form (see below).
+`MOVE`, `JUMP`, `PUSH`, and `POP` use a bracket-free register form instead (see their sections below).
 
 ### LS-PCREL — Load/store/jump, PC-relative
 
@@ -201,17 +225,32 @@ MNEMONIC @±N,     Rd
 
 ---
 
+## MOVE
+
+`MOVE` computes an effective address (adds an optional byte offset to a register) and places the result in `Rd`. It never reads or writes memory. In the register form, the source is written without brackets to distinguish it from memory-accessing instructions.
+
+```
+MOVE Rs1, Rd            ; Rd = Rs1
+MOVE Rs1+N, Rd          ; Rd = Rs1 + N  (N must be 0, 2, 4, or 6)
+MOVE @label, Rd         ; Rd = PC-relative address of label
+MOVE @±N, Rd            ; Rd = PC-relative numeric offset
+```
+
+When `Rd` is `R15` (or `PC`), `MOVE` acts as an unconditional jump. Use `JUMP` as a more readable alias for that case.
+
+---
+
 ## Jump forms
 
 ### Unconditional jump — `JUMP` pseudo-instruction
 
-`JUMP` is a pseudo-instruction that encodes as `MOVE` with `R15` as the implicit destination. It provides a readable unconditional branch syntax without requiring an explicit `MOVE … R15`.
+`JUMP` is a pseudo-instruction that encodes as `MOVE` with `R15` as the implicit destination.
 
 ```
 JUMP @loop              ; PC-relative, Rd = R15 (implicit)
 JUMP @+3                ; PC-relative numeric offset, Rd = R15
-JUMP R3                 ; register-indirect [R3+0], Rd = R15
-JUMP [R3+2], R15        ; bracket form, explicit Rd
+JUMP R3                 ; Rd = R3, Rd = R15 (implicit)
+JUMP R3+2, R15          ; Rd = R3 + 2, explicit Rd
 ```
 
 ### Conditional jumps — `JUMP.*`
@@ -222,9 +261,31 @@ Conditional jump mnemonics (those of the form `JUMP.*`) are LS-class instruction
 JUMP.Z @loop            ; PC-relative, Rd = R15 (implicit)
 JUMP.Z @loop, R15       ; PC-relative, Rd explicit
 JUMP.Z @+2              ; PC-relative numeric offset, Rd = R15
-JUMP.Z R3               ; register-indirect, offset = 0, Rd = R15
-JUMP.Z [R3], R15        ; bracket form, same encoding
-JUMP.Z R3, R0           ; register-indirect, Rd = R0 (unusual)
+JUMP.Z R3               ; register form, offset = 0, Rd = R15
+JUMP.Z R3, R0           ; register form, Rd = R0 (conditional move)
+```
+
+---
+
+## PUSH / POP
+
+`PUSH` and `POP` use a plain register form (no brackets). The stack-pointer register is optional and defaults to `R13` (`SP`) when omitted.
+
+```
+PUSH Rs1            ; SP -= 8; MEM64[SP] = Rs1   (stack pointer = R13)
+PUSH Rs1, Rd        ; Rd -= 8; MEM64[Rd] = Rs1   (explicit stack pointer)
+
+POP  Rs1            ; Rs1 = MEM64[SP]; SP += 8   (stack pointer = R13)
+POP  Rs1, Rd        ; Rs1 = MEM64[Rd]; Rd += 8   (explicit stack pointer)
+```
+
+The first register is always the data register (value being pushed or the destination for a pop). The optional second register is the stack pointer.
+
+```
+PUSH R5             ; save R5 onto the stack
+POP  R5             ; restore R5 from the stack
+PUSH LR             ; save link register (R14) onto the stack
+POP  LR             ; restore link register
 ```
 
 ---
@@ -321,7 +382,7 @@ start:
     ADD     R0, R2           ; R2 = R0 + R2
 
 loop:
-    POP R3, R1               ; pop from stack at R1 into R3; R1 += 8
+    POP R3                   ; R3 = MEM64[SP]; SP += 8
     TEST     R3, R3
     JUMP.Z   @done           ; branch if zero flag set
     JUMP.Z   @loop           ; else loop

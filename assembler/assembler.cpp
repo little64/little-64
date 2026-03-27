@@ -258,6 +258,11 @@ static bool isJumpMnemonic(const std::string& m) {
            m == "JUMP.Z" || m == "JUMP.C" || m == "JUMP.S" || m == "JUMP.GT" || m == "JUMP.LT";
 }
 
+// Helper: check if mnemonic is MOVE
+static bool isMoveMnemonic(const std::string& m) {
+    return m == "MOVE";
+}
+
 // Helper: check if mnemonic is PUSH or POP
 static bool isPushPopMnemonic(const std::string& m) {
     return m == "PUSH" || m == "POP";
@@ -355,6 +360,13 @@ Assembler::ParsedInstruction Assembler::parseInstruction(const std::vector<Token
 
     if (first_kind == TokenKind::LeftBracket) {
         // Format 00 (LS Register): [Rs1] or [Rs1+N]
+        // MOVE, JUMP, PUSH, and POP do not use bracket syntax.
+        if (isMoveMnemonic(base_mnemonic) || isJumpMnemonic(base_mnemonic) ||
+            isPushPopMnemonic(base_mnemonic))
+            throw std::runtime_error(base_mnemonic +
+                                     " does not use bracket syntax at line " +
+                                     std::to_string(line_count));
+
         result.detected_format = Format::LS_REG;
         idx++;  // consume '['
         if (idx >= tokens.size() || tokens[idx].kind != TokenKind::Register)
@@ -413,37 +425,49 @@ Assembler::ParsedInstruction Assembler::parseInstruction(const std::vector<Token
         return result;
     }
 
-    if (first_kind == TokenKind::Register && isJumpMnemonic(base_mnemonic)) {
-        // Bare register form for JUMP.*: Rs1 (Rd=R15) or Rs1, Rd
+    if (first_kind == TokenKind::Register &&
+        (isMoveMnemonic(base_mnemonic) || isJumpMnemonic(base_mnemonic))) {
+        // Register form for MOVE/JUMP: Rs1[+offset][, Rd]
+        // MOVE requires explicit Rd; JUMP defaults Rd to R15.
         result.detected_format = Format::LS_REG;
-        Token rs1_tok = tokens[idx++];  // Rs1
+        result.operands.push_back(tokens[idx++]);  // Rs1
 
-        result.operands.push_back(rs1_tok);
-
-        Token zero;
-        zero.kind = TokenKind::ImmediateAbs;
-        zero.lexeme = "0";
-        zero.int_value = 0;
-        zero.line = line_count;
-        result.operands.push_back(zero);
+        if (idx < tokens.size() && tokens[idx].kind == TokenKind::Plus) {
+            idx++;  // consume '+'
+            if (idx >= tokens.size() || tokens[idx].kind != TokenKind::ImmediateAbs)
+                throw std::runtime_error("Expected offset after '+' at line " +
+                                         std::to_string(line_count));
+            result.operands.push_back(tokens[idx++]);  // offset
+        } else {
+            Token zero;
+            zero.kind = TokenKind::ImmediateAbs;
+            zero.lexeme = "0";
+            zero.int_value = 0;
+            zero.line = line_count;
+            result.operands.push_back(zero);
+        }
 
         if (idx < tokens.size() && tokens[idx].kind == TokenKind::Comma) idx++;
 
         if (idx < tokens.size() && tokens[idx].kind == TokenKind::Register) {
             result.operands.push_back(tokens[idx++]);  // explicit Rd
-        } else {
+        } else if (isJumpMnemonic(base_mnemonic)) {
             Token r15;
             r15.kind = TokenKind::Register;
             r15.lexeme = "R15";
             r15.int_value = 15;
             r15.line = line_count;
             result.operands.push_back(r15);
+        } else {
+            throw std::runtime_error("MOVE requires a destination register at line " +
+                                     std::to_string(line_count));
         }
         return result;
     }
 
     if (first_kind == TokenKind::Register && isPushPopMnemonic(base_mnemonic)) {
-        // Bare register form for PUSH/POP: Rs1, Rd (Rd is the stack pointer)
+        // Register form for PUSH/POP: Rs1[, Rd]
+        // Rd defaults to R13 (stack pointer) when omitted.
         result.detected_format = Format::LS_REG;
         result.operands.push_back(tokens[idx++]);  // Rs1 (data register)
 
@@ -456,10 +480,16 @@ Assembler::ParsedInstruction Assembler::parseInstruction(const std::vector<Token
 
         if (idx < tokens.size() && tokens[idx].kind == TokenKind::Comma) idx++;
 
-        if (idx >= tokens.size() || tokens[idx].kind != TokenKind::Register)
-            throw std::runtime_error(base_mnemonic + " requires Rs1, Rd at line " +
-                                     std::to_string(line_count));
-        result.operands.push_back(tokens[idx++]);  // Rd (stack pointer)
+        if (idx < tokens.size() && tokens[idx].kind == TokenKind::Register) {
+            result.operands.push_back(tokens[idx++]);  // explicit Rd (stack pointer)
+        } else {
+            Token r13;
+            r13.kind = TokenKind::Register;
+            r13.lexeme = "R13";
+            r13.int_value = 13;
+            r13.line = line_count;
+            result.operands.push_back(r13);  // default Rd = R13
+        }
         return result;
     }
 

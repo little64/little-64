@@ -81,6 +81,25 @@ Token Lexer::scanIdentifierOrRegister() {
         }
     }
 
+    // Register aliases (case-insensitive)
+    {
+        std::string upper = lexeme;
+        for (char& c : upper) c = (char)std::toupper((unsigned char)c);
+        int alias_num = -1;
+        if (upper == "SP") alias_num = 13;
+        else if (upper == "LR") alias_num = 14;
+        else if (upper == "PC") alias_num = 15;
+        if (alias_num >= 0) {
+            Token t;
+            t.kind = TokenKind::Register;
+            t.lexeme = lexeme;
+            t.int_value = alias_num;
+            t.line = start_line;
+            t.column = start_col;
+            return t;
+        }
+    }
+
     // Otherwise it's an identifier (mnemonic, label, directive, etc.)
     Token t;
     t.kind = TokenKind::Ident;

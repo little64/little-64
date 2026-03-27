@@ -1,5 +1,9 @@
 # Little-64 — Claude Notes
 
+##
+
+This projet uses meson. The build folder is located in `builddir/`.
+
 ## Changing instructions
 
 When adding, removing, or renaming an instruction, update all of the following:
