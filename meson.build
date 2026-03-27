@@ -52,6 +52,28 @@ test_asm = executable('test-assembler',
 )
 test('assembler', test_asm)
 
+linker_lib = static_library('little-64-linker-lib',
+  ['linker/linker.cpp'],
+  include_directories : [include_directories('linker')],
+  install : false,
+)
+
+executable('little-64-linker',
+  ['linker/main.cpp'],
+  link_with : linker_lib,
+  include_directories : [include_directories('linker')],
+  install : false,
+)
+
+test_linker = executable('test-linker',
+  ['tests/test_linker.cpp'],
+  link_with : [linker_lib, asm_lib],
+  include_directories : [include_directories('linker'), include_directories('assembler'), arch_inc],
+  install : false,
+)
+
+test('linker', test_linker)
+
 # --- Disassembler (static library for embedding) ---
 disasm_lib = static_library('little-64-disasm-lib',
   ['disassembler/disassembler.cpp'],

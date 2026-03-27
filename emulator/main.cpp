@@ -25,12 +25,6 @@ static uint64_t read_u64(const std::vector<uint8_t>& b, size_t off) {
     return (uint64_t)read_u32(b, off) | ((uint64_t)read_u32(b, off+4) << 32);
 }
 
-static bool write_u64(std::vector<uint8_t>& b, size_t off, uint64_t v) {
-    if (off + 8 > b.size()) return false;
-    for (int i = 0; i < 8; ++i) b[off + i] = (uint8_t)((v >> (8*i)) & 0xFF);
-    return true;
-}
-
 int main(int argc, char* argv[]) {
     if (argc < 2) {
         printUsage(argv[0]);
@@ -98,6 +92,8 @@ int main(int argc, char* argv[]) {
         uint64_t symtab_offset = 0, symtab_size = 0, symtab_entsize = 0;
         uint64_t strtab_offset = 0, strtab_size = 0;
         uint64_t rela_offset = 0, rela_size = 0;
+        // strtab_offset and strtab_size are not needed for emulator currently.
+        (void)strtab_offset; (void)strtab_size;
 
         for (uint16_t i = 0; i < e_shnum; ++i) {
             uint64_t sh_base = e_shoff + (uint64_t)i * e_shentsize;
@@ -105,6 +101,7 @@ int main(int argc, char* argv[]) {
             if (name_off >= shstr_size) continue;
             std::string name(&shstr[name_off]);
             uint32_t type = read_u32(bytes, sh_base + 4);
+            (void)type;
             uint64_t off = read_u64(bytes, sh_base + 0x18);
             uint64_t siz = read_u64(bytes, sh_base + 0x20);
             uint64_t entsize = read_u64(bytes, sh_base + 0x38);

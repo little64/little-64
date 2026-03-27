@@ -297,6 +297,40 @@ bar:
 
 ---
 
+## Linker/ELF directives and relocatable output
+
+The assembler supports generating relocatable ELF object files via `assembleElf()` and the command-line option `--elf`.
+
+### `.global` / `.extern`
+
+- `.global <symbol>` marks a symbol as exported.
+- `.extern <symbol>` declares an undefined symbol to be resolved by the linker.
+
+```
+.global start
+start: STOP
+
+.extern ext_fn
+JUMP @ext_fn
+```
+
+### `.long <value|symbol>`
+
+- `.long <immediate>` emits an 8-byte constant value.
+- `.long <symbol>` emits a relocation entry (ABS64) in ELF object mode.
+
+```
+.long 0x123456789ABCDEF0
+.long start
+.long ext_fn
+```
+
+### PC-relative relocations for ELF
+
+PC-relative label operands like `JUMP @label` in ELF output generate `PCREL6` relocations. The linker turns those into the final 6-bit offset when code sections are laid out.
+
+---
+
 ## LD / ST pseudo-instructions
 
 `LD` and `ST` are pseudo-instructions that dispatch to the appropriate underlying instruction based on width suffix and operand type. They are intended as a more familiar alternative to the explicit mnemonic names.

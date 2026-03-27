@@ -395,6 +395,56 @@ static void test_elf_global_extern_and_long_reloc() {
     CHECK_EQ(rela_size >= 48, true, "At least two relocations (long + JUMP)");
 }
 
+static void test_elf_extern_jal_reloc() {
+    auto elf = assembleElf(".org 0\n.extern ext_fn\n.global start\nstart:\n  JAL @ext_fn\n");
+
+    uint64_t e_shoff = read_u64(elf, 0x28);
+    uint16_t e_shnum = read_u16(elf, 0x3C);
+    uint16_t e_shentsize = read_u16(elf, 0x3A);
+    uint16_t e_shstrndx = read_u16(elf, 0x3E);
+
+    // find .rela.text and .symtab
+    uint64_t shstr_offset = read_u64(elf, e_shoff + e_shentsize * e_shstrndx + 0x18);
+    uint64_t shstr_size = read_u64(elf, e_shoff + e_shentsize * e_shstrndx + 0x20);
+    std::string shstr(reinterpret_cast<const char*>(&elf[shstr_offset]), (size_t)shstr_size);
+
+    uint64_t rela_offset = 0, rela_size = 0, strtab_offset = 0;
+    uint64_t symtab_offset = 0, symtab_size = 0;
+    for (int i = 0; i < e_shnum; i++) {
+        uint64_t sh_base = e_shoff + (uint64_t)i * e_shentsize;
+        uint32_t name_off = read_u32(elf, sh_base);
+        if (name_off >= shstr.size()) continue;
+        std::string name(&shstr[name_off]);
+        uint64_t off = read_u64(elf, sh_base + 0x18);
+        uint64_t size = read_u64(elf, sh_base + 0x20);
+        if (name == ".rela.text") { rela_offset = off; rela_size = size; }
+        if (name == ".symtab") { symtab_offset = off; symtab_size = size; }
+        if (name == ".strtab") { strtab_offset = off; }
+    }
+
+    CHECK_EQ(rela_size, 24, "One relocation entry for JAL");
+    CHECK_EQ(symtab_offset != 0, true, "Symtab present");
+    CHECK_EQ(strtab_offset != 0, true, "Strtab present");
+
+    // Check first relocation entry references external symbol.
+    uint64_t r_info = read_u64(elf, rela_offset + 8);
+    uint32_t sym_idx = static_cast<uint32_t>(r_info >> 32);
+    uint32_t r_type = static_cast<uint32_t>(r_info & 0xFFFFFFFF);
+    CHECK_EQ(r_type, 1, "Relocation type PCREL6");
+
+    // Symbol i in symtab (skipping null entry) should include ext_fn.
+    uint64_t sym_entry_off = symtab_offset + (sym_idx * 24);
+    uint32_t name_off = read_u32(elf, sym_entry_off);
+    const char* sym_name_c = reinterpret_cast<const char*>(&elf[strtab_offset + name_off]);
+    std::string sym_name(sym_name_c);
+    if (sym_name != "ext_fn") {
+        std::fprintf(stderr, "FAIL [%s:%d] Relocated symbol name expected '%s', got '%s'\n",
+                     __FILE__, __LINE__, "ext_fn", sym_name.c_str());
+        _fail++;
+        return;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Group F — Conditional jumps with implicit R15 destination
 // JUMP.Z=11, JUMP.C=12, JUMP.S=13, JUMP.GT=14, JUMP.LT=15
@@ -674,6 +724,9 @@ int main() {
 
     std::printf("E5: ELF global/extern/.long reloc\n");
     test_elf_global_extern_and_long_reloc();
+
+    std::printf("E5b: ELF extern+JAL reloc\n");
+    test_elf_extern_jal_reloc();
 
     std::printf("F: Conditional jumps\n");
     test_conditional_jumps();

@@ -1166,9 +1166,14 @@ uint16_t Assembler::encodeInstruction(const ParsedInstruction& instr,
             const Token& addr_tok = instr.operands[0];
             if (addr_tok.kind == TokenKind::PCRelLabel) {
                 auto it = symbols.find(addr_tok.lexeme);
-                if (it == symbols.end() || !it->second.defined)
+                bool has_symbol = (it != symbols.end());
+                bool defined = has_symbol && it->second.defined;
+
+                if (!elf_mode && (!has_symbol || !defined))
                     err("Undefined label: " + addr_tok.lexeme);
+
                 if (!elf_mode) {
+                    if (!has_symbol) err("Undefined label: " + addr_tok.lexeme);
                     uint16_t target = it->second.value;
                     // pc_rel is in instruction units (×2 bytes), relative to next instruction
                     int32_t byte_diff = (int32_t)target - (int32_t)(current_address + 2);
