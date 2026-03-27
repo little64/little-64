@@ -229,8 +229,26 @@ static std::vector<uint8_t> makeElfObject(const std::vector<uint16_t>& words,
         if (std::find(symbol_names.begin(), symbol_names.end(), r.symbol) == symbol_names.end())
             symbol_names.push_back(r.symbol);
     }
-    std::sort(symbol_names.begin(), symbol_names.end());
+    // Sort: local symbols first (for ELF sh_info correctness), then globals, both alphabetical.
+    std::sort(symbol_names.begin(), symbol_names.end(), [&](const std::string& a, const std::string& b) {
+        auto ia = symbols.find(a), ib = symbols.find(b);
+        bool a_local = (ia != symbols.end()) && !ia->second.global;
+        bool b_local = (ib != symbols.end()) && !ib->second.global;
+        if (a_local != b_local) return a_local; // locals precede globals
+        return a < b;
+    });
     symbol_names.erase(std::unique(symbol_names.begin(), symbol_names.end()), symbol_names.end());
+
+    // Count local symbols (they are sorted first); sh_info = one past the last local.
+    size_t n_local_syms = 0;
+    for (const auto& name : symbol_names) {
+        auto it = symbols.find(name);
+        if (it != symbols.end() && !it->second.global)
+            ++n_local_syms;
+        else
+            break;
+    }
+    const uint32_t first_global_sh_info = static_cast<uint32_t>(n_local_syms + 1); // +1 for null entry
 
     for (const auto& name : symbol_names) {
         sym_name_offset[name] = static_cast<uint32_t>(strtab_contents.size());
@@ -283,9 +301,13 @@ static std::vector<uint8_t> makeElfObject(const std::vector<uint16_t>& words,
         append_sym(name_off, info, shndx, value, 0);
     }
 
-    // Section header table entries
-    const uint16_t shnum = 6;
-    const uint16_t shstrndx = 4;
+    // Section indices (null=0, text=1, symtab=2, strtab=3, shstrtab=4, rela.text=5)
+    constexpr uint16_t kShText   = 1;
+    constexpr uint16_t kShSymtab = 2;
+    constexpr uint16_t kShStrtab = 3;
+    constexpr uint16_t kShShstr  = 4;
+    constexpr uint16_t shnum     = 6;
+    constexpr uint16_t shstrndx  = kShShstr;
 
     // Build .rela.text contents
     std::vector<uint8_t> rela_text;
@@ -416,16 +438,16 @@ static std::vector<uint8_t> makeElfObject(const std::vector<uint16_t>& words,
 
     // section 0: null
     append_sh(0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
-    // section 1: .text
-    append_sh(sh_name_text, 1, 0, 0, text_offset, text_size, 0, 0, 1, 0);
-    // section 2: .symtab
-    append_sh(sh_name_symtab, 2, 0, 0, symtab_offset, symtab.size(), 3, symbol_names.size() + 1, 8, 24);
+    // section 1: .text — SHF_ALLOC(2)|SHF_EXECINSTR(4) = 6
+    append_sh(sh_name_text, 1, 6, 0, text_offset, text_size, 0, 0, 1, 0);
+    // section 2: .symtab — sh_link=.strtab, sh_info=index of first global symbol
+    append_sh(sh_name_symtab, 2, 0, 0, symtab_offset, symtab.size(), kShStrtab, first_global_sh_info, 8, 24);
     // section 3: .strtab
     append_sh(sh_name_strtab, 3, 0, 0, strtab_offset, strtab_contents.size(), 0, 0, 1, 0);
     // section 4: .shstrtab
     append_sh(sh_name_shstr, 3, 0, 0, shstrtab_offset, shstrtab.size(), 0, 0, 1, 0);
-    // section 5: .rela.text
-    append_sh(sh_name_relat, 4, 0, 0, rela_offset, rela_text.size(), 2, 1, 8, 24);
+    // section 5: .rela.text — sh_link=.symtab, sh_info=.text
+    append_sh(sh_name_relat, 4, 0, 0, rela_offset, rela_text.size(), kShSymtab, kShText, 8, 24);
 
     return out;
 }
@@ -487,7 +509,9 @@ void Assembler::pass1(const std::vector<Token>& tokens, SymbolTable& symbols) {
             if (it != symbols.end() && it->second.defined)
                 throw std::runtime_error("Duplicate label: " + label + " at line " +
                                          std::to_string(tok.line));
-            symbols[label] = {current_address, true, true};
+            // Preserve global=true if already declared via .global; plain labels are local.
+            bool is_global = (it != symbols.end()) && it->second.global;
+            symbols[label] = {current_address, true, is_global};
             idx += 2;
             continue;
         }
@@ -607,15 +631,14 @@ void Assembler::pass1(const std::vector<Token>& tokens, SymbolTable& symbols) {
                                              std::to_string(tok.line));
                 }
             } else if (tok.lexeme == ".global" || tok.lexeme == ".extern") {
-                bool is_global = (tok.lexeme == ".global");
                 idx++;
                 if (idx < tokens.size() && tokens[idx].kind == TokenKind::Ident) {
                     std::string name = tokens[idx].lexeme;
                     auto it = symbols.find(name);
                     if (it == symbols.end()) {
-                        symbols[name] = {0, false, is_global};
+                        symbols[name] = {0, false, true};
                     } else {
-                        it->second.global = it->second.global || is_global;
+                        it->second.global = true;
                     }
                     idx++;
                 } else {
