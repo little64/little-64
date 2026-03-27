@@ -6,6 +6,16 @@
 #include <string>
 #include <cstdint>
 
+// A data directive item produced by pass1 and consumed by pass2.
+struct DataDirective {
+    enum class Kind { Byte, Short, Int, Long, Ascii, Asciiz };
+    Kind kind;
+    uint64_t value = 0;    // Byte / Short / Int / Long
+    std::string text;      // Ascii / Asciiz (unescaped content)
+    uint16_t address = 0;  // byte address at point of emission (from pass1)
+    int line = 0;
+};
+
 class Assembler {
 public:
     // Assemble source code and return the binary output
@@ -25,13 +35,20 @@ private:
         uint8_t shift = 0;      // LDI only: shift value from .SN suffix (0-3)
         Format detected_format = Format::GP;
         std::vector<Token> operands;
-        uint16_t address = 0;
+        uint16_t address = 0;   // byte address assigned in pass1 (accounts for .org)
         int line = 0;
     };
 
+    // A single item to be emitted: either an instruction or a data directive.
+    // Items are stored in source order so pass2 can emit them interleaved.
+    struct EmitItem {
+        bool is_instruction = true;
+        ParsedInstruction instr;  // valid when is_instruction == true
+        DataDirective data;       // valid when is_instruction == false
+    };
+
     void pass1(const std::vector<Token>& tokens, SymbolTable& symbols);
-    void pass2(const std::vector<Token>& tokens, const SymbolTable& symbols,
-               std::vector<uint16_t>& output);
+    void pass2(const SymbolTable& symbols, std::vector<uint16_t>& output);
 
     ParsedInstruction parseInstruction(const std::vector<Token>& tokens, size_t& idx,
                                        uint16_t address, int& line_count);
@@ -40,5 +57,5 @@ private:
                                uint16_t current_address);
 
     uint16_t origin = 0;
-    std::vector<ParsedInstruction> instructions;  // for --list output
+    std::vector<EmitItem> emit_items;  // populated by pass1, consumed by pass2
 };

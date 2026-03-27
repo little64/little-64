@@ -43,6 +43,15 @@ executable('little-64-asm',
   install : true,
 )
 
+# --- Assembler test suite ---
+test_asm = executable('test-assembler',
+  ['tests/test_assembler.cpp'],
+  link_with : asm_lib,
+  include_directories : [include_directories('assembler'), arch_inc],
+  install : false,
+)
+test('assembler', test_asm)
+
 # --- Disassembler (static library for embedding) ---
 disasm_lib = static_library('little-64-disasm-lib',
   ['disassembler/disassembler.cpp'],

@@ -11,6 +11,7 @@ enum class TokenKind {
     ImmediateAbs,       // #number
     PCRelLabel,         // @label
     PCRelOffset,        // @+number or @-number
+    StringLiteral,      // "..." — lexeme holds unescaped content (no surrounding quotes)
 
     // Syntax
     Comma,              // ,
@@ -49,5 +50,6 @@ private:
     void skipComment();
     Token scanNumber(int base = 10);
     Token scanIdentifierOrRegister();
+    Token scanString();
     Token makeToken(TokenKind kind, const std::string& lexeme);
 };

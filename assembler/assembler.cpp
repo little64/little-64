@@ -5,7 +5,7 @@
 
 std::vector<uint16_t> Assembler::assemble(const std::string& source) {
     Encoder::init();
-    instructions.clear();
+    emit_items.clear();
 
     Lexer lexer;
     std::vector<Token> tokens = lexer.tokenize(source);
@@ -14,7 +14,7 @@ std::vector<uint16_t> Assembler::assemble(const std::string& source) {
     pass1(tokens, symbols);
 
     std::vector<uint16_t> output;
-    pass2(tokens, symbols, output);
+    pass2(symbols, output);
 
     return output;
 }
@@ -57,13 +57,101 @@ void Assembler::pass1(const std::vector<Token>& tokens, SymbolTable& symbols) {
                     throw std::runtime_error(".org requires an address at line " +
                                              std::to_string(tok.line));
                 }
-            } else if (tok.lexeme == ".word") {
+            } else if (tok.lexeme == ".byte") {
                 idx++;
                 if (idx < tokens.size() && tokens[idx].kind == TokenKind::ImmediateAbs) {
+                    DataDirective dd;
+                    dd.kind    = DataDirective::Kind::Byte;
+                    dd.value   = tokens[idx].int_value;
+                    dd.address = current_address;
+                    dd.line    = tok.line;
+                    EmitItem item;
+                    item.is_instruction = false;
+                    item.data = std::move(dd);
+                    emit_items.push_back(std::move(item));
+                    current_address += 1;
+                    idx++;
+                } else {
+                    throw std::runtime_error(".byte requires a value at line " +
+                                             std::to_string(tok.line));
+                }
+            } else if (tok.lexeme == ".short" || tok.lexeme == ".word") {
+                idx++;
+                if (idx < tokens.size() && tokens[idx].kind == TokenKind::ImmediateAbs) {
+                    if (current_address % 2 != 0) current_address += 1;
+                    DataDirective dd;
+                    dd.kind    = DataDirective::Kind::Short;
+                    dd.value   = tokens[idx].int_value;
+                    dd.address = current_address;
+                    dd.line    = tok.line;
+                    EmitItem item;
+                    item.is_instruction = false;
+                    item.data = std::move(dd);
+                    emit_items.push_back(std::move(item));
                     current_address += 2;
                     idx++;
                 } else {
-                    throw std::runtime_error(".word requires a value at line " +
+                    throw std::runtime_error(tok.lexeme + " requires a value at line " +
+                                             std::to_string(tok.line));
+                }
+            } else if (tok.lexeme == ".int") {
+                idx++;
+                if (idx < tokens.size() && tokens[idx].kind == TokenKind::ImmediateAbs) {
+                    if (current_address % 2 != 0) current_address += 1;
+                    DataDirective dd;
+                    dd.kind    = DataDirective::Kind::Int;
+                    dd.value   = tokens[idx].int_value;
+                    dd.address = current_address;
+                    dd.line    = tok.line;
+                    EmitItem item;
+                    item.is_instruction = false;
+                    item.data = std::move(dd);
+                    emit_items.push_back(std::move(item));
+                    current_address += 4;
+                    idx++;
+                } else {
+                    throw std::runtime_error(".int requires a value at line " +
+                                             std::to_string(tok.line));
+                }
+            } else if (tok.lexeme == ".long") {
+                idx++;
+                if (idx < tokens.size() && tokens[idx].kind == TokenKind::ImmediateAbs) {
+                    if (current_address % 2 != 0) current_address += 1;
+                    DataDirective dd;
+                    dd.kind    = DataDirective::Kind::Long;
+                    dd.value   = tokens[idx].int_value;
+                    dd.address = current_address;
+                    dd.line    = tok.line;
+                    EmitItem item;
+                    item.is_instruction = false;
+                    item.data = std::move(dd);
+                    emit_items.push_back(std::move(item));
+                    current_address += 8;
+                    idx++;
+                } else {
+                    throw std::runtime_error(".long requires a value at line " +
+                                             std::to_string(tok.line));
+                }
+            } else if (tok.lexeme == ".ascii" || tok.lexeme == ".asciiz") {
+                bool with_null = (tok.lexeme == ".asciiz");
+                idx++;
+                if (idx < tokens.size() && tokens[idx].kind == TokenKind::StringLiteral) {
+                    const std::string& text = tokens[idx].lexeme;
+                    DataDirective dd;
+                    dd.kind    = with_null ? DataDirective::Kind::Asciiz
+                                           : DataDirective::Kind::Ascii;
+                    dd.text    = text;
+                    dd.address = current_address;
+                    dd.line    = tok.line;
+                    EmitItem item;
+                    item.is_instruction = false;
+                    item.data = std::move(dd);
+                    emit_items.push_back(std::move(item));
+                    current_address += static_cast<uint16_t>(text.length()) +
+                                       (with_null ? 1 : 0);
+                    idx++;
+                } else {
+                    throw std::runtime_error(tok.lexeme + " requires a string literal at line " +
                                              std::to_string(tok.line));
                 }
             } else {
@@ -84,7 +172,11 @@ void Assembler::pass1(const std::vector<Token>& tokens, SymbolTable& symbols) {
         int line_at_start = line_count;
         ParsedInstruction parsed = parseInstruction(tokens, idx, current_address, line_count);
         parsed.line = line_at_start;
-        instructions.push_back(parsed);
+
+        EmitItem item;
+        item.is_instruction = true;
+        item.instr = std::move(parsed);
+        emit_items.push_back(std::move(item));
         current_address += 2;
 
         while (idx < tokens.size() && tokens[idx].kind != TokenKind::Newline &&
@@ -97,67 +189,67 @@ void Assembler::pass1(const std::vector<Token>& tokens, SymbolTable& symbols) {
     }
 }
 
-void Assembler::pass2(const std::vector<Token>& tokens, const SymbolTable& symbols,
-                      std::vector<uint16_t>& output) {
-    uint16_t current_address = origin;
+// Single-pass over emit_items, producing a packed byte buffer then folding
+// into uint16_t output words.  Items are emitted in source order so data and
+// instructions are interleaved correctly.
+//
+// Instruction addresses come from pass1 (item.instr.address), so .org is
+// handled correctly for PC-relative encoding.  Data alignment uses the
+// current byte-buffer size, which stays in sync with pass1's address
+// tracking as long as both use the same padding rules.
+void Assembler::pass2(const SymbolTable& symbols, std::vector<uint16_t>& output) {
+    std::vector<uint8_t> buf;
 
-    for (const auto& instr : instructions) {
-        output.push_back(encodeInstruction(instr, symbols, current_address));
-        current_address += 2;
+    auto emit_le = [&](uint64_t v, int n) {
+        for (int i = 0; i < n; i++)
+            buf.push_back(static_cast<uint8_t>((v >> (i * 8)) & 0xFF));
+    };
+    auto align2 = [&]() {
+        if (buf.size() % 2 != 0) buf.push_back(0);
+    };
+
+    for (const auto& item : emit_items) {
+        if (item.is_instruction) {
+            if (buf.size() % 2 != 0)
+                throw std::runtime_error(
+                    "Instruction at odd address (preceded by an odd-length .byte/.ascii "
+                    "sequence) at line " + std::to_string(item.instr.line));
+            // Use the address computed in pass1 — correctly reflects .org
+            uint16_t word = encodeInstruction(item.instr, symbols, item.instr.address);
+            buf.push_back(static_cast<uint8_t>(word));
+            buf.push_back(static_cast<uint8_t>(word >> 8));
+        } else {
+            switch (item.data.kind) {
+                case DataDirective::Kind::Byte:
+                    emit_le(item.data.value, 1);
+                    break;
+                case DataDirective::Kind::Short:
+                    align2();
+                    emit_le(item.data.value, 2);
+                    break;
+                case DataDirective::Kind::Int:
+                    align2();
+                    emit_le(item.data.value, 4);
+                    break;
+                case DataDirective::Kind::Long:
+                    align2();
+                    emit_le(item.data.value, 8);
+                    break;
+                case DataDirective::Kind::Ascii:
+                    for (unsigned char c : item.data.text) buf.push_back(c);
+                    break;
+                case DataDirective::Kind::Asciiz:
+                    for (unsigned char c : item.data.text) buf.push_back(c);
+                    buf.push_back(0);
+                    break;
+            }
+        }
     }
 
-    // Emit .word directives
-    size_t idx = 0;
-    int line_count = 0;
-    current_address = origin;
-
-    while (idx < tokens.size()) {
-        const Token& tok = tokens[idx];
-
-        if (tok.kind == TokenKind::EndOfFile) break;
-        if (tok.kind == TokenKind::Newline) { idx++; line_count++; continue; }
-
-        if (tok.kind == TokenKind::Ident && idx + 1 < tokens.size() &&
-            tokens[idx + 1].kind == TokenKind::Colon) {
-            idx += 2;
-            continue;
-        }
-
-        if (tok.kind == TokenKind::Ident && tok.lexeme[0] == '.') {
-            if (tok.lexeme == ".org") {
-                idx++;
-                if (idx < tokens.size() && tokens[idx].kind == TokenKind::ImmediateAbs) {
-                    current_address = tokens[idx].int_value;
-                    idx++;
-                }
-            } else if (tok.lexeme == ".word") {
-                idx++;
-                if (idx < tokens.size() && tokens[idx].kind == TokenKind::ImmediateAbs) {
-                    output.push_back(tokens[idx].int_value & 0xFFFF);
-                    current_address += 2;
-                    idx++;
-                }
-            }
-            while (idx < tokens.size() && tokens[idx].kind != TokenKind::Newline &&
-                   tokens[idx].kind != TokenKind::EndOfFile)
-                idx++;
-            if (idx < tokens.size() && tokens[idx].kind == TokenKind::Newline) {
-                idx++;
-                line_count++;
-            }
-            continue;
-        }
-
-        // Skip over instruction tokens (already processed)
-        while (idx < tokens.size() && tokens[idx].kind != TokenKind::Newline &&
-               tokens[idx].kind != TokenKind::EndOfFile)
-            idx++;
-        if (idx < tokens.size() && tokens[idx].kind == TokenKind::Newline) {
-            idx++;
-            line_count++;
-        }
-        current_address += 2;
-    }
+    align2();
+    for (size_t i = 0; i < buf.size(); i += 2)
+        output.push_back(static_cast<uint16_t>(buf[i]) |
+                         (static_cast<uint16_t>(buf[i + 1]) << 8));
 }
 
 // Helper: check if mnemonic is JUMP or a JUMP.* variant
@@ -249,7 +341,6 @@ Assembler::ParsedInstruction Assembler::parseInstruction(const std::vector<Token
                                  std::to_string(line_count));
 
     // Stage 2: LS mnemonic — sub-format from first operand token
-    // Skip whitespace-level: just peek at the next meaningful token
     if (idx >= tokens.size() || tokens[idx].kind == TokenKind::Newline ||
         tokens[idx].kind == TokenKind::EndOfFile)
         throw std::runtime_error("Expected operands for " + base_mnemonic + " at line " +
@@ -260,9 +351,6 @@ Assembler::ParsedInstruction Assembler::parseInstruction(const std::vector<Token
     if (first_kind == TokenKind::LeftBracket) {
         // Format 00 (LS Register): [Rs1] or [Rs1+N]
         result.detected_format = Format::LS_REG;
-        // Parse: [ Rs1 (+ N)? ] , Rd
-        // Store the bracket contents as operands for encodeInstruction to interpret
-        // We collect: Rs1 token, optionally the offset token, then Rd token
         idx++;  // consume '['
         if (idx >= tokens.size() || tokens[idx].kind != TokenKind::Register)
             throw std::runtime_error("Expected register after '[' at line " +
@@ -276,7 +364,6 @@ Assembler::ParsedInstruction Assembler::parseInstruction(const std::vector<Token
                                          std::to_string(line_count));
             result.operands.push_back(tokens[idx++]);  // offset (in bytes)
         } else {
-            // No offset: push a synthetic zero token
             Token zero;
             zero.kind = TokenKind::ImmediateAbs;
             zero.lexeme = "0";
@@ -303,13 +390,11 @@ Assembler::ParsedInstruction Assembler::parseInstruction(const std::vector<Token
         result.detected_format = Format::LS_PCREL;
         result.operands.push_back(tokens[idx++]);  // @label or @offset
 
-        // Optional comma and Rd
         if (idx < tokens.size() && tokens[idx].kind == TokenKind::Comma) idx++;
 
         if (idx < tokens.size() && tokens[idx].kind == TokenKind::Register) {
             result.operands.push_back(tokens[idx++]);  // explicit Rd
         } else if (isJumpMnemonic(base_mnemonic)) {
-            // JUMP.* with no explicit Rd: infer R15 (PC)
             Token r15;
             r15.kind = TokenKind::Register;
             r15.lexeme = "R15";
@@ -328,7 +413,6 @@ Assembler::ParsedInstruction Assembler::parseInstruction(const std::vector<Token
         result.detected_format = Format::LS_REG;
         Token rs1_tok = tokens[idx++];  // Rs1
 
-        // Build synthetic operands: Rs1, zero_offset, Rd
         result.operands.push_back(rs1_tok);
 
         Token zero;
@@ -343,7 +427,6 @@ Assembler::ParsedInstruction Assembler::parseInstruction(const std::vector<Token
         if (idx < tokens.size() && tokens[idx].kind == TokenKind::Register) {
             result.operands.push_back(tokens[idx++]);  // explicit Rd
         } else {
-            // Infer R15
             Token r15;
             r15.kind = TokenKind::Register;
             r15.lexeme = "R15";
@@ -398,7 +481,6 @@ uint16_t Assembler::encodeInstruction(const ParsedInstruction& instr,
         }
 
         case Format::LS_REG: {
-            // operands: [Rs1, offset_bytes, Rd]
             if (instr.operands.size() < 3) err(instr.mnemonic + " requires [Rs1+N], Rd");
             if (instr.operands[0].kind != TokenKind::Register) err("Expected register for Rs1");
             if (instr.operands[1].kind != TokenKind::ImmediateAbs) err("Expected byte offset");
@@ -419,7 +501,6 @@ uint16_t Assembler::encodeInstruction(const ParsedInstruction& instr,
         }
 
         case Format::LS_PCREL: {
-            // operands: [@label_or_offset, Rd]
             if (instr.operands.size() < 2) err(instr.mnemonic + " requires @label, Rd");
             if (instr.operands[1].kind != TokenKind::Register) err("Expected register for Rd");
 
@@ -460,8 +541,10 @@ uint16_t Assembler::encodeInstruction(const ParsedInstruction& instr,
 std::string Assembler::getListing() const {
     std::ostringstream oss;
     oss << std::hex << std::setfill('0');
-    for (const auto& instr : instructions) {
-        oss << "0x" << std::setw(4) << instr.address << "  " << instr.mnemonic << "\n";
+    for (const auto& item : emit_items) {
+        if (item.is_instruction)
+            oss << "0x" << std::setw(4) << item.instr.address
+                << "  " << item.instr.mnemonic << "\n";
     }
     return oss.str();
 }

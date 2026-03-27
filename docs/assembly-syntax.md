@@ -241,15 +241,61 @@ Sets the **current assembly address**. Subsequent instructions and data words ar
 .org 0x0200
 ```
 
-### `.word <value>`
+### `.byte <value>`
 
-Emits a single **16-bit word** of data at the current address. The value is a bare numeric literal (no `#`). `.word` directives are always appended *after* all instructions in the output, in the order they appear in the source.
+Emits a single **8-bit byte**. The address advances by 1. Because the CPU requires instructions to be 16-bit aligned, a `.byte` that leaves the address at an odd boundary must be followed by another `.byte` (or a `.org`) before the next instruction — the assembler does not auto-pad after `.byte`.
 
 ```
-data_table:
-    .word 0xBEEF
-    .word 42
+.byte 0xFF
+.byte 0x00
 ```
+
+### `.short <value>` / `.word <value>`
+
+Emits a single **16-bit value** in little-endian byte order. `.word` is an accepted alias. If the current address is odd (due to a preceding `.byte`), one padding byte is automatically inserted to restore 2-byte alignment before emitting.
+
+```
+.short 0xBEEF
+.word  42       ; alias for .short
+```
+
+### `.int <value>`
+
+Emits a **32-bit value** in little-endian byte order (two 16-bit words). Auto-pads to 2-byte alignment if needed.
+
+```
+.int 0xDEADBEEF
+```
+
+### `.long <value>`
+
+Emits a **64-bit value** in little-endian byte order (four 16-bit words). Auto-pads to 2-byte alignment if needed.
+
+```
+.long 0x0123456789ABCDEF
+```
+
+### `.ascii <string>`
+
+Emits the raw bytes of a string literal, **without** a null terminator. No alignment padding is inserted before or after.
+
+```
+.ascii "hello"       ; emits 5 bytes: h e l l o
+.ascii "A\nB"        ; emits 3 bytes: 0x41 0x0A 0x42
+```
+
+### `.asciiz <string>`
+
+Like `.ascii` but appends a **null byte** (`0x00`) after the string content.
+
+```
+.asciiz "hi"         ; emits 3 bytes: h i 0x00
+.asciiz ""           ; emits 1 byte:  0x00
+```
+
+String literals are enclosed in double quotes. Supported escape sequences: `\"`, `\\`, `\n`, `\t`, `\0`.
+
+Data directives are emitted **in source order**, interleaved with instructions. This is essential for PC-relative addressing, which has a limited range of ±32 instruction units (±64 bytes).
 
 ---
 
@@ -257,8 +303,8 @@ data_table:
 
 The assembler works in two passes:
 
-1. **Pass 1** — scans labels and instructions to build the symbol table and record instruction addresses. No output is produced.
-2. **Pass 2** — encodes each instruction, resolving label references. `.word` data words are appended after all instructions.
+1. **Pass 1** — scans labels, instructions, and data directives in source order. Builds the symbol table and records the address of every item. No output is produced.
+2. **Pass 2** — emits each item in source order: instructions are encoded and data directives are serialised into the byte stream. Label references are resolved using the symbol table.
 
 Because labels are resolved in pass 1, **forward references** in PC-relative operands (`@label`) are fully supported.
 
@@ -270,20 +316,25 @@ Because labels are resolved in pass 1, **forward references** in PC-relative ope
 .org 0x0100
 
 start:
-    LDI     #0,    R0      ; R0 = 0
-    LDI.S1  #0xFF, R1      ; load 0xFF into byte-slot 1 of R1
-    ADD     R0, R2          ; R2 = R0 + R2
+    LDI     #0,    R0       ; R0 = 0
+    LDI.S1  #0xFF, R1       ; load 0xFF into byte-slot 1 of R1
+    ADD     R0, R2           ; R2 = R0 + R2
 
 loop:
-    INC_LOAD [R1], R3       ; load and post-increment
+    INC_LOAD [R1], R3        ; load and post-increment
     TEST     R3, R3
-    JUMP.Z   @done          ; branch if zero flag set
-    JUMP.Z   @loop          ; else loop
+    JUMP.Z   @done           ; branch if zero flag set
+    JUMP.Z   @loop           ; else loop
 
 done:
     STOP
 
+    ; Data is emitted here, in source order, right after the code.
+    ; This keeps it within the ±64-byte PC-relative range.
 table:
-    .word 0x0001
-    .word 0x0002
+    .short 0x0001
+    .short 0x0002
+
+msg:
+    .asciiz "hello"
 ```

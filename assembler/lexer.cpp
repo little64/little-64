@@ -90,6 +90,46 @@ Token Lexer::scanIdentifierOrRegister() {
     return t;
 }
 
+Token Lexer::scanString() {
+    int start_line = line, start_col = column;
+    consume();  // opening "
+    std::string content;
+    while (true) {
+        char c = peek();
+        if (c == '\0' || c == '\n')
+            throw std::runtime_error("Unterminated string literal at " +
+                                     std::to_string(start_line) + ":" +
+                                     std::to_string(start_col));
+        if (c == '"') {
+            consume();  // closing "
+            break;
+        }
+        if (c == '\\') {
+            consume();  // backslash
+            char esc = consume();
+            switch (esc) {
+                case '"':  content += '"';  break;
+                case '\\': content += '\\'; break;
+                case 'n':  content += '\n'; break;
+                case 't':  content += '\t'; break;
+                case '0':  content += '\0'; break;
+                default:
+                    throw std::runtime_error(
+                        std::string("Unknown escape sequence '\\") + esc +
+                        "' at " + std::to_string(line) + ":" + std::to_string(column));
+            }
+        } else {
+            content += consume();
+        }
+    }
+    Token t;
+    t.kind = TokenKind::StringLiteral;
+    t.lexeme = content;
+    t.line = start_line;
+    t.column = start_col;
+    return t;
+}
+
 Token Lexer::makeToken(TokenKind kind, const std::string& lexeme) {
     Token t;
     t.kind = kind;
@@ -207,6 +247,12 @@ std::vector<Token> Lexer::tokenize(const std::string& source_code) {
                 t.column = at_col;
                 tokens.push_back(t);
             }
+            continue;
+        }
+
+        // String literals
+        if (peek() == '"') {
+            tokens.push_back(scanString());
             continue;
         }
 
