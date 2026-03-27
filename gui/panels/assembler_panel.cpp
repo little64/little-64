@@ -2,265 +2,703 @@
 #include "../app.hpp"
 #include "assembler.hpp"
 #include "disassembler.hpp"
+#include "linker.hpp"
+#include "project.hpp"
 #include <imgui.h>
 #include <nfd.h>
 #include <algorithm>
 #include <fstream>
 #include <unistd.h>
 #include <climits>
+#include <cstring>
+
+// ===========================================================================
+// Language definition and palette (unchanged from previous implementation)
+// ===========================================================================
 
 static TextEditor::LanguageDefinition buildLanguageDef() {
     TextEditor::LanguageDefinition lang;
     lang.mName = "Little-64 ASM";
     lang.mSingleLineComment = ";";
-    lang.mCommentStart = "/*";   // assembly has no block comments; prevents empty-string bug in TextEditor
+    lang.mCommentStart = "/*";
     lang.mCommentEnd   = "*/";
     lang.mCaseSensitive = false;
-    lang.mPreprocChar = 0;  // '#' is an immediate sigil here, not a preprocessor char
+    lang.mPreprocChar = 0;
 
-    // Opcodes → Keyword colour — derived from Assembler::getAllMnemonics() so that
-    // real instructions (from .def files) and pseudo-instructions stay in sync
-    // automatically; no manual updates needed here when the instruction set changes.
     for (const auto& mnemonic : Assembler::getAllMnemonics())
         lang.mKeywords.insert(mnemonic);
 
-    // Registers R0–R15 → KnownIdentifier colour
     for (int i = 0; i <= 15; ++i) {
         std::string reg = "R" + std::to_string(i);
         lang.mIdentifiers[reg] = TextEditor::Identifier{};
     }
 
-    // Regex tokens (matched in order, first match wins):
-    // Label definitions (identifier:) — must come before bare identifier matching
     lang.mTokenRegexStrings.push_back({ "[a-zA-Z_][a-zA-Z0-9_.]*:",         TextEditor::PaletteIndex::CharLiteral });
-    // Directives — all recognised forms (.org, .byte, .short, .word, .int, .long, .ascii, .asciiz)
-    // asciiz must appear before ascii so it is tried first
     lang.mTokenRegexStrings.push_back({ "\\.(?:asciiz|ascii|short|long|word|byte|int|org)", TextEditor::PaletteIndex::Preprocessor });
-    // String literals for .ascii/.asciiz — handles common escape sequences
     lang.mTokenRegexStrings.push_back({ "\"(?:[^\"\\\\]|\\\\.)*\"",          TextEditor::PaletteIndex::String });
-    // PC-relative operands: @label, @+N, @-N (label names may contain dots)
     lang.mTokenRegexStrings.push_back({ "@[+\\-]?[a-zA-Z0-9_.]+",           TextEditor::PaletteIndex::PreprocIdentifier });
-    // Hex numbers (#0xFF / 0xFF)
     lang.mTokenRegexStrings.push_back({ "#?0[xX][0-9a-fA-F]+",              TextEditor::PaletteIndex::Number });
-    // Binary numbers (#0b101 / 0b101)
     lang.mTokenRegexStrings.push_back({ "#?0[bB][01]+",                      TextEditor::PaletteIndex::Number });
-    // Decimal numbers (#123 / 123)
     lang.mTokenRegexStrings.push_back({ "#?[0-9]+",                          TextEditor::PaletteIndex::Number });
-    // Fallback identifier (dots included for JUMP.Z, LDI.S1, etc.)
-    // Must be last — specific patterns above get priority.
-    // Assigning Identifier triggers the keyword/known-identifier lookup in TextEditor.
     lang.mTokenRegexStrings.push_back({ "[a-zA-Z_][a-zA-Z0-9_.]*",           TextEditor::PaletteIndex::Identifier });
 
     return lang;
 }
 
-// VS Code-inspired palette — bright, high-contrast colours on a dark background
 static TextEditor::Palette buildPalette() {
     auto p = TextEditor::GetDarkPalette();
-    // Default text and identifiers (labels, unknown names) — near-white
     p[(int)TextEditor::PaletteIndex::Default]          = IM_COL32(0xD4, 0xD4, 0xD4, 0xFF);
     p[(int)TextEditor::PaletteIndex::Identifier]       = IM_COL32(0xD4, 0xD4, 0xD4, 0xFF);
-    // Opcodes — warm yellow (VS Code function colour)
     p[(int)TextEditor::PaletteIndex::Keyword]          = IM_COL32(0xDC, 0xDC, 0xAA, 0xFF);
-    // Registers — sky blue (VS Code variable colour)
     p[(int)TextEditor::PaletteIndex::KnownIdentifier]  = IM_COL32(0x9C, 0xDC, 0xFE, 0xFF);
-    // Numeric literals — warm orange
     p[(int)TextEditor::PaletteIndex::Number]           = IM_COL32(0xD7, 0xBA, 0x7D, 0xFF);
-    // Comments — neutral grey (de-emphasised; the default green dominated heavily commented files)
     p[(int)TextEditor::PaletteIndex::Comment]          = IM_COL32(0x7F, 0x84, 0x8E, 0xFF);
     p[(int)TextEditor::PaletteIndex::MultiLineComment] = IM_COL32(0x7F, 0x84, 0x8E, 0xFF);
-    // Directives (.org, .word) — orchid purple (VS Code keyword colour)
     p[(int)TextEditor::PaletteIndex::Preprocessor]     = IM_COL32(0xC5, 0x86, 0xC0, 0xFF);
-    // String literals ("hello") — warm orange (VS Code string colour)
     p[(int)TextEditor::PaletteIndex::String]           = IM_COL32(0xCE, 0x91, 0x78, 0xFF);
-    // PC-relative operands (@label, @+N) — mint green (address references)
     p[(int)TextEditor::PaletteIndex::PreprocIdentifier]= IM_COL32(0x7D, 0xCE, 0xA0, 0xFF);
-    // Label definitions (identifier:) — bright gold
     p[(int)TextEditor::PaletteIndex::CharLiteral]      = IM_COL32(0xFF, 0xD7, 0x00, 0xFF);
-    // Line numbers — dim grey
     p[(int)TextEditor::PaletteIndex::LineNumber]       = IM_COL32(0x85, 0x85, 0x85, 0xFF);
     return p;
 }
 
-AssemblerPanel::AssemblerPanel(AppState& state)
-    : state(state) {
-    editor.SetLanguageDefinition(buildLanguageDef());
-    editor.SetPalette(buildPalette());
-    editor.SetText(state.editor_source);
-    last_saved_content = state.editor_source;
+// ===========================================================================
+// Tab::displayName
+// ===========================================================================
+
+std::string AssemblerPanel::Tab::displayName() const {
+    if (path.empty()) return "<untitled>";
+    size_t slash = path.find_last_of("/\\");
+    return (slash == std::string::npos) ? path : path.substr(slash + 1);
 }
 
+// ===========================================================================
+// Constructor
+// ===========================================================================
+
+AssemblerPanel::AssemblerPanel(AppState& state)
+    : state_(state)
+{
+    const std::string& last = state_.current_file;
+    if (!last.empty()) {
+        // Check extension
+        if (last.size() >= 8 && last.substr(last.size() - 8) == ".l64proj") {
+            openProject(last);
+        } else {
+            openFileInTab(last);
+        }
+    }
+    if (tabs_.empty()) newTab();
+}
+
+// ===========================================================================
+// Misc helpers
+// ===========================================================================
+
+std::unique_ptr<TextEditor> AssemblerPanel::makeConfiguredEditor() {
+    auto ed = std::make_unique<TextEditor>();
+    ed->SetLanguageDefinition(buildLanguageDef());
+    ed->SetPalette(buildPalette());
+    return ed;
+}
+
+std::string AssemblerPanel::dialogDefaultDir() const {
+    // Use active tab's directory, then project directory, then cwd
+    if (!tabs_.empty() && !tabs_[active_tab_]->path.empty()) {
+        const auto& p = tabs_[active_tab_]->path;
+        size_t slash = p.find_last_of("/\\");
+        if (slash != std::string::npos)
+            return p.substr(0, slash);
+    }
+    if (!state_.project_path.empty()) {
+        size_t slash = state_.project_path.find_last_of("/\\");
+        if (slash != std::string::npos)
+            return state_.project_path.substr(0, slash);
+    }
+    char cwd[PATH_MAX];
+    if (getcwd(cwd, sizeof(cwd))) return cwd;
+    return {};
+}
+
+void AssemblerPanel::syncCurrentFile() {
+    if (!state_.project_path.empty()) {
+        state_.current_file = state_.project_path;
+    } else if (!tabs_.empty()) {
+        state_.current_file = tabs_[active_tab_]->path;
+    }
+}
+
+void AssemblerPanel::loadProgramIntoState(const std::vector<uint16_t>& program) {
+    state_.cpu.loadProgram(program);
+    state_.disassembly = Disassembler::disassembleBuffer(program.data(), program.size(), 0);
+}
+
+// ===========================================================================
+// Tab lifecycle
+// ===========================================================================
+
+void AssemblerPanel::newTab() {
+    auto tab      = std::make_unique<Tab>();
+    tab->editor   = makeConfiguredEditor();
+    tab->path     = {};
+    tab->saved_content = {};
+    tab->uid      = next_uid_++;
+    tabs_.push_back(std::move(tab));
+    active_tab_   = static_cast<int>(tabs_.size()) - 1;
+    syncCurrentFile();
+}
+
+void AssemblerPanel::openFileInTab(const std::string& path) {
+    // If already open, just switch to that tab
+    for (int i = 0; i < (int)tabs_.size(); ++i) {
+        if (tabs_[i]->path == path) {
+            active_tab_        = i;
+            request_switch_to_ = i;
+            syncCurrentFile();
+            return;
+        }
+    }
+
+    std::ifstream f(path);
+    if (!f.is_open()) {
+        state_.assemble_error = "Cannot open file: " + path;
+        return;
+    }
+    std::string contents((std::istreambuf_iterator<char>(f)),
+                         std::istreambuf_iterator<char>());
+
+    auto tab           = std::make_unique<Tab>();
+    tab->editor        = makeConfiguredEditor();
+    tab->path          = path;
+    tab->saved_content = contents;
+    tab->uid           = next_uid_++;
+    tab->editor->SetText(contents);
+    tab->editor->SetErrorMarkers({});
+
+    tabs_.push_back(std::move(tab));
+    active_tab_        = static_cast<int>(tabs_.size()) - 1;
+    request_switch_to_ = active_tab_;
+    syncCurrentFile();
+}
+
+void AssemblerPanel::closeTab(int idx) {
+    if (idx < 0 || idx >= (int)tabs_.size()) return;
+
+    // Auto-save modified tabs that have a path
+    if (tabs_[idx]->isModified() && !tabs_[idx]->path.empty())
+        saveTab(idx);
+
+    tabs_.erase(tabs_.begin() + idx);
+    if (tabs_.empty()) newTab();
+
+    if (active_tab_ >= (int)tabs_.size())
+        active_tab_ = (int)tabs_.size() - 1;
+    if (active_tab_ < 0) active_tab_ = 0;
+    request_switch_to_ = active_tab_;
+    syncCurrentFile();
+}
+
+void AssemblerPanel::saveTab(int idx) {
+    if (idx < 0 || idx >= (int)tabs_.size()) return;
+    auto& tab = *tabs_[idx];
+    if (tab.path.empty()) {
+        saveTabAs(idx);
+        return;
+    }
+    std::ofstream f(tab.path);
+    if (!f.is_open()) {
+        state_.assemble_error = "Cannot write file: " + tab.path;
+        return;
+    }
+    std::string text = tab.editor->GetText();
+    f.write(text.c_str(), (std::streamsize)text.size());
+    tab.saved_content = text;
+    state_.assemble_error.clear();
+}
+
+void AssemblerPanel::saveTabAs(int idx) {
+    if (idx < 0 || idx >= (int)tabs_.size()) return;
+    nfdfilteritem_t filters[] = {{"Assembly Files", "asm"}};
+    nfdchar_t* out = nullptr;
+    std::string dir = dialogDefaultDir();
+    nfdresult_t res = NFD_SaveDialog(&out, filters, 1,
+                                    dir.empty() ? nullptr : dir.c_str(), nullptr);
+    if (res == NFD_OKAY) {
+        tabs_[idx]->path = out;
+        NFD_FreePath(out);
+        saveTab(idx);
+        if (!state_.project_path.empty()) saveProject();
+        syncCurrentFile();
+    }
+}
+
+void AssemblerPanel::saveAllTabs() {
+    for (int i = 0; i < (int)tabs_.size(); ++i) {
+        if (tabs_[i]->isModified())
+            saveTab(i);
+    }
+}
+
+// ===========================================================================
+// Project management
+// ===========================================================================
+
+void AssemblerPanel::openProject(const std::string& path) {
+    ProjectFile proj;
+    try {
+        proj = ProjectFile::load(path);
+    } catch (const std::exception& e) {
+        state_.assemble_error = std::string("Cannot open project: ") + e.what();
+        return;
+    }
+
+    // Save any modified tabs that have a path, then clear them all.
+    // (Don't use closeTab() here — it calls newTab() when the list empties,
+    // which would create an infinite loop.)
+    for (auto& t : tabs_) {
+        if (t->isModified() && !t->path.empty()) {
+            std::ofstream f(t->path);
+            if (f.is_open()) {
+                std::string text = t->editor->GetText();
+                f.write(text.c_str(), (std::streamsize)text.size());
+            }
+        }
+    }
+    tabs_.clear();
+    active_tab_        = 0;
+    request_switch_to_ = 0;
+
+    state_.project_path = path;
+
+    for (const auto& src : proj.sources)
+        openFileInTab(src);
+
+    if (tabs_.empty()) newTab();
+    active_tab_        = 0;
+    request_switch_to_ = 0;
+    syncCurrentFile();
+    state_.assemble_error.clear();
+}
+
+void AssemblerPanel::newProject() {
+    nfdfilteritem_t filters[] = {{"Little-64 Project", "l64proj"}};
+    nfdchar_t* out = nullptr;
+    std::string dir = dialogDefaultDir();
+    nfdresult_t res = NFD_SaveDialog(&out, filters, 1,
+                                    dir.empty() ? nullptr : dir.c_str(), nullptr);
+    if (res != NFD_OKAY) return;
+
+    state_.project_path = out;
+    NFD_FreePath(out);
+
+    // Same pattern as openProject — clear directly to avoid the infinite loop
+    for (auto& t : tabs_) {
+        if (t->isModified() && !t->path.empty()) {
+            std::ofstream f(t->path);
+            if (f.is_open()) {
+                std::string text = t->editor->GetText();
+                f.write(text.c_str(), (std::streamsize)text.size());
+            }
+        }
+    }
+    tabs_.clear();
+    active_tab_        = 0;
+    request_switch_to_ = 0;
+    newTab();
+
+    saveProject();
+    syncCurrentFile();
+    state_.assemble_error.clear();
+}
+
+void AssemblerPanel::openProjectDialog() {
+    nfdfilteritem_t filters[] = {{"Little-64 Project", "l64proj"}};
+    nfdchar_t* out = nullptr;
+    std::string dir = dialogDefaultDir();
+    nfdresult_t res = NFD_OpenDialog(&out, filters, 1,
+                                    dir.empty() ? nullptr : dir.c_str());
+    if (res == NFD_OKAY) {
+        openProject(out);
+        NFD_FreePath(out);
+    }
+}
+
+void AssemblerPanel::saveProject() {
+    if (state_.project_path.empty()) return;
+
+    size_t slash = state_.project_path.find_last_of("/\\");
+    std::string proj_dir  = (slash != std::string::npos)
+                            ? state_.project_path.substr(0, slash) : ".";
+    std::string proj_name = (slash != std::string::npos)
+                            ? state_.project_path.substr(slash + 1)
+                            : state_.project_path;
+    size_t dot = proj_name.rfind('.');
+    if (dot != std::string::npos) proj_name = proj_name.substr(0, dot);
+
+    ProjectFile proj;
+    proj.path = state_.project_path;
+    proj.dir  = proj_dir;
+    proj.name = proj_name;
+    for (const auto& t : tabs_) {
+        if (!t->path.empty())
+            proj.sources.push_back(t->path);
+    }
+
+    try {
+        proj.save();
+    } catch (const std::exception& e) {
+        state_.assemble_error = std::string("Cannot save project: ") + e.what();
+    }
+}
+
+void AssemblerPanel::addFileToProject() {
+    nfdfilteritem_t filters[] = {{"Assembly Files", "asm,s"}};
+    nfdchar_t* out = nullptr;
+    std::string dir = dialogDefaultDir();
+    nfdresult_t res = NFD_OpenDialog(&out, filters, 1,
+                                    dir.empty() ? nullptr : dir.c_str());
+    if (res == NFD_OKAY) {
+        openFileInTab(out);
+        NFD_FreePath(out);
+        saveProject();
+    }
+}
+
+void AssemblerPanel::createNewFileInProject() {
+    nfdfilteritem_t filters[] = {{"Assembly Files", "asm"}};
+    nfdchar_t* out = nullptr;
+    std::string dir = dialogDefaultDir();
+    nfdresult_t res = NFD_SaveDialog(&out, filters, 1,
+                                    dir.empty() ? nullptr : dir.c_str(), nullptr);
+    if (res != NFD_OKAY) return;
+
+    std::string new_path = out;
+    NFD_FreePath(out);
+
+    // Create an empty file on disk
+    std::ofstream f(new_path);
+    if (!f.is_open()) {
+        state_.assemble_error = "Cannot create file: " + new_path;
+        return;
+    }
+    f.close();
+
+    openFileInTab(new_path);
+    saveProject();
+}
+
+void AssemblerPanel::removeTabFromProject(int idx) {
+    if (idx < 0 || idx >= (int)tabs_.size()) return;
+    tabs_.erase(tabs_.begin() + idx);
+    if (tabs_.empty()) newTab();
+    if (active_tab_ >= (int)tabs_.size()) active_tab_ = (int)tabs_.size() - 1;
+    if (active_tab_ < 0) active_tab_ = 0;
+    request_switch_to_ = active_tab_;
+    saveProject();
+    syncCurrentFile();
+}
+
+void AssemblerPanel::confirmDeleteTabFile(int idx) {
+    pending_delete_tab_ = idx;
+}
+
+// ===========================================================================
+// Build
+// ===========================================================================
+
+void AssemblerPanel::assembleActiveTab() {
+    if (tabs_.empty()) return;
+    state_.assemble_error.clear();
+    try {
+        Assembler assembler;
+        std::string source = activeTab().editor->GetText();
+        auto output = assembler.assemble(source);
+        loadProgramIntoState(output);
+        activeTab().editor->SetErrorMarkers({});
+    } catch (const std::exception& e) {
+        state_.assemble_error = std::string("Error: ") + e.what();
+        TextEditor::ErrorMarkers markers;
+        std::string msg = e.what();
+        auto pos = msg.rfind("at line ");
+        if (pos != std::string::npos) {
+            try {
+                int line = std::stoi(msg.substr(pos + 8));
+                markers[line] = msg;
+            } catch (...) {}
+        }
+        activeTab().editor->SetErrorMarkers(markers);
+    }
+}
+
+void AssemblerPanel::buildProject() {
+    if (tabs_.empty()) return;
+    state_.assemble_error.clear();
+
+    for (auto& t : tabs_) t->editor->SetErrorMarkers({});
+
+    Assembler assembler;
+    std::vector<std::vector<uint8_t>> objects;
+
+    for (int i = 0; i < (int)tabs_.size(); ++i) {
+        std::string source = tabs_[i]->editor->GetText();
+        try {
+            objects.push_back(assembler.assembleElf(source));
+        } catch (const std::exception& e) {
+            state_.assemble_error = tabs_[i]->displayName() + ": " + e.what();
+            TextEditor::ErrorMarkers markers;
+            std::string msg = e.what();
+            auto pos = msg.rfind("at line ");
+            if (pos != std::string::npos) {
+                try {
+                    int line = std::stoi(msg.substr(pos + 8));
+                    markers[line] = msg;
+                } catch (...) {}
+            }
+            tabs_[i]->editor->SetErrorMarkers(markers);
+            active_tab_        = i;
+            request_switch_to_ = i;
+            return;
+        }
+    }
+
+    LinkError link_err;
+    auto linked = Linker::linkObjects(objects, &link_err);
+    if (!linked) {
+        state_.assemble_error = "Link error: " + link_err.message;
+        return;
+    }
+    loadProgramIntoState(*linked);
+}
+
+// ===========================================================================
+// File dialog (single-file mode)
+// ===========================================================================
+
+void AssemblerPanel::openFileDialog() {
+    nfdfilteritem_t filters[] = {{"Assembly Files", "asm,s"}};
+    nfdchar_t* out = nullptr;
+    std::string dir = dialogDefaultDir();
+    nfdresult_t res = NFD_OpenDialog(&out, filters, 1,
+                                    dir.empty() ? nullptr : dir.c_str());
+    if (res == NFD_OKAY) {
+        openFileInTab(out);
+        NFD_FreePath(out);
+    }
+}
+
+// ===========================================================================
+// Rendering
+// ===========================================================================
+
+void AssemblerPanel::renderToolbar() {
+    const bool in_project = !state_.project_path.empty();
+
+    if (!in_project) {
+        // Single-file mode
+        if (ImGui::Button("New"))         newTab();
+        ImGui::SameLine();
+        if (ImGui::Button("Open"))        openFileDialog();
+        ImGui::SameLine();
+        if (ImGui::Button("Save"))        saveTab(active_tab_);
+        ImGui::SameLine();
+        if (ImGui::Button("Save As"))     saveTabAs(active_tab_);
+        ImGui::SameLine();
+        ImGui::Spacing(); ImGui::SameLine();
+        if (ImGui::Button("New Project")) newProject();
+        ImGui::SameLine();
+        if (ImGui::Button("Open Project")) openProjectDialog();
+    } else {
+        // Project mode
+        if (ImGui::Button("Save All"))     saveAllTabs();
+        ImGui::SameLine();
+        if (ImGui::Button("Close Project")) {
+            state_.project_path.clear();
+            syncCurrentFile();
+        }
+        ImGui::SameLine();
+        ImGui::Spacing(); ImGui::SameLine();
+        if (ImGui::Button("New File"))     createNewFileInProject();
+        ImGui::SameLine();
+        if (ImGui::Button("Add File"))     addFileToProject();
+        ImGui::SameLine();
+        if (ImGui::Button("Remove"))       removeTabFromProject(active_tab_);
+        ImGui::SameLine();
+        if (ImGui::Button("Delete"))       confirmDeleteTabFile(active_tab_);
+    }
+
+    // Font size buttons (always visible, right side)
+    ImGui::SameLine();
+    ImGui::Spacing(); ImGui::SameLine();
+    if (ImGui::Button("A-"))
+        state_.editor_font_idx = std::max(state_.editor_font_idx - 1, 0);
+    ImGui::SameLine();
+    if (ImGui::Button("A+"))
+        state_.editor_font_idx = std::min(state_.editor_font_idx + 1,
+                                          (int)state_.editor_fonts.size() - 1);
+}
+
+void AssemblerPanel::renderTabBar() {
+    if (!ImGui::BeginTabBar("##tabs", ImGuiTabBarFlags_Reorderable)) return;
+
+    int close_pending = -1;
+
+    for (int i = 0; i < (int)tabs_.size(); ++i) {
+        auto& tab = *tabs_[i];
+
+        // Build display label (with dirty marker) and stable ImGui ID
+        std::string label = tab.displayName();
+        if (tab.isModified()) label += " *";
+        label += "###tab" + std::to_string(tab.uid);
+
+        // Only use SetSelected for one-shot programmatic switches (e.g. after
+        // opening a project or creating a new file). Never set it every frame
+        // for the current tab — that would fight with user clicks.
+        ImGuiTabItemFlags flags = ImGuiTabItemFlags_None;
+        if (i == request_switch_to_) flags |= ImGuiTabItemFlags_SetSelected;
+
+        bool open = true;
+        if (ImGui::BeginTabItem(label.c_str(), &open, flags)) {
+            active_tab_ = i;
+            syncCurrentFile();
+            ImGui::EndTabItem();
+        }
+        if (!open) close_pending = i;
+    }
+    request_switch_to_ = -1;  // consume the one-shot request
+
+    // "+" button adds a new file (project mode) or blank tab (single-file)
+    if (ImGui::TabItemButton("+",
+          ImGuiTabItemFlags_Trailing | ImGuiTabItemFlags_NoTooltip)) {
+        if (!state_.project_path.empty())
+            createNewFileInProject();
+        else
+            newTab();
+    }
+
+    ImGui::EndTabBar();
+
+    if (close_pending >= 0) {
+        if (!state_.project_path.empty())
+            removeTabFromProject(close_pending);
+        else
+            closeTab(close_pending);
+    }
+}
+
+void AssemblerPanel::renderDeleteConfirmation() {
+    if (pending_delete_tab_ >= 0)
+        ImGui::OpenPopup("Confirm Delete");
+
+    if (ImGui::BeginPopupModal("Confirm Delete", nullptr,
+                               ImGuiWindowFlags_AlwaysAutoResize)) {
+        std::string fname = (pending_delete_tab_ >= 0 &&
+                             pending_delete_tab_ < (int)tabs_.size())
+                            ? tabs_[pending_delete_tab_]->displayName() : "?";
+        ImGui::Text("Delete '%s' from disk?", fname.c_str());
+        ImGui::Text("This cannot be undone.");
+        ImGui::Spacing();
+
+        if (ImGui::Button("Delete", ImVec2(80, 0))) {
+            if (pending_delete_tab_ >= 0 &&
+                pending_delete_tab_ < (int)tabs_.size()) {
+                const std::string& p = tabs_[pending_delete_tab_]->path;
+                if (!p.empty()) std::remove(p.c_str());
+                removeTabFromProject(pending_delete_tab_);
+            }
+            pending_delete_tab_ = -1;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(80, 0))) {
+            pending_delete_tab_ = -1;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+}
+
+// ===========================================================================
+// render — called once per frame
+// ===========================================================================
+
 void AssemblerPanel::render() {
-    if (ImGui::Begin("Assembler")) {
-        // Keyboard shortcuts
+    // Build window title (shows project name when open)
+    std::string title;
+    if (!state_.project_path.empty()) {
+        size_t slash = state_.project_path.find_last_of("/\\");
+        std::string proj_name = (slash != std::string::npos)
+                                ? state_.project_path.substr(slash + 1)
+                                : state_.project_path;
+        title = "Assembler \xe2\x80\x94 " + proj_name;  // UTF-8 em dash
+    } else {
+        title = "Assembler";
+    }
+    title += "###AssemblerWindow";  // stable ImGui ID
+
+    if (ImGui::Begin(title.c_str())) {
         ImGuiIO& io = ImGui::GetIO();
-        if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_O)) openFile();
-        if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S)) saveFile();
+
+        // Keyboard shortcuts
+        if (io.KeyCtrl && !io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_T))
+            newTab();
+        if (io.KeyCtrl && !io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_O))
+            openFileDialog();
+        if (io.KeyCtrl && !io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_S))
+            saveTab(active_tab_);
+        if (io.KeyCtrl && io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_S))
+            saveTabAs(active_tab_);
+        if (io.KeyCtrl && !io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_W))
+            closeTab(active_tab_);
+        if (io.KeyCtrl && io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_O))
+            openProjectDialog();
+        if (io.KeyCtrl && !io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_B)) {
+            if (!state_.project_path.empty()) buildProject();
+            else assembleActiveTab();
+        }
 
         // Ctrl+scroll to resize editor font
         if (io.KeyCtrl && ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows)) {
             if (io.MouseWheel > 0.0f)
-                state.editor_font_idx = std::min(state.editor_font_idx + 1,
-                                                 (int)state.editor_fonts.size() - 1);
+                state_.editor_font_idx = std::min(state_.editor_font_idx + 1,
+                                                  (int)state_.editor_fonts.size() - 1);
             else if (io.MouseWheel < 0.0f)
-                state.editor_font_idx = std::max(state.editor_font_idx - 1, 0);
+                state_.editor_font_idx = std::max(state_.editor_font_idx - 1, 0);
         }
 
-        // Toolbar
-        if (ImGui::Button("Open", ImVec2(60, 0))) openFile();
-        ImGui::SameLine();
-        if (ImGui::Button("Save", ImVec2(60, 0))) saveFile();
-        ImGui::SameLine();
-        if (ImGui::Button("Save As", ImVec2(70, 0))) saveFileAs();
-        ImGui::SameLine();
-        if (ImGui::Button("A-", ImVec2(28, 0)))
-            state.editor_font_idx = std::max(state.editor_font_idx - 1, 0);
-        ImGui::SameLine();
-        if (ImGui::Button("A+", ImVec2(28, 0)))
-            state.editor_font_idx = std::min(state.editor_font_idx + 1,
-                                             (int)state.editor_fonts.size() - 1);
-        ImGui::SameLine(ImGui::GetWindowWidth() - 250);
-        ImGui::TextDisabled("File: ");
-        ImGui::SameLine();
-
-        // Display file name (or <untitled>)
-        std::string display_name = state.current_file.empty() ? "<untitled>" : state.current_file;
-        size_t last_slash = display_name.find_last_of("/\\");
-        if (last_slash != std::string::npos)
-            display_name = display_name.substr(last_slash + 1);
-
-        // Unsaved indicator
-        if (editor.GetText() != last_saved_content)
-            display_name += " *";
-
-        ImGui::TextWrapped("%s", display_name.c_str());
-
+        renderToolbar();
         ImGui::Separator();
+        renderTabBar();
 
-        // Syntax-highlighting editor (leaves ~55px for the button row below)
-        ImFont* editor_font = (!state.editor_fonts.empty() &&
-                               state.editor_font_idx < (int)state.editor_fonts.size() &&
-                               state.editor_fonts[state.editor_font_idx])
-                              ? state.editor_fonts[state.editor_font_idx] : nullptr;
-        if (editor_font) ImGui::PushFont(editor_font);
-        editor.Render("##editor", ImVec2(-1, -55));
-        if (editor_font) ImGui::PopFont();
-        state.editor_source = editor.GetText();
+        // Editor (leaves ~30px for the button row below)
+        if (!tabs_.empty()) {
+            ImFont* editor_font =
+                (!state_.editor_fonts.empty() &&
+                 state_.editor_font_idx < (int)state_.editor_fonts.size() &&
+                 state_.editor_fonts[state_.editor_font_idx])
+                ? state_.editor_fonts[state_.editor_font_idx] : nullptr;
 
-        // Assemble button
-        if (ImGui::Button("Assemble", ImVec2(100, 0))) {
-            try {
-                state.assemble_error.clear();
-                Assembler assembler;
-                std::vector<uint16_t> output = assembler.assemble(state.editor_source);
+            if (editor_font) ImGui::PushFont(editor_font);
+            activeTab().editor->Render("##editor", ImVec2(-1, -55));
+            if (editor_font) ImGui::PopFont();
+        }
 
-                state.cpu.loadProgram(output);
-                state.disassembly = Disassembler::disassembleBuffer(
-                    output.data(), output.size(), 0);
-
-                editor.SetErrorMarkers({});
-            } catch (const std::exception& e) {
-                state.assemble_error = std::string("Error: ") + e.what();
-
-                // Parse "at line N" to highlight the offending line
-                TextEditor::ErrorMarkers markers;
-                auto pos = state.assemble_error.rfind("at line ");
-                if (pos != std::string::npos) {
-                    try {
-                        int line = std::stoi(state.assemble_error.substr(pos + 8));
-                        markers[line] = e.what();
-                    } catch (...) {}
-                }
-                editor.SetErrorMarkers(markers);
-            }
+        // Build / Assemble button
+        const bool in_project = !state_.project_path.empty();
+        if (in_project) {
+            if (ImGui::Button("Build Project", ImVec2(130, 0))) buildProject();
+        } else {
+            if (ImGui::Button("Assemble", ImVec2(100, 0))) assembleActiveTab();
         }
 
         // Error message
-        if (!state.assemble_error.empty()) {
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.0f, 0.0f, 1.0f));
-            ImGui::TextWrapped("%s", state.assemble_error.c_str());
+        if (!state_.assemble_error.empty()) {
+            ImGui::SameLine();
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
+            ImGui::TextWrapped("%s", state_.assemble_error.c_str());
             ImGui::PopStyleColor();
         }
     }
     ImGui::End();
-}
 
-// Returns the directory to use as the NFD default path.
-static std::string dialogDefaultDir(const std::string& current_file) {
-    if (!current_file.empty()) {
-        size_t last_slash = current_file.find_last_of("/\\");
-        if (last_slash != std::string::npos)
-            return current_file.substr(0, last_slash);
-    }
-    char cwd[PATH_MAX];
-    if (getcwd(cwd, sizeof(cwd)))
-        return cwd;
-    return {};
-}
-
-void AssemblerPanel::openFile() {
-    nfdfilteritem_t filters[] = {{"Assembly Files", "asm,s"}};
-    nfdchar_t* out = nullptr;
-    std::string dir = dialogDefaultDir(state.current_file);
-    nfdresult_t res = NFD_OpenDialog(&out, filters, 1,
-        dir.empty() ? nullptr : dir.c_str());
-    if (res == NFD_OKAY) {
-        loadFileIntoBuffer(out);
-        state.current_file = out;
-        NFD_FreePath(out);
-    }
-}
-
-void AssemblerPanel::saveFile() {
-    if (state.current_file.empty()) {
-        saveFileAs();
-        return;
-    }
-    writeBufferToFile(state.current_file);
-}
-
-void AssemblerPanel::saveFileAs() {
-    nfdfilteritem_t filters[] = {{"Assembly Files", "asm"}};
-    nfdchar_t* out = nullptr;
-    std::string dir = dialogDefaultDir(state.current_file);
-    nfdresult_t res = NFD_SaveDialog(&out, filters, 1,
-        dir.empty() ? nullptr : dir.c_str(), nullptr);
-    if (res == NFD_OKAY) {
-        state.current_file = out;
-        NFD_FreePath(out);
-        writeBufferToFile(state.current_file);
-    }
-}
-
-void AssemblerPanel::loadFileIntoBuffer(const std::string& path) {
-    std::ifstream file(path);
-    if (!file.is_open()) {
-        state.assemble_error = "Failed to open file: " + path;
-        return;
-    }
-
-    std::string contents((std::istreambuf_iterator<char>(file)),
-                         std::istreambuf_iterator<char>());
-
-    editor.SetText(contents);
-    last_saved_content = contents;
-    state.editor_source = contents;
-    state.assemble_error.clear();
-    editor.SetErrorMarkers({});
-}
-
-void AssemblerPanel::writeBufferToFile(const std::string& path) {
-    std::ofstream file(path);
-    if (!file.is_open()) {
-        state.assemble_error = "Failed to write file: " + path;
-        return;
-    }
-
-    std::string text = editor.GetText();
-    file.write(text.c_str(), text.size());
-    file.close();
-
-    last_saved_content = text;
-    state.editor_source = text;
-    state.assemble_error.clear();
+    renderDeleteConfirmation();
 }

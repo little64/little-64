@@ -74,6 +74,31 @@ test_linker = executable('test-linker',
 
 test('linker', test_linker)
 
+# --- Project library and runner ---
+project_lib = static_library('little-64-project-lib',
+  ['project/project.cpp'],
+  include_directories : [include_directories('project')],
+  install : false,
+)
+
+little64_run = executable('little-64-run',
+  ['project/runner_main.cpp'],
+  link_with : [project_lib, asm_lib, linker_lib, emulator_lib],
+  include_directories : [
+    include_directories('project'),
+    include_directories('assembler'),
+    include_directories('linker'),
+    include_directories('emulator'),
+    arch_inc,
+  ],
+  install : false,
+)
+
+test('project-runner',
+  little64_run,
+  args : [meson.source_root() / 'tests/projects/hello/hello.l64proj'],
+)
+
 # --- Disassembler (static library for embedding) ---
 disasm_lib = static_library('little-64-disasm-lib',
   ['disassembler/disassembler.cpp'],
@@ -116,7 +141,7 @@ gui_src = [
 
 executable('little-64-gui',
   gui_src,
-  link_with : [asm_lib, disasm_lib, emulator_lib],
+  link_with : [asm_lib, disasm_lib, emulator_lib, linker_lib, project_lib],
   include_directories : [
     include_directories('gui'),
     include_directories('gui/panels'),
@@ -124,6 +149,8 @@ executable('little-64-gui',
     include_directories('emulator'),
     include_directories('assembler'),
     include_directories('disassembler'),
+    include_directories('linker'),
+    include_directories('project'),
     arch_inc,
   ],
   dependencies : [sdl2_dep, gl_dep, imgui_dep, nfd_dep],

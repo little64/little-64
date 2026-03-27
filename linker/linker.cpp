@@ -191,7 +191,11 @@ std::optional<std::vector<uint16_t>> Linker::linkObjects(const std::vector<std::
                     if (err) err->message = "PCREL reloc out of range";
                     return std::nullopt;
                 }
-                uint16_t new_instr = (instr & 0xF00F) | ((uint16_t)(rel & 0x3F) << 4);
+                // Mask 0xFC0F keeps bits [15:10] (format + full 4-bit opcode) and [3:0] (Rd),
+                // clearing only bits [9:4] which hold the 6-bit PC-relative offset field.
+                // 0xF00F would incorrectly zero opcode bits [11:10], corrupting all opcodes
+                // whose lower two bits are non-zero (STORE, PUSH, POP, JUMP.Z, JUMP.S, etc.).
+                uint16_t new_instr = (instr & 0xFC0F) | ((uint16_t)(rel & 0x3F) << 4);
                 linked_text[patch_addr] = new_instr & 0xFF;
                 linked_text[patch_addr+1] = (new_instr >> 8) & 0xFF;
             } else {

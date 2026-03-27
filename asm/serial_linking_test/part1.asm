@@ -17,3 +17,4 @@ start:
 
 hello_world:
 .asciiz "Hello, world!"
+

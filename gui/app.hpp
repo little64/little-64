@@ -20,6 +20,7 @@ struct AppState {
     std::string assemble_error;
     std::string current_file;   // absolute path, or "" if untitled
     std::string serial_output;  // accumulated serial TX output
+    std::string project_path;   // absolute path to open .l64proj, or "" if none
 
     std::vector<ImFont*> editor_fonts;  // one entry per size in kEditorFontSizes
     int editor_font_idx = 3;            // index of the currently active editor font (default 16px)

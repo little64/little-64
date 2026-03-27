@@ -1,0 +1,121 @@
+#include "project.hpp"
+#include "assembler.hpp"
+#include "linker.hpp"
+#include "cpu.hpp"
+#include <iostream>
+#include <fstream>
+#include <cstdio>
+
+int main(int argc, char* argv[]) {
+    std::string proj_path;
+    uint64_t max_cycles = 1000000;
+
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--max-cycles" && i + 1 < argc) {
+            try {
+                max_cycles = std::stoull(argv[++i]);
+            } catch (...) {
+                std::cerr << "Invalid --max-cycles value\n";
+                return 1;
+            }
+        } else {
+            proj_path = arg;
+        }
+    }
+
+    if (proj_path.empty()) {
+        std::cerr << "Usage: " << argv[0] << " <project.l64proj> [--max-cycles N]\n";
+        return 1;
+    }
+
+    // Load project file
+    ProjectFile proj;
+    try {
+        proj = ProjectFile::load(proj_path);
+    } catch (const std::exception& e) {
+        std::cerr << "Error loading project: " << e.what() << "\n";
+        return 1;
+    }
+
+    if (proj.sources.empty()) {
+        std::cerr << "Project has no source files\n";
+        return 1;
+    }
+
+    // Assemble each source as an ELF object
+    Assembler assembler;
+    std::vector<std::vector<uint8_t>> objects;
+    for (const auto& src_path : proj.sources) {
+        std::ifstream f(src_path);
+        if (!f.is_open()) {
+            std::cerr << "Cannot open source: " << src_path << "\n";
+            return 1;
+        }
+        std::string content((std::istreambuf_iterator<char>(f)),
+                            std::istreambuf_iterator<char>());
+        try {
+            objects.push_back(assembler.assembleElf(content));
+        } catch (const std::exception& e) {
+            std::cerr << "Assembly error in " << src_path << ": " << e.what() << "\n";
+            return 1;
+        }
+    }
+
+    // Link
+    LinkError link_err;
+    auto linked = Linker::linkObjects(objects, &link_err);
+    if (!linked) {
+        std::cerr << "Link error: " << link_err.message << "\n";
+        return 1;
+    }
+
+    if (proj.expectations.empty()) {
+        std::cout << "Assembled and linked successfully (no EXPECT assertions).\n";
+        return 0;
+    }
+
+    // Run in the emulator
+    Little64CPU cpu;
+    cpu.loadProgram(*linked);
+
+    uint64_t cycles = 0;
+    while (cpu.isRunning && cycles < max_cycles) {
+        cpu.cycle();
+        ++cycles;
+    }
+
+    if (cpu.isRunning) {
+        std::cerr << "FAIL: program did not halt after " << max_cycles << " cycles\n";
+        return 1;
+    }
+
+    // Check EXPECT assertions
+    int failures = 0;
+    for (const auto& exp : proj.expectations) {
+        uint64_t actual = 0;
+        char target_buf[64];
+
+        if (exp.type == Expectation::Type::Register) {
+            actual = cpu.registers.regs[exp.reg_idx];
+            std::snprintf(target_buf, sizeof(target_buf), "R%d", exp.reg_idx);
+        } else {
+            actual = cpu.getMemoryBus().read8(exp.mem_addr);
+            std::snprintf(target_buf, sizeof(target_buf), "mem:0x%llX",
+                          static_cast<unsigned long long>(exp.mem_addr));
+        }
+
+        if (actual == exp.expected_value) {
+            std::cout << "PASS  " << target_buf
+                      << " = " << exp.expected_value << "\n";
+        } else {
+            std::cerr << "FAIL  " << target_buf
+                      << " expected " << exp.expected_value
+                      << " got " << actual
+                      << "  (" << exp.source_file << ":" << exp.line_number << ")\n";
+            ++failures;
+        }
+    }
+
+    return failures > 0 ? 1 : 0;
+}

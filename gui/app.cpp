@@ -256,19 +256,20 @@ void App::loadLastFile() {
     std::string path;
     if (!std::getline(config_file, path) || path.empty()) return;
 
-    // Check if the file exists
+    // Check the file exists before committing to it
     std::ifstream check_file(path);
     if (!check_file.is_open()) return;
 
-    // Read file contents into state.editor_source
-    std::string contents((std::istreambuf_iterator<char>(check_file)),
-                         std::istreambuf_iterator<char>());
-    state.editor_source = contents;
     state.current_file = path;
+    // AssemblerPanel constructor reads state.current_file and opens the file
+    // (or project if the path ends in .l64proj).
 }
 
 void App::saveLastFile() {
-    if (state.current_file.empty()) return;
+    // Prefer project path so reopening restores the full project
+    const std::string& path = state.project_path.empty()
+                              ? state.current_file : state.project_path;
+    if (path.empty()) return;
 
     const char* home = std::getenv("HOME");
     if (!home) return;
@@ -276,12 +277,9 @@ void App::saveLastFile() {
     std::string config_dir = std::string(home) + "/.config/little-64";
     std::string config_path = config_dir + "/last_file";
 
-    // Create directory if it doesn't exist
     mkdir(config_dir.c_str(), 0755);
 
-    // Write the current file path to config
     std::ofstream config_file(config_path);
-    if (config_file.is_open()) {
-        config_file << state.current_file;
-    }
+    if (config_file.is_open())
+        config_file << path;
 }

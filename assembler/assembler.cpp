@@ -317,10 +317,13 @@ static std::vector<uint8_t> makeElfObject(const std::vector<uint16_t>& words,
         appendU64(rela_text, static_cast<uint64_t>(addend));
     };
 
-    // Symbol index map is 1..N in symbol table output order
+    // Symbol index map is 1..N in symbol table output order.
+    // Linear search is required because symbol_names is sorted locals-first (not purely
+    // alphabetically), so std::lower_bound with the default comparator would miss globals
+    // that sort alphabetically before some locals.
     auto find_symbol_index = [&](const std::string& name) -> uint32_t {
-        auto it = std::lower_bound(symbol_names.begin(), symbol_names.end(), name);
-        if (it == symbol_names.end() || *it != name) return 0;
+        auto it = std::find(symbol_names.begin(), symbol_names.end(), name);
+        if (it == symbol_names.end()) return 0;
         return static_cast<uint32_t>(std::distance(symbol_names.begin(), it) + 1);
     };
 
