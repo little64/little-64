@@ -13,15 +13,20 @@ static TextEditor::LanguageDefinition buildLanguageDef() {
     TextEditor::LanguageDefinition lang;
     lang.mName = "Little-64 ASM";
     lang.mSingleLineComment = ";";
+    lang.mCommentStart = "/*";   // assembly has no block comments; prevents empty-string bug in TextEditor
+    lang.mCommentEnd   = "*/";
     lang.mCaseSensitive = false;
+    lang.mPreprocChar = 0;  // '#' is an immediate sigil here, not a preprocessor char
 
     // Opcodes → Keyword colour
     // LDI accepts .SN and .N suffix forms (N = 0–3)
+    // JUMP is a pseudo-instruction (encodes as MOVE with implicit R15 dest)
     static const char* const opcodes[] = {
         "ADD", "SUB", "AND", "OR", "TEST", "STOP",
         "LOAD", "STORE", "INC_LOAD", "DEC_STORE", "MOVE",
         "BYTE_LOAD", "BYTE_STORE", "SHORT_LOAD", "SHORT_STORE",
         "WORD_LOAD", "WORD_STORE",
+        "JUMP",
         "JUMP.Z", "JUMP.C", "JUMP.S", "JUMP.GT", "JUMP.LT",
         "LDI",
         "LDI.S0", "LDI.S1", "LDI.S2", "LDI.S3",
@@ -39,17 +44,24 @@ static TextEditor::LanguageDefinition buildLanguageDef() {
 
     // Regex tokens (matched in order, first match wins):
     // Label definitions (identifier:) — must come before bare identifier matching
-    lang.mTokenRegexStrings.push_back({ "[a-zA-Z_][a-zA-Z0-9_.]*:",  TextEditor::PaletteIndex::CharLiteral });
-    // Directives (.org, .word)
-    lang.mTokenRegexStrings.push_back({ "\\.org|\\.word",             TextEditor::PaletteIndex::Preprocessor });
+    lang.mTokenRegexStrings.push_back({ "[a-zA-Z_][a-zA-Z0-9_.]*:",         TextEditor::PaletteIndex::CharLiteral });
+    // Directives — all recognised forms (.org, .byte, .short, .word, .int, .long, .ascii, .asciiz)
+    // asciiz must appear before ascii so it is tried first
+    lang.mTokenRegexStrings.push_back({ "\\.(?:asciiz|ascii|short|long|word|byte|int|org)", TextEditor::PaletteIndex::Preprocessor });
+    // String literals for .ascii/.asciiz — handles common escape sequences
+    lang.mTokenRegexStrings.push_back({ "\"(?:[^\"\\\\]|\\\\.)*\"",          TextEditor::PaletteIndex::String });
     // PC-relative operands: @label, @+N, @-N (label names may contain dots)
-    lang.mTokenRegexStrings.push_back({ "@[+\\-]?[a-zA-Z0-9_.]+",    TextEditor::PaletteIndex::String });
+    lang.mTokenRegexStrings.push_back({ "@[+\\-]?[a-zA-Z0-9_.]+",           TextEditor::PaletteIndex::PreprocIdentifier });
     // Hex numbers (#0xFF / 0xFF)
-    lang.mTokenRegexStrings.push_back({ "#?0[xX][0-9a-fA-F]+",       TextEditor::PaletteIndex::Number });
+    lang.mTokenRegexStrings.push_back({ "#?0[xX][0-9a-fA-F]+",              TextEditor::PaletteIndex::Number });
     // Binary numbers (#0b101 / 0b101)
-    lang.mTokenRegexStrings.push_back({ "#?0[bB][01]+",               TextEditor::PaletteIndex::Number });
+    lang.mTokenRegexStrings.push_back({ "#?0[bB][01]+",                      TextEditor::PaletteIndex::Number });
     // Decimal numbers (#123 / 123)
-    lang.mTokenRegexStrings.push_back({ "#?[0-9]+",                   TextEditor::PaletteIndex::Number });
+    lang.mTokenRegexStrings.push_back({ "#?[0-9]+",                          TextEditor::PaletteIndex::Number });
+    // Fallback identifier (dots included for JUMP.Z, LDI.S1, etc.)
+    // Must be last — specific patterns above get priority.
+    // Assigning Identifier triggers the keyword/known-identifier lookup in TextEditor.
+    lang.mTokenRegexStrings.push_back({ "[a-zA-Z_][a-zA-Z0-9_.]*",           TextEditor::PaletteIndex::Identifier });
 
     return lang;
 }
@@ -64,15 +76,17 @@ static TextEditor::Palette buildPalette() {
     p[(int)TextEditor::PaletteIndex::Keyword]          = IM_COL32(0xDC, 0xDC, 0xAA, 0xFF);
     // Registers — sky blue (VS Code variable colour)
     p[(int)TextEditor::PaletteIndex::KnownIdentifier]  = IM_COL32(0x9C, 0xDC, 0xFE, 0xFF);
-    // Numeric literals — soft green (VS Code number colour)
-    p[(int)TextEditor::PaletteIndex::Number]           = IM_COL32(0xB5, 0xCE, 0xA8, 0xFF);
-    // Comments — muted green (VS Code comment colour)
-    p[(int)TextEditor::PaletteIndex::Comment]          = IM_COL32(0x6A, 0x99, 0x55, 0xFF);
-    p[(int)TextEditor::PaletteIndex::MultiLineComment] = IM_COL32(0x6A, 0x99, 0x55, 0xFF);
+    // Numeric literals — warm orange
+    p[(int)TextEditor::PaletteIndex::Number]           = IM_COL32(0xD7, 0xBA, 0x7D, 0xFF);
+    // Comments — neutral grey (de-emphasised; the default green dominated heavily commented files)
+    p[(int)TextEditor::PaletteIndex::Comment]          = IM_COL32(0x7F, 0x84, 0x8E, 0xFF);
+    p[(int)TextEditor::PaletteIndex::MultiLineComment] = IM_COL32(0x7F, 0x84, 0x8E, 0xFF);
     // Directives (.org, .word) — orchid purple (VS Code keyword colour)
     p[(int)TextEditor::PaletteIndex::Preprocessor]     = IM_COL32(0xC5, 0x86, 0xC0, 0xFF);
-    // PC-relative operands (@label, @+N) — warm orange (VS Code string colour)
+    // String literals ("hello") — warm orange (VS Code string colour)
     p[(int)TextEditor::PaletteIndex::String]           = IM_COL32(0xCE, 0x91, 0x78, 0xFF);
+    // PC-relative operands (@label, @+N) — mint green (address references)
+    p[(int)TextEditor::PaletteIndex::PreprocIdentifier]= IM_COL32(0x7D, 0xCE, 0xA0, 0xFF);
     // Label definitions (identifier:) — bright gold
     p[(int)TextEditor::PaletteIndex::CharLiteral]      = IM_COL32(0xFF, 0xD7, 0x00, 0xFF);
     // Line numbers — dim grey
