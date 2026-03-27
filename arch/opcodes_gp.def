@@ -12,5 +12,11 @@ LITTLE64_GP_OPCODE(SLL,  20, "SLL", 1)
 LITTLE64_GP_OPCODE(SRL,  21, "SRL", 1)
 LITTLE64_GP_OPCODE(SRA,  22, "SRA", 1)
 
+
+// Opcodes >= 56 are defined as "special"; while they are in ALU space,
+// they have non-ALU effects.
+LITTLE64_GP_OPCODE(LSR, 56, "LSR", 2) // Load special register; load the special register by ID in Rs1 into Rd
+LITTLE64_GP_OPCODE(SSR, 57, "SSR", 2) // Store special register; store the value in Rd into the special register by ID in Rs1
+
 // Emulator-specifc instruction: stop emulation
 LITTLE64_GP_OPCODE(STOP, 63, "STOP", 0)

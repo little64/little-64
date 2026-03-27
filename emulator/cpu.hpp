@@ -26,6 +26,25 @@ public:
         //   bit 2: Sign (S)  — result was negative (MSB set)
         // JUMP.GT fires when Z=0 and S=0; JUMP.LT fires when S=1.
         uint64_t flags;
+
+        // Special register space and helper methods
+        uint64_t cpu_control;
+        uint64_t interrupt_table_base;
+
+        uint64_t getSpecialRegister(uint64_t index) const {
+            switch (index) {
+                case 0: return cpu_control;
+                case 1: return interrupt_table_base;
+                default: return 0;
+            }
+        }
+
+        void setSpecialRegister(uint64_t index, uint64_t value) {
+            switch (index) {
+                case 0: cpu_control = value; break;
+                case 1: interrupt_table_base = value; break;
+            }
+        }
     };
 
     struct Instruction {

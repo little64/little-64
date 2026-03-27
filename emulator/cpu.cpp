@@ -242,6 +242,18 @@ void Little64CPU::_dispatchGP(const Instruction& instr) {
             break;
         }
 
+        case GP::Opcode::LSR: {
+            // Load special register, e.g. for CPU control and interrupt table base
+            registers.regs[instr.rd] = registers.getSpecialRegister(b);
+            break;
+        }
+
+        case GP::Opcode::SSR: {
+            // Store special register
+            registers.setSpecialRegister(b, a);
+            break;
+        }
+
         case GP::Opcode::STOP: {
             isRunning = false;
             break;
