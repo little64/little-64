@@ -31,9 +31,21 @@ struct ParsedInstruction {
 
 class Assembler {
 public:
+    enum class OutputFormat {
+        Raw,
+        Elf
+    };
+
+    struct ElfOptions {
+        // future extensions (target architecture, relocation behavior) can go here
+    };
+
     // Assemble source code and return the binary output
     // Throws std::runtime_error on any failure
     std::vector<uint16_t> assemble(const std::string& source);
+
+    // Assemble source code and return ELF object bytes
+    std::vector<uint8_t> assembleElf(const std::string& source, const ElfOptions& opts = {});
 
     // Return a string representation of assembled instructions for listing
     std::string getListing() const;

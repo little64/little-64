@@ -186,6 +186,191 @@ static const std::unordered_map<std::string, PseudoDef> pseudo_table = {
 
 // ---------------------------------------------------------------------------
 
+static void appendU16(std::vector<uint8_t>& data, uint16_t v) {
+    data.push_back(static_cast<uint8_t>(v & 0xFF));
+    data.push_back(static_cast<uint8_t>((v >> 8) & 0xFF));
+}
+
+static void appendU32(std::vector<uint8_t>& data, uint32_t v) {
+    data.push_back(static_cast<uint8_t>(v & 0xFF));
+    data.push_back(static_cast<uint8_t>((v >> 8) & 0xFF));
+    data.push_back(static_cast<uint8_t>((v >> 16) & 0xFF));
+    data.push_back(static_cast<uint8_t>((v >> 24) & 0xFF));
+}
+
+static void appendU64(std::vector<uint8_t>& data, uint64_t v) {
+    appendU32(data, static_cast<uint32_t>(v & 0xFFFFFFFF));
+    appendU32(data, static_cast<uint32_t>((v >> 32) & 0xFFFFFFFF));
+}
+
+static std::vector<uint8_t> makeElfObject(const std::vector<uint16_t>& words,
+                                          const std::unordered_map<std::string,uint16_t>& symbols) {
+    // Convert mapped words to bytes (little-endian)
+    std::vector<uint8_t> text;
+    text.reserve(words.size() * 2);
+    for (uint16_t w : words) {
+        appendU16(text, w);
+    }
+
+    // Build string table for symbols and section names
+    std::string strtab_contents;
+    strtab_contents.push_back('\0');
+    std::unordered_map<std::string, uint32_t> sym_name_offset;
+    for (const auto& [name, address] : symbols) {
+        sym_name_offset[name] = static_cast<uint32_t>(strtab_contents.size());
+        strtab_contents += name;
+        strtab_contents.push_back('\0');
+    }
+
+    std::string shstrtab;
+    shstrtab.push_back('\0');
+    const auto shname = [&shstrtab](const char* s) {
+        uint32_t off = static_cast<uint32_t>(shstrtab.size());
+        shstrtab += s;
+        shstrtab.push_back('\0');
+        return off;
+    };
+
+    uint32_t sh_name_text   = shname(".text");
+    uint32_t sh_name_symtab = shname(".symtab");
+    uint32_t sh_name_strtab = shname(".strtab");
+    uint32_t sh_name_shstr  = shname(".shstrtab");
+
+    // Build symbol table (.symtab): first null entry, then each label.
+    std::vector<uint8_t> symtab;
+    // Elf64_Sym layout: st_name(4), st_info(1), st_other(1), st_shndx(2), st_value(8), st_size(8)
+    auto append_sym = [&](uint32_t name, uint8_t info, uint16_t shndx,
+                          uint64_t value, uint64_t size) {
+        appendU32(symtab, name);
+        symtab.push_back(info);
+        symtab.push_back(0);
+        appendU16(symtab, shndx);
+        appendU64(symtab, value);
+        appendU64(symtab, size);
+    };
+
+    // null symbol
+    append_sym(0, 0, 0, 0, 0);
+
+    for (const auto& [name, address] : symbols) {
+        uint32_t name_off = sym_name_offset.at(name);
+        uint8_t info = (1 << 4) | 0; // STB_GLOBAL, STT_NOTYPE
+        append_sym(name_off, info, 1, address, 0);
+    }
+
+    // Section header table entries
+    const uint16_t shnum = 5;
+    const uint16_t shstrndx = 4;
+
+    // compute offsets
+    uint64_t offset = 64; // ELF header size for 64-bit
+    uint64_t text_offset = offset;
+    uint64_t text_size = text.size();
+    offset += text_size;
+
+    // align symtab to 8 bytes
+    offset = (offset + 7) & ~uint64_t(7);
+    uint64_t symtab_offset = offset;
+    offset += symtab.size();
+
+    // align strtab to 8 bytes
+    offset = (offset + 7) & ~uint64_t(7);
+    uint64_t strtab_offset = offset;
+    offset += strtab_contents.size();
+
+    // align shstrtab to 8 bytes
+    offset = (offset + 7) & ~uint64_t(7);
+    uint64_t shstrtab_offset = offset;
+    offset += shstrtab.size();
+
+    uint64_t shoff = (offset + 7) & ~uint64_t(7);
+
+    std::vector<uint8_t> out;
+    out.reserve(shoff + shnum * 64);
+
+    // ELF header
+    out.resize(64, 0);
+    out[0] = 0x7F; out[1] = 'E'; out[2] = 'L'; out[3] = 'F';
+    out[4] = 2; // ELFCLASS64
+    out[5] = 1; // ELFDATA2LSB
+    out[6] = 1; // EV_CURRENT
+    out[7] = 0; // OSABI
+
+    auto writeU16 = [&](size_t idx, uint16_t v) {
+        out[idx] = static_cast<uint8_t>(v & 0xFF);
+        out[idx + 1] = static_cast<uint8_t>((v >> 8) & 0xFF);
+    };
+    auto writeU32 = [&](size_t idx, uint32_t v) {
+        out[idx] = static_cast<uint8_t>(v & 0xFF);
+        out[idx + 1] = static_cast<uint8_t>((v >> 8) & 0xFF);
+        out[idx + 2] = static_cast<uint8_t>((v >> 16) & 0xFF);
+        out[idx + 3] = static_cast<uint8_t>((v >> 24) & 0xFF);
+    };
+    auto writeU64 = [&](size_t idx, uint64_t v) {
+        writeU32(idx, static_cast<uint32_t>(v & 0xFFFFFFFF));
+        writeU32(idx + 4, static_cast<uint32_t>((v >> 32) & 0xFFFFFFFF));
+    };
+
+    writeU16(16, 1); // e_type = ET_REL
+    writeU16(18, 0); // e_machine = EM_NONE
+    writeU32(20, 1); // e_version
+    writeU64(24, 0); // e_entry
+    writeU64(32, 0); // e_phoff
+    writeU64(40, shoff); // e_shoff
+    writeU32(48, 0); // e_flags
+    writeU16(52, 64); // e_ehsize
+    writeU16(54, 0); // e_phentsize
+    writeU16(56, 0); // e_phnum
+    writeU16(58, 64); // e_shentsize
+    writeU16(60, shnum); // e_shnum
+    writeU16(62, shstrndx); // e_shstrndx
+
+    // .text
+    out.resize(text_offset);
+    out.insert(out.end(), text.begin(), text.end());
+
+    // padding to align symtab
+    while (out.size() < symtab_offset) out.push_back(0);
+    out.insert(out.end(), symtab.begin(), symtab.end());
+
+    while (out.size() < strtab_offset) out.push_back(0);
+    out.insert(out.end(), strtab_contents.begin(), strtab_contents.end());
+
+    while (out.size() < shstrtab_offset) out.push_back(0);
+    out.insert(out.end(), shstrtab.begin(), shstrtab.end());
+
+    while (out.size() < shoff) out.push_back(0);
+
+    auto append_sh = [&](uint32_t name, uint32_t type, uint64_t flags,
+                         uint64_t addr, uint64_t off, uint64_t size,
+                         uint32_t link, uint32_t info, uint64_t addralign,
+                         uint64_t entsize) {
+        appendU32(out, name);
+        appendU32(out, type);
+        appendU64(out, flags);
+        appendU64(out, addr);
+        appendU64(out, off);
+        appendU64(out, size);
+        appendU32(out, link);
+        appendU32(out, info);
+        appendU64(out, addralign);
+        appendU64(out, entsize);
+    };
+
+    // section 0: null
+    append_sh(0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+    // section 1: .text
+    append_sh(sh_name_text, 1, 0, 0, text_offset, text_size, 0, 0, 1, 0);
+    // section 2: .symtab
+    append_sh(sh_name_symtab, 2, 0, 0, symtab_offset, symtab.size(), 3, symbols.size() + 1, 8, 24);
+    // section 3: .strtab
+    append_sh(sh_name_strtab, 3, 0, 0, strtab_offset, strtab_contents.size(), 0, 0, 1, 0);
+    // section 4: .shstrtab
+    append_sh(sh_name_shstr, 3, 0, 0, shstrtab_offset, shstrtab.size(), 0, 0, 1, 0);
+
+    return out;
+}
+
 std::vector<uint16_t> Assembler::assemble(const std::string& source) {
     Encoder::init();
     emit_items.clear();
@@ -200,6 +385,23 @@ std::vector<uint16_t> Assembler::assemble(const std::string& source) {
     pass2(symbols, output);
 
     return output;
+}
+
+std::vector<uint8_t> Assembler::assembleElf(const std::string& source,
+                                             const ElfOptions&) {
+    Encoder::init();
+    emit_items.clear();
+
+    Lexer lexer;
+    std::vector<Token> tokens = lexer.tokenize(source);
+
+    SymbolTable symbols;
+    pass1(tokens, symbols);
+
+    std::vector<uint16_t> output;
+    pass2(symbols, output);
+
+    return makeElfObject(output, symbols);
 }
 
 void Assembler::pass1(const std::vector<Token>& tokens, SymbolTable& symbols) {

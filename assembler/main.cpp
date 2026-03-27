@@ -10,7 +10,8 @@ void printUsage(const char* prog_name) {
               << "Options:\n"
               << "  -o <file>     Output file (default: input.bin)\n"
               << "  --list        Print instruction listing to stdout\n"
-              << "  --hex         Output as Intel HEX format\n";
+              << "  --hex         Output as Intel HEX format\n"
+              << "  --elf         Output ELF object file (.o)\n";
 }
 
 int main(int argc, char* argv[]) {
@@ -18,6 +19,7 @@ int main(int argc, char* argv[]) {
     std::string output_file;
     bool print_list = false;
     bool hex_output = false;
+    bool elf_output = false;
 
     // Parse arguments
     for (int i = 1; i < argc; ++i) {
@@ -32,6 +34,8 @@ int main(int argc, char* argv[]) {
             print_list = true;
         } else if (std::strcmp(argv[i], "--hex") == 0) {
             hex_output = true;
+        } else if (std::strcmp(argv[i], "--elf") == 0) {
+            elf_output = true;
         } else if (argv[i][0] == '-') {
             std::cerr << "Error: Unknown option " << argv[i] << "\n";
             printUsage(argv[0]);
@@ -65,15 +69,24 @@ int main(int argc, char* argv[]) {
         if (dot_pos != std::string::npos) {
             output_file = output_file.substr(0, dot_pos);
         }
-        output_file += ".bin";
+        if (elf_output) {
+            output_file += ".o";
+        } else {
+            output_file += ".bin";
+        }
     }
 
     // Assemble
     Assembler assembler;
     std::vector<uint16_t> binary;
+    std::vector<uint8_t> elf_bytes;
 
     try {
-        binary = assembler.assemble(source);
+        if (elf_output) {
+            elf_bytes = assembler.assembleElf(source);
+        } else {
+            binary = assembler.assemble(source);
+        }
     } catch (const std::exception& e) {
         std::cerr << "Assembly error: " << e.what() << "\n";
         return 1;
@@ -91,16 +104,25 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // Write as little-endian 16-bit words
-    for (uint16_t word : binary) {
-        uint8_t lo = word & 0xFF;
-        uint8_t hi = (word >> 8) & 0xFF;
-        out.put(lo);
-        out.put(hi);
+    if (elf_output) {
+        out.write(reinterpret_cast<const char*>(elf_bytes.data()), elf_bytes.size());
+    } else {
+        // Write as little-endian 16-bit words
+        for (uint16_t word : binary) {
+            uint8_t lo = word & 0xFF;
+            uint8_t hi = (word >> 8) & 0xFF;
+            out.put(lo);
+            out.put(hi);
+        }
     }
 
     out.close();
-    std::cout << "Assembled " << binary.size() << " instructions to " << output_file << "\n";
+
+    if (elf_output) {
+        std::cout << "Assembled " << elf_bytes.size() << " bytes (ELF object) to " << output_file << "\n";
+    } else {
+        std::cout << "Assembled " << binary.size() << " instructions to " << output_file << "\n";
+    }
 
     return 0;
 }

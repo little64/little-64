@@ -52,6 +52,11 @@ static std::vector<uint16_t> assemble(const std::string& src) {
     return a.assemble(src);
 }
 
+static std::vector<uint8_t> assembleElf(const std::string& src) {
+    Assembler a;
+    return a.assembleElf(src);
+}
+
 // ---------------------------------------------------------------------------
 // Group A — LDI encoding
 // Format 10: (2<<14) | (shift<<12) | (imm8<<4) | rd
@@ -225,6 +230,20 @@ static void test_ldi64_pseudo() {
     CHECK_EQ(out[4], 0x2233, "LDI64 constant word2");
     CHECK_EQ(out[5], 0x0011, "LDI64 constant word3 (upper)");
     CHECK_EQ(out[6], 0xFF00, "LDI64 following STOP");
+}
+
+static void test_elf_output() {
+    auto elf = assembleElf(".org 0\nstart: STOP\n");
+
+    // ELF magic
+    CHECK_EQ(elf.size() >= 4 ? elf[0] : 0, 0x7F, "ELF magic byte 0");
+    CHECK_EQ(elf.size() >= 4 ? elf[1] : 0, 'E', "ELF magic byte 1");
+    CHECK_EQ(elf.size() >= 4 ? elf[2] : 0, 'L', "ELF magic byte 2");
+    CHECK_EQ(elf.size() >= 4 ? elf[3] : 0, 'F', "ELF magic byte 3");
+    // ET_REL = 1
+    uint16_t e_type = 0;
+    if (elf.size() >= 18) e_type = static_cast<uint16_t>(elf[16]) | (static_cast<uint16_t>(elf[17]) << 8);
+    CHECK_EQ(e_type, 1, "ELF file type ET_REL");
 }
 
 // ---------------------------------------------------------------------------
@@ -497,6 +516,9 @@ int main() {
 
     std::printf("E2: LDI64 pseudo\n");
     test_ldi64_pseudo();
+
+    std::printf("E3: ELF output\n");
+    test_elf_output();
 
     std::printf("F: Conditional jumps\n");
     test_conditional_jumps();
