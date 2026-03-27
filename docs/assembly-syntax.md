@@ -201,9 +201,22 @@ MNEMONIC @±N,     Rd
 
 ---
 
-## Conditional jump forms
+## Jump forms
 
-Conditional jump mnemonics (those of the form `JUMP.*`) are LS-class instructions and accept several syntactic forms. When no destination register is given, `R15` (the PC) is used implicitly — which is the usual case for a branch.
+### Unconditional jump — `JUMP` pseudo-instruction
+
+`JUMP` is a pseudo-instruction that encodes as `MOVE` with `R15` as the implicit destination. It provides a readable unconditional branch syntax without requiring an explicit `MOVE … R15`.
+
+```
+JUMP @loop              ; PC-relative, Rd = R15 (implicit)
+JUMP @+3                ; PC-relative numeric offset, Rd = R15
+JUMP R3                 ; register-indirect [R3+0], Rd = R15
+JUMP [R3+2], R15        ; bracket form, explicit Rd
+```
+
+### Conditional jumps — `JUMP.*`
+
+Conditional jump mnemonics (those of the form `JUMP.*`) are LS-class instructions and accept the same syntactic forms as `JUMP`. When no destination register is given, `R15` (the PC) is used implicitly.
 
 ```
 JUMP.Z @loop            ; PC-relative, Rd = R15 (implicit)

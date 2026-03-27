@@ -160,9 +160,10 @@ void Assembler::pass2(const std::vector<Token>& tokens, const SymbolTable& symbo
     }
 }
 
-// Helper: check if mnemonic is a JUMP.* variant
+// Helper: check if mnemonic is JUMP or a JUMP.* variant
 static bool isJumpMnemonic(const std::string& m) {
-    return m == "JUMP.Z" || m == "JUMP.C" || m == "JUMP.S" || m == "JUMP.GT" || m == "JUMP.LT";
+    return m == "JUMP" ||
+           m == "JUMP.Z" || m == "JUMP.C" || m == "JUMP.S" || m == "JUMP.GT" || m == "JUMP.LT";
 }
 
 Assembler::ParsedInstruction Assembler::parseInstruction(const std::vector<Token>& tokens,
@@ -243,7 +244,7 @@ Assembler::ParsedInstruction Assembler::parseInstruction(const std::vector<Token
         return result;
     }
 
-    if (!Encoder::isLSMnemonic(base_mnemonic))
+    if (!Encoder::isLSMnemonic(base_mnemonic) && !isJumpMnemonic(base_mnemonic))
         throw std::runtime_error("Unknown mnemonic: " + base_mnemonic + " at line " +
                                  std::to_string(line_count));
 
@@ -411,7 +412,9 @@ uint16_t Assembler::encodeInstruction(const ParsedInstruction& instr,
                 err("Offset must be 0, 2, 4, or 6 bytes");
             uint8_t offset2 = byte_offset / 2;
 
-            uint8_t opcode = Encoder::getLSOpcode(instr.mnemonic);
+            // JUMP is a pseudo-instruction aliased to MOVE
+            const std::string& ls_mnemonic = (instr.mnemonic == "JUMP") ? "MOVE" : instr.mnemonic;
+            uint8_t opcode = Encoder::getLSOpcode(ls_mnemonic);
             return Encoder::encodeLSReg(opcode, offset2, rs1, rd);
         }
 
@@ -442,7 +445,9 @@ uint16_t Assembler::encodeInstruction(const ParsedInstruction& instr,
             if (raw_offset < -32 || raw_offset > 31)
                 err("PC-relative offset out of range [-32, 31]");
 
-            uint8_t opcode = Encoder::getLSOpcode(instr.mnemonic);
+            // JUMP is a pseudo-instruction aliased to MOVE
+            const std::string& ls_mnemonic = (instr.mnemonic == "JUMP") ? "MOVE" : instr.mnemonic;
+            uint8_t opcode = Encoder::getLSOpcode(ls_mnemonic);
             return Encoder::encodeLSPCRel(opcode, (int8_t)raw_offset, rd);
         }
     }
