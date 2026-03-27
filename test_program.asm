@@ -38,9 +38,9 @@ start:
         MOVE   @start, R15
 
 loop:
-        ; Format 00 (INC_LOAD / DEC_STORE): stack-style operations
-        INC_LOAD  [R13], R8    ; R8 = MEM64[R13]; R13 += 8
-        DEC_STORE [R13], R8    ; R13 -= 8; MEM64[R13] = R8
+        ; Format 00 (PUSH / POP): stack operations (R13 is the stack pointer)
+        POP  R8, R13           ; R8 = MEM64[R13]; R13 += 8
+        PUSH R8, R13           ; R13 -= 8; MEM64[R13] = R8
 
         ; JUMP.* bare register form (Format 00): conditional branch via register
         JUMP.Z R14              ; if Z, PC = R14 (branch to address in link register)

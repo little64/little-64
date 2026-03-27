@@ -258,6 +258,11 @@ static bool isJumpMnemonic(const std::string& m) {
            m == "JUMP.Z" || m == "JUMP.C" || m == "JUMP.S" || m == "JUMP.GT" || m == "JUMP.LT";
 }
 
+// Helper: check if mnemonic is PUSH or POP
+static bool isPushPopMnemonic(const std::string& m) {
+    return m == "PUSH" || m == "POP";
+}
+
 Assembler::ParsedInstruction Assembler::parseInstruction(const std::vector<Token>& tokens,
                                                           size_t& idx, uint16_t address,
                                                           int& line_count) {
@@ -434,6 +439,27 @@ Assembler::ParsedInstruction Assembler::parseInstruction(const std::vector<Token
             r15.line = line_count;
             result.operands.push_back(r15);
         }
+        return result;
+    }
+
+    if (first_kind == TokenKind::Register && isPushPopMnemonic(base_mnemonic)) {
+        // Bare register form for PUSH/POP: Rs1, Rd (Rd is the stack pointer)
+        result.detected_format = Format::LS_REG;
+        result.operands.push_back(tokens[idx++]);  // Rs1 (data register)
+
+        Token zero;
+        zero.kind = TokenKind::ImmediateAbs;
+        zero.lexeme = "0";
+        zero.int_value = 0;
+        zero.line = line_count;
+        result.operands.push_back(zero);  // offset (always 0)
+
+        if (idx < tokens.size() && tokens[idx].kind == TokenKind::Comma) idx++;
+
+        if (idx >= tokens.size() || tokens[idx].kind != TokenKind::Register)
+            throw std::runtime_error(base_mnemonic + " requires Rs1, Rd at line " +
+                                     std::to_string(line_count));
+        result.operands.push_back(tokens[idx++]);  // Rd (stack pointer)
         return result;
     }
 

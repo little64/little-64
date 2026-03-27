@@ -23,7 +23,7 @@ static TextEditor::LanguageDefinition buildLanguageDef() {
     // JUMP is a pseudo-instruction (encodes as MOVE with implicit R15 dest)
     static const char* const opcodes[] = {
         "ADD", "SUB", "AND", "OR", "TEST", "STOP",
-        "LOAD", "STORE", "INC_LOAD", "DEC_STORE", "MOVE",
+        "LOAD", "STORE", "PUSH", "POP", "MOVE",
         "BYTE_LOAD", "BYTE_STORE", "SHORT_LOAD", "SHORT_STORE",
         "WORD_LOAD", "WORD_STORE",
         "JUMP",

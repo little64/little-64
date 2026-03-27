@@ -7,11 +7,15 @@ Goal: a minimal 64-bit processor, capable of running a UNIX-like OS.
 | Register | Role |
 |---|---|
 | R0 | Always zero; writes are discarded |
-| R1–R10 | General purpose |
-| R11–R12 | Reserved |
+| R1–R5 | General purpose, caller saved |
+| R6-R10 | General purpose, callee saved |
+| R11–R12 | Address registers, callee saved |
 | R13 | Stack pointer (SP) |
 | R14 | Link register (LR) |
 | R15 | Program counter (PC) |
+
+### Function arguments
+Function arguments are given in order from R10 to R6; afterwards, on the stack.
 
 ## Flags Register
 
@@ -112,8 +116,8 @@ Operation: `Rd = Rd OP Rs1` (except TEST, which does not store the result).
 |---|---|---|
 | 0 | LOAD | `Rd = MEM64[addr]` |
 | 1 | STORE | `MEM64[addr] = Rd` |
-| 2 | INC_LOAD | `Rd = MEM64[Rs1]; Rs1 += 8` |
-| 3 | DEC_STORE | `Rs1 -= 8; MEM64[Rs1] = Rd` |
+| 2 | PUSH | Format 00: `Rd -= 8; MEM64[Rd] = Rs1` — Format 01: `Rd -= 8; MEM64[Rd] = MEM64[effective]` |
+| 3 | POP | Format 00: `Rs1 = MEM64[Rd]; Rd += 8` — Format 01: `MEM64[effective] = MEM64[Rd]; Rd += 8` |
 | 4 | MOVE | `Rd = addr` (address value itself, no memory access) |
 | 5 | BYTE_LOAD | `Rd = (uint8_t) MEM8[addr]` (zero-extended) |
 | 6 | BYTE_STORE | `MEM8[addr] = Rd[7:0]` |
@@ -129,7 +133,7 @@ Operation: `Rd = Rd OP Rs1` (except TEST, which does not store the result).
 
 **Note on JUMP instructions:** JUMP.* are conditional MOVEs. When `Rd = R15` (the PC), the instruction behaves as a conditional branch. The same encoding is valid for any `Rd` (conditional data move). The mnemonic `JUMP.*` should be used when the intent is to branch (i.e., when `Rd = R15`).
 
-**Note on INC_LOAD / DEC_STORE:** In Format 00, `Rs1` is incremented/decremented as a register. In Format 01 (PC-relative), no register is available to increment, so these opcodes behave like LOAD/STORE.
+**Note on PUSH / POP:** `Rd` is always the stack pointer and is adjusted as part of the operation. In Format 00, the value pushed or popped is the **register value** of `Rs1`. In Format 01 (PC-relative), the value pushed or popped is the **memory contents** at the PC-relative address — PUSH reads `MEM64[effective]` onto the stack, POP writes the top of the stack to `MEM64[effective]`.
 
 ## OPCODE_GP Table
 
@@ -151,6 +155,8 @@ All GP operations update the Zero, Carry, and Sign flags.
 LOAD  [Rs1], Rd          ; offset = 0
 LOAD  [Rs1+N], Rd        ; offset = N bytes (N must be 0, 2, 4, or 6)
 STORE [Rs1+2], Rd        ; Rd is the source for stores
+PUSH  Rs1, Rd            ; Rd -= 8; MEM64[Rd] = Rs1  (Rd is the stack pointer)
+POP   Rs1, Rd            ; Rs1 = MEM64[Rd]; Rd += 8  (Rd is the stack pointer)
 ```
 
 ### Format 01 — LS PC-Relative

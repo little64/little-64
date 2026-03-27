@@ -321,7 +321,7 @@ start:
     ADD     R0, R2           ; R2 = R0 + R2
 
 loop:
-    INC_LOAD [R1], R3        ; load and post-increment
+    POP R3, R1               ; pop from stack at R1 into R3; R1 += 8
     TEST     R3, R3
     JUMP.Z   @done           ; branch if zero flag set
     JUMP.Z   @loop           ; else loop

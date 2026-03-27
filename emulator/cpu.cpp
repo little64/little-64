@@ -73,13 +73,13 @@ void Little64CPU::_dispatchLSReg(const Instruction& instr) {
         case LS::Opcode::STORE:
             _writeMemory64(addr, registers.regs[instr.rd]);
             break;
-        case LS::Opcode::INC_LOAD:
-            registers.regs[instr.rd] = _readMemory64(addr);
-            registers.regs[instr.rs1] += 8;
+        case LS::Opcode::PUSH:
+            registers.regs[instr.rd] -= 8;
+            _writeMemory64(registers.regs[instr.rd], registers.regs[instr.rs1]);
             break;
-        case LS::Opcode::DEC_STORE:
-            registers.regs[instr.rs1] -= 8;
-            _writeMemory64(registers.regs[instr.rs1], registers.regs[instr.rd]);
+        case LS::Opcode::POP:
+            registers.regs[instr.rs1] = _readMemory64(registers.regs[instr.rd]);
+            registers.regs[instr.rd] += 8;
             break;
         case LS::Opcode::MOVE:
             registers.regs[instr.rd] = addr;
@@ -124,13 +124,18 @@ void Little64CPU::_dispatchLSPCRel(const Instruction& instr) {
         case LS::Opcode::STORE:
             _writeMemory64(effective, registers.regs[instr.rd]);
             break;
-        case LS::Opcode::INC_LOAD:
-            registers.regs[instr.rd] = _readMemory64(effective);
-            // effective address is not a register to increment in PC-rel mode; no-op increment
+        case LS::Opcode::PUSH: {
+            uint64_t value = _readMemory64(effective);
+            registers.regs[instr.rd] -= 8;
+            _writeMemory64(registers.regs[instr.rd], value);
             break;
-        case LS::Opcode::DEC_STORE:
-            _writeMemory64(effective, registers.regs[instr.rd]);
+        }
+        case LS::Opcode::POP: {
+            uint64_t value = _readMemory64(registers.regs[instr.rd]);
+            registers.regs[instr.rd] += 8;
+            _writeMemory64(effective, value);
             break;
+        }
         case LS::Opcode::MOVE:
             registers.regs[instr.rd] = effective;
             break;
