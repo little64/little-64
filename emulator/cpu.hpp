@@ -28,13 +28,72 @@ public:
         uint64_t flags;
 
         // Special register space and helper methods
+        //   bit 0: Interrupt enable
+        //   bit 1: In interrupt
+        //   bits 2..8: currently handled interrupt number (if in interrupt)
         uint64_t cpu_control;
+        
+        constexpr bool isInterruptEnabled() const {
+            return (cpu_control & 1) != 0;
+        }
+        constexpr void setInterruptEnabled(bool enabled) {
+            if (enabled) {
+                cpu_control |= 1;
+            } else {
+                cpu_control &= ~1;
+            }
+        }
+
+        constexpr bool isInInterrupt() const {
+            return (cpu_control & 2) != 0;
+        }
+        constexpr void setInInterrupt(bool in_interrupt) {
+            if (in_interrupt) {
+                cpu_control |= 2;
+            } else {
+                cpu_control &= ~2;
+            }
+        }
+
+        constexpr uint8_t getCurrentInterruptNumber() const {
+            return (cpu_control >> 2) & 0x3F;
+        }
+        constexpr void setCurrentInterruptNumber(uint8_t num) {
+            cpu_control = (cpu_control & ~0xFC) | ((num & 0x3F) << 2);
+        }
+
+
+        // Stores pointer to interrupt handler table (base address of an array of 64-bit handler addresses)
         uint64_t interrupt_table_base;
+        // Each bit corresponds to an interrupt number; if set, the corresponding interrupt is unmasked and can be triggered.
+        uint64_t interrupt_mask;
+        // Each bit corresponds to an interrupt number; if set, the corresponding interrupt is currently active/pending.
+        // The CPU will set/clear bits automatically; setting bits from software causes an interrupt.
+        uint64_t interrupt_states;
+
+        // On interrupt, the CPU will perform the following
+        //  -> Set the "in interrupt" bit and disable further interrupts
+        //  -> Copy current PC to interrupt_epc and current flags to interrupt_eflags
+        //  -> In case of a hardware exception, write exception information to interrupt_except
+        //  -> Jump to the handler address looked up from the interrupt table
+        //  The "interrupt_data{0, 1, 2, 3}" registers are available for the handler to store any additional context it needs (e.g. faulting address on a page fault).
+        //  They are not used by the hardware.
+
+        uint64_t interrupt_epc;
+        uint64_t interrupt_eflags;
+        uint64_t interrupt_except;
+        uint64_t interrupt_data[4];
 
         uint64_t getSpecialRegister(uint64_t index) const {
             switch (index) {
                 case 0: return cpu_control;
                 case 1: return interrupt_table_base;
+                case 2: return interrupt_mask;
+                case 3: return interrupt_states;
+                case 4: return interrupt_epc;
+                case 5: return interrupt_eflags;
+                case 6: return interrupt_except;
+                case 7 ... 10: return interrupt_data[index - 7];
                 default: return 0;
             }
         }
@@ -43,7 +102,30 @@ public:
             switch (index) {
                 case 0: cpu_control = value; break;
                 case 1: interrupt_table_base = value; break;
+                case 2: interrupt_mask = value; break;
+                case 3: interrupt_states = value; break;
+                case 4: interrupt_epc = value; break;
+                case 5: interrupt_eflags = value; break;
+                case 6: interrupt_except = value; break;
+                case 7 ... 10: interrupt_data[index - 7] = value; break;
             }
+        }
+
+        Registers() {
+            for (int i = 0; i < 16; ++i)
+                regs[i] = 0;
+            flags = 0;
+            
+            cpu_control = 0;
+            
+            interrupt_table_base = 0;
+            interrupt_mask = 0;
+            interrupt_states = 0;
+            interrupt_epc = 0;
+            interrupt_eflags = 0;
+            interrupt_except = 0;
+            for (int i = 0; i < 4; ++i)
+                interrupt_data[i] = 0;
         }
     };
 
@@ -155,6 +237,12 @@ public:
     // Returns a pointer to the serial device if one is present, or nullptr.
     SerialDevice* getSerial();
 
+    // Assert a hardware interrupt line (sets the bit in interrupt_states).
+    // The interrupt will be serviced on the next cycle if enabled and unmasked.
+    void assertInterrupt(uint64_t num) {
+        registers.interrupt_states |= (1ULL << num);
+    }
+
     // Public register state for GUI panels
     Registers registers;
 
@@ -167,6 +255,9 @@ private:
     void _dispatchGP(const Instruction& instr);
 
     void _updateFlags(uint64_t result, bool carry = false);
+
+    bool _raiseInterrupt(uint64_t interrupt_number, bool exception = false,
+                         uint64_t epc = UINT64_MAX);
 
     uint8_t  _readMemory8 (uint64_t addr) const { return _bus.read8(addr);  }
     void     _writeMemory8(uint64_t addr, uint8_t v)  { _bus.write8(addr, v);  }

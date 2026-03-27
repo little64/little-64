@@ -38,6 +38,12 @@ void ControlPanel::render() {
             state.cpu.reset();
         }
 
+        ImGui::SameLine();
+
+        if (ImGui::Button("Fire Interrupt (63)")) {
+            state.cpu.assertInterrupt(63);
+        }
+
         if (ImGui::SliderInt("Running Speed (instr/frame)", &running_speed, 1, 10000)) {
             // No additional action needed
         }

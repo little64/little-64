@@ -86,6 +86,7 @@ Effective address = `PC_next + PC-REL × 2` (PC_next = address of following inst
 Behavior:
 - `SHIFT == 0`: `Rd = IMM8` (clears Rd, then loads the immediate)
 - `SHIFT > 0`: `Rd |= (IMM8 << (SHIFT × 8))` (OR into existing Rd value)
+- `SHIFT == 3`: Also sign-extend the value ORed in to cover the upper 32-bits
 
 This allows the assembler to build up wider immediates across multiple LDI instructions:
 ```asm

@@ -352,8 +352,21 @@ void Assembler::pass2(const SymbolTable& symbols, std::vector<uint16_t>& output)
     auto align2 = [&]() {
         if (buf.size() % 2 != 0) buf.push_back(0);
     };
+    // Pad buf with zeros up to the byte offset corresponding to a logical address.
+    // This fills .org gaps so items are placed at their correct addresses.
+    auto pad_to = [&](uint16_t addr) {
+        size_t target = static_cast<size_t>(addr) - static_cast<size_t>(origin);
+        if (buf.size() > target)
+            throw std::runtime_error("Overlapping .org sections: data at 0x" +
+                                     [&]{ std::ostringstream s; s << std::hex << addr; return s.str(); }());
+        while (buf.size() < target)
+            buf.push_back(0);
+    };
 
     for (const auto& item : emit_items) {
+        uint16_t item_addr = item.is_instruction ? item.instr.address : item.data.address;
+        pad_to(item_addr);
+
         if (item.is_instruction) {
             if (buf.size() % 2 != 0)
                 throw std::runtime_error(

@@ -5,9 +5,6 @@
 #include <memory>
 
 Little64CPU::Little64CPU() {
-    for (int i = 0; i < 16; ++i)
-        registers.regs[i] = 0;
-    registers.flags = 0;
 }
 
 void Little64CPU::cycle() {
@@ -26,6 +23,17 @@ void Little64CPU::cycle() {
     dispatchInstruction(instr);
 
     registers.regs[0] = 0;  // enforce R0=0 after any write
+
+    // Poll for pending interrupts each cycle
+    uint64_t pending = registers.interrupt_states & registers.interrupt_mask;
+    if (pending) {
+        for (int i = 0; i < 64; ++i) {
+            if (pending & (1ULL << i)) {
+                _raiseInterrupt(i);
+                break;
+            }
+        }
+    }
 }
 
 void Little64CPU::dispatchInstruction(const Instruction& instr) {
@@ -173,6 +181,11 @@ void Little64CPU::_dispatchLDI(const Instruction& instr) {
         registers.regs[instr.rd] = instr.imm8;
     } else {
         registers.regs[instr.rd] |= (static_cast<uint64_t>(instr.imm8) << (instr.shift * 8));
+
+        // If the shift is the max value (3), also sign-extend the immediate to fill the upper bits of the register.
+        if (instr.shift == 3 && (instr.imm8 & 0x80) != 0) {
+            registers.regs[instr.rd] |= 0xFFFFFFFFFFFFFF00ULL;
+        }
     }
 }
 
@@ -221,6 +234,8 @@ void Little64CPU::_dispatchGP(const Instruction& instr) {
             break;
         }
         case GP::Opcode::SLL: {
+            if (b == 0) { _updateFlags(a); registers.regs[instr.rd] = a; break; }
+            if (b >= 64) { _updateFlags(0); registers.regs[instr.rd] = 0; break; }
             uint64_t result = a << b;
             bool carry = (a >> (64 - b)) != 0;
             _updateFlags(result, carry);
@@ -228,6 +243,8 @@ void Little64CPU::_dispatchGP(const Instruction& instr) {
             break;
         }
         case GP::Opcode::SRL: {
+            if (b == 0) { _updateFlags(a); registers.regs[instr.rd] = a; break; }
+            if (b >= 64) { _updateFlags(0); registers.regs[instr.rd] = 0; break; }
             uint64_t result = a >> b;
             bool carry = (a >> (b - 1)) & 1;
             _updateFlags(result, carry);
@@ -235,7 +252,14 @@ void Little64CPU::_dispatchGP(const Instruction& instr) {
             break;
         }
         case GP::Opcode::SRA: {
-            uint64_t result = (int64_t(a) >> b);
+            if (b == 0) { _updateFlags(a); registers.regs[instr.rd] = a; break; }
+            if (b >= 64) {
+                uint64_t result = (int64_t(a) < 0) ? UINT64_MAX : 0;
+                _updateFlags(result);
+                registers.regs[instr.rd] = result;
+                break;
+            }
+            uint64_t result = uint64_t(int64_t(a) >> b);
             bool carry = (a >> (b - 1)) & 1;
             _updateFlags(result, carry);
             registers.regs[instr.rd] = result;
@@ -251,6 +275,15 @@ void Little64CPU::_dispatchGP(const Instruction& instr) {
         case GP::Opcode::SSR: {
             // Store special register
             registers.setSpecialRegister(b, a);
+            break;
+        }
+
+        case GP::Opcode::IRET: {
+            registers.regs[15] = registers.interrupt_epc;
+            registers.flags    = registers.interrupt_eflags;
+            registers.setInInterrupt(false);
+            registers.setInterruptEnabled(true);
+            registers.setCurrentInterruptNumber(0);
             break;
         }
 
@@ -285,9 +318,7 @@ void Little64CPU::loadProgram(const std::vector<uint16_t>& words, uint64_t base)
     _bus.addRegion(std::make_unique<SerialDevice>(SERIAL_BASE, "SERIAL"));
 
     // Reset CPU state
-    for (int i = 0; i < 16; ++i)
-        registers.regs[i] = 0;
-    registers.flags = 0;
+    registers = {};
     registers.regs[15] = base;
     isRunning = true;
 }
@@ -298,4 +329,52 @@ SerialDevice* Little64CPU::getSerial() {
             return s;
     }
     return nullptr;
+}
+
+bool Little64CPU::_raiseInterrupt(uint64_t interrupt_number, bool exception, uint64_t epc) {
+    if(!registers.isInterruptEnabled()) {
+        // interrupts disabled; interrupts are ignored, but exceptions cause lockup
+        if (exception)
+            isRunning = false;
+        return false;
+    }
+
+    // Non-exception interrupts must have their mask bit set
+    if (!exception && !(registers.interrupt_mask & (1ULL << interrupt_number)))
+        return false;
+
+    // Check if we are currently in an interrupt.
+    // Only a strictly higher-priority (lower-numbered) exception can preempt.
+    // Regular interrupts cannot preempt at all; same-number exceptions are also blocked.
+    if(registers.isInInterrupt() && ((registers.getCurrentInterruptNumber() <= interrupt_number) || !exception)) {
+        // Already in an interrupt
+        // The CPU will automatically check each cycle if it can re-raise this interrupt as long as it remains asserted
+        return false;
+    }
+
+    uint64_t handler_addr = registers.interrupt_table_base + (interrupt_number * 8);
+    uint64_t handler = _bus.read64(handler_addr);
+    if (handler == 0)
+        return false;  // no handler registered
+
+    // Set interrupt state and disable further interrupts
+    registers.interrupt_states |= (1ULL << (interrupt_number));
+    registers.setInInterrupt(true);
+    registers.setInterruptEnabled(false);
+
+    // Set the currently handled interrupt number in cpu_control, to avoid re-raising the same interrupt while we're still handling it
+    registers.setCurrentInterruptNumber(interrupt_number);
+
+    registers.interrupt_epc = (epc != UINT64_MAX) ? epc : registers.regs[15];  // save return address
+    registers.interrupt_eflags = registers.flags;   // save flags
+    if (exception) {
+        // For exceptions, also write the exception number to "interrupt_except" for the handler to inspect
+        // TODO: a better format for this, maybe multiple registers when paging is implemented?
+        registers.interrupt_except = interrupt_number;
+    }
+
+    // Jump to handler
+    registers.regs[15] = handler;
+
+    return true;
 }
