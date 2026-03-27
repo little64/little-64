@@ -1,5 +1,6 @@
 #include "assembler.hpp"
 #include "encoder.hpp"
+#include <algorithm>
 #include <sstream>
 #include <iomanip>
 #include <functional>
@@ -204,7 +205,8 @@ static void appendU64(std::vector<uint8_t>& data, uint64_t v) {
 }
 
 static std::vector<uint8_t> makeElfObject(const std::vector<uint16_t>& words,
-                                          const std::unordered_map<std::string,uint16_t>& symbols) {
+                                          const std::unordered_map<std::string,uint16_t>& symbols,
+                                          const std::vector<Assembler::RelocEntry>& relocs) {
     // Convert mapped words to bytes (little-endian)
     std::vector<uint8_t> text;
     text.reserve(words.size() * 2);
@@ -231,12 +233,18 @@ static std::vector<uint8_t> makeElfObject(const std::vector<uint16_t>& words,
         return off;
     };
 
-    uint32_t sh_name_text   = shname(".text");
-    uint32_t sh_name_symtab = shname(".symtab");
-    uint32_t sh_name_strtab = shname(".strtab");
-    uint32_t sh_name_shstr  = shname(".shstrtab");
+    uint32_t sh_name_text    = shname(".text");
+    uint32_t sh_name_symtab  = shname(".symtab");
+    uint32_t sh_name_strtab  = shname(".strtab");
+    uint32_t sh_name_relat   = shname(".rela.text");
+    uint32_t sh_name_shstr   = shname(".shstrtab");
 
     // Build symbol table (.symtab): first null entry, then each label.
+    std::vector<std::string> symbol_names;
+    symbol_names.reserve(symbols.size());
+    for (const auto& [name, _] : symbols) symbol_names.push_back(name);
+    std::sort(symbol_names.begin(), symbol_names.end());
+
     std::vector<uint8_t> symtab;
     // Elf64_Sym layout: st_name(4), st_info(1), st_other(1), st_shndx(2), st_value(8), st_size(8)
     auto append_sym = [&](uint32_t name, uint8_t info, uint16_t shndx,
@@ -252,15 +260,40 @@ static std::vector<uint8_t> makeElfObject(const std::vector<uint16_t>& words,
     // null symbol
     append_sym(0, 0, 0, 0, 0);
 
-    for (const auto& [name, address] : symbols) {
+    for (const auto& name : symbol_names) {
+        uint16_t address = symbols.at(name);
         uint32_t name_off = sym_name_offset.at(name);
         uint8_t info = (1 << 4) | 0; // STB_GLOBAL, STT_NOTYPE
         append_sym(name_off, info, 1, address, 0);
     }
 
     // Section header table entries
-    const uint16_t shnum = 5;
-    const uint16_t shstrndx = 4;
+    const uint16_t shnum = 6;
+    const uint16_t shstrndx = 5;
+
+    // Build .rela.text contents
+    std::vector<uint8_t> rela_text;
+    auto append_rela = [&](uint64_t offset, uint64_t info, int64_t addend) {
+        appendU64(rela_text, offset);
+        appendU64(rela_text, info);
+        appendU64(rela_text, static_cast<uint64_t>(addend));
+    };
+
+    // Symbol index map is 1..N in symbol table output order
+    auto find_symbol_index = [&](const std::string& name) -> uint32_t {
+        auto it = std::lower_bound(symbol_names.begin(), symbol_names.end(), name);
+        if (it == symbol_names.end() || *it != name) return 0;
+        return static_cast<uint32_t>(std::distance(symbol_names.begin(), it) + 1);
+    };
+
+    for (const auto& r : relocs) {
+        uint32_t sym_idx = find_symbol_index(r.symbol);
+        if (sym_idx == 0)
+            throw std::runtime_error("Undefined relocation symbol: " + r.symbol);
+        uint64_t info = (static_cast<uint64_t>(sym_idx) << 32) |
+                        static_cast<uint64_t>(static_cast<uint32_t>(r.type));
+        append_rela(r.offset, info, r.addend);
+    }
 
     // compute offsets
     uint64_t offset = 64; // ELF header size for 64-bit
@@ -282,6 +315,11 @@ static std::vector<uint8_t> makeElfObject(const std::vector<uint16_t>& words,
     offset = (offset + 7) & ~uint64_t(7);
     uint64_t shstrtab_offset = offset;
     offset += shstrtab.size();
+
+    // .rela.text (even if empty)
+    offset = (offset + 7) & ~uint64_t(7);
+    uint64_t rela_offset = offset;
+    offset += rela_text.size();
 
     uint64_t shoff = (offset + 7) & ~uint64_t(7);
 
@@ -339,6 +377,9 @@ static std::vector<uint8_t> makeElfObject(const std::vector<uint16_t>& words,
     while (out.size() < shstrtab_offset) out.push_back(0);
     out.insert(out.end(), shstrtab.begin(), shstrtab.end());
 
+    while (out.size() < rela_offset) out.push_back(0);
+    out.insert(out.end(), rela_text.begin(), rela_text.end());
+
     while (out.size() < shoff) out.push_back(0);
 
     auto append_sh = [&](uint32_t name, uint32_t type, uint64_t flags,
@@ -362,11 +403,13 @@ static std::vector<uint8_t> makeElfObject(const std::vector<uint16_t>& words,
     // section 1: .text
     append_sh(sh_name_text, 1, 0, 0, text_offset, text_size, 0, 0, 1, 0);
     // section 2: .symtab
-    append_sh(sh_name_symtab, 2, 0, 0, symtab_offset, symtab.size(), 3, symbols.size() + 1, 8, 24);
+    append_sh(sh_name_symtab, 2, 0, 0, symtab_offset, symtab.size(), 3, symbol_names.size() + 1, 8, 24);
     // section 3: .strtab
     append_sh(sh_name_strtab, 3, 0, 0, strtab_offset, strtab_contents.size(), 0, 0, 1, 0);
     // section 4: .shstrtab
     append_sh(sh_name_shstr, 3, 0, 0, shstrtab_offset, shstrtab.size(), 0, 0, 1, 0);
+    // section 5: .rela.text
+    append_sh(sh_name_relat, 4, 0, 0, rela_offset, rela_text.size(), 2, 1, 8, 24);
 
     return out;
 }
@@ -382,7 +425,7 @@ std::vector<uint16_t> Assembler::assemble(const std::string& source) {
     pass1(tokens, symbols);
 
     std::vector<uint16_t> output;
-    pass2(symbols, output);
+    pass2(symbols, output, false, nullptr);
 
     return output;
 }
@@ -399,9 +442,10 @@ std::vector<uint8_t> Assembler::assembleElf(const std::string& source,
     pass1(tokens, symbols);
 
     std::vector<uint16_t> output;
-    pass2(symbols, output);
+    std::vector<RelocEntry> relocs;
+    pass2(symbols, output, true, &relocs);
 
-    return makeElfObject(output, symbols);
+    return makeElfObject(output, symbols, relocs);
 }
 
 void Assembler::pass1(const std::vector<Token>& tokens, SymbolTable& symbols) {
@@ -638,7 +682,8 @@ void Assembler::pass1(const std::vector<Token>& tokens, SymbolTable& symbols) {
 // handled correctly for PC-relative encoding.  Data alignment uses the
 // current byte-buffer size, which stays in sync with pass1's address
 // tracking as long as both use the same padding rules.
-void Assembler::pass2(const SymbolTable& symbols, std::vector<uint16_t>& output) {
+void Assembler::pass2(const SymbolTable& symbols, std::vector<uint16_t>& output,
+                         bool elf_mode, std::vector<RelocEntry>* out_relocs) {
     std::vector<uint8_t> buf;
 
     auto emit_le = [&](uint64_t v, int n) {
@@ -668,8 +713,21 @@ void Assembler::pass2(const SymbolTable& symbols, std::vector<uint16_t>& output)
                 throw std::runtime_error(
                     "Instruction at odd address (preceded by an odd-length .byte/.ascii "
                     "sequence) at line " + std::to_string(item.instr.line));
+            // Add relocation entries for PC-relative symbol references in ELF mode
+            if (elf_mode && item.instr.detected_format == Format::LS_PCREL &&
+                !item.instr.operands.empty() &&
+                item.instr.operands[0].kind == TokenKind::PCRelLabel) {
+                if (out_relocs) {
+                    out_relocs->push_back({
+                        item_addr,
+                        item.instr.operands[0].lexeme,
+                        RelocType::PCREL6,
+                        0
+                    });
+                }
+            }
             // Use the address computed in pass1 — correctly reflects .org
-            uint16_t word = encodeInstruction(item.instr, symbols, item.instr.address);
+            uint16_t word = encodeInstruction(item.instr, symbols, item.instr.address, elf_mode);
             buf.push_back(static_cast<uint8_t>(word));
             buf.push_back(static_cast<uint8_t>(word >> 8));
         } else {
@@ -980,7 +1038,8 @@ ParsedInstruction Assembler::parseInstruction(const std::vector<Token>& tokens,
 
 uint16_t Assembler::encodeInstruction(const ParsedInstruction& instr,
                                       const SymbolTable& symbols,
-                                      uint16_t current_address) {
+                                      uint16_t current_address,
+                                      bool elf_mode) {
     auto err = [&](const std::string& msg) {
         throw std::runtime_error(msg + " at line " + std::to_string(instr.line));
     };
@@ -1049,24 +1108,29 @@ uint16_t Assembler::encodeInstruction(const ParsedInstruction& instr,
                 auto it = symbols.find(addr_tok.lexeme);
                 if (it == symbols.end())
                     err("Undefined label: " + addr_tok.lexeme);
-                uint16_t target = it->second;
-                // pc_rel is in instruction units (×2 bytes), relative to next instruction
-                int32_t byte_diff = (int32_t)target - (int32_t)(current_address + 2);
-                if (byte_diff % 2 != 0) err("Target address is not instruction-aligned");
-                raw_offset = byte_diff / 2;
+                if (!elf_mode) {
+                    uint16_t target = it->second;
+                    // pc_rel is in instruction units (×2 bytes), relative to next instruction
+                    int32_t byte_diff = (int32_t)target - (int32_t)(current_address + 2);
+                    if (byte_diff % 2 != 0) err("Target address is not instruction-aligned");
+                    raw_offset = byte_diff / 2;
+                } else {
+                    // In ELF relocatable mode, placeholder value; linker resolves.
+                    raw_offset = 0;
+                }
             } else if (addr_tok.kind == TokenKind::PCRelOffset) {
                 raw_offset = (int32_t)(int64_t)addr_tok.int_value;
             } else {
                 err("Expected @label or @offset");
             }
 
-            if (raw_offset < -32 || raw_offset > 31)
+            if (!elf_mode && (raw_offset < -32 || raw_offset > 31))
                 err("PC-relative offset out of range [-32, 31]");
 
             // JUMP is a pseudo-instruction aliased to MOVE
             const std::string& ls_mnemonic = (instr.mnemonic == "JUMP") ? "MOVE" : instr.mnemonic;
             uint8_t opcode = Encoder::getLSOpcode(ls_mnemonic);
-            return Encoder::encodeLSPCRel(opcode, (int8_t)raw_offset, rd);
+            return Encoder::encodeLSPCRel(opcode, static_cast<int8_t>(raw_offset), rd);
         }
     }
 

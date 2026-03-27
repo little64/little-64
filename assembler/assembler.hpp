@@ -40,6 +40,18 @@ public:
         // future extensions (target architecture, relocation behavior) can go here
     };
 
+    enum class RelocType : uint32_t {
+        PCREL6 = 1,
+        ABS64 = 2,
+    };
+
+    struct RelocEntry {
+        uint64_t offset; // byte offset within .text or .data
+        std::string symbol;
+        RelocType type;
+        int64_t addend;
+    };
+
     // Assemble source code and return the binary output
     // Throws std::runtime_error on any failure
     std::vector<uint16_t> assemble(const std::string& source);
@@ -69,13 +81,14 @@ public:
 
 private:
     void pass1(const std::vector<Token>& tokens, SymbolTable& symbols);
-    void pass2(const SymbolTable& symbols, std::vector<uint16_t>& output);
+    void pass2(const SymbolTable& symbols, std::vector<uint16_t>& output,
+               bool elf_mode = false, std::vector<RelocEntry>* out_relocs = nullptr);
 
     ParsedInstruction parseInstruction(const std::vector<Token>& tokens, size_t& idx,
                                        uint16_t address, int& line_count);
 
     uint16_t encodeInstruction(const ParsedInstruction& instr, const SymbolTable& symbols,
-                               uint16_t current_address);
+                               uint16_t current_address, bool elf_mode = false);
 
     uint16_t origin = 0;
     std::vector<EmitItem> emit_items;  // populated by pass1, consumed by pass2

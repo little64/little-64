@@ -244,6 +244,13 @@ static void test_elf_output() {
     uint16_t e_type = 0;
     if (elf.size() >= 18) e_type = static_cast<uint16_t>(elf[16]) | (static_cast<uint16_t>(elf[17]) << 8);
     CHECK_EQ(e_type, 1, "ELF file type ET_REL");
+
+    uint16_t e_shnum = 0;
+    if (elf.size() >= 0x3E) e_shnum = static_cast<uint16_t>(elf[0x3C]) | (static_cast<uint16_t>(elf[0x3D]) << 8);
+    CHECK_EQ(e_shnum, 6, "ELF section count (includes .rela.text)");
+
+    std::string elf_str(elf.begin(), elf.end());
+    CHECK_EQ(elf_str.find(".rela.text") != std::string::npos, true, "ELF contains .rela.text");
 }
 
 // ---------------------------------------------------------------------------
