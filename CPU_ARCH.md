@@ -138,15 +138,25 @@ Operation: `Rd = Rd OP Rs1` (except TEST, which does not store the result).
 
 ## OPCODE_GP Table
 
-| Value | Mnemonic | Operation |
-|---|---|---|
-| 0 | ADD | `Rd = Rd + Rs1` |
-| 1 | SUB | `Rd = Rd - Rs1` |
-| 2 | AND | `Rd = Rd & Rs1` |
-| 3 | OR | `Rd = Rd \| Rs1` |
-| 4 | TEST | Compute `Rd - Rs1`, update flags, discard result |
+| Value | Mnemonic | Operands | Operation |
+|---|---|---|---|
+| 0 | ADD | Rs1, Rd | `Rd = Rd + Rs1` |
+| 1 | SUB | Rs1, Rd | `Rd = Rd - Rs1` |
+| 2 | TEST | Rs1, Rd | Compute `Rd - Rs1`, update flags, discard result |
+| 16 | AND | Rs1, Rd | `Rd = Rd & Rs1` |
+| 17 | OR | Rs1, Rd | `Rd = Rd \| Rs1` |
+| 18 | XOR | Rs1, Rd | `Rd = Rd ^ Rs1` |
+| 20 | SLL | Rs1, Rd | `Rd = Rd << Rs1` (logical left shift) |
+| 21 | SRL | Rs1, Rd | `Rd = Rd >> Rs1` (logical right shift) |
+| 22 | SRA | Rs1, Rd | `Rd = Rd >> Rs1` (arithmetic right shift, sign-extends) |
+| 56 | LSR | Rs1, Rd | `Rd = SR[Rs1]` (load special register by index) |
+| 57 | SSR | Rs1, Rd | `SR[Rs1] = Rd` (store special register by index) |
+| 60 | IRET | — | Return from interrupt: restore PC, flags, re-enable interrupts |
+| 63 | STOP | — | Halt the emulator |
 
-All GP operations update the Zero, Carry, and Sign flags.
+All arithmetic and bitwise GP operations update the Zero, Carry, and Sign flags. LSR, SSR, IRET, and STOP do not affect flags.
+
+**SLL/SRL/SRA carry flag:** set to the last bit shifted out. Shifts by 0 leave Rd unchanged and set flags on the unshifted value; shifts by ≥ 64 produce 0 (SRA: fills with sign bit).
 
 ## Assembler Syntax
 
@@ -183,9 +193,17 @@ LDI.S3 #0xEF, R1        ; R1 |= 0xEF << 24
 ```asm
 ADD  Rs1, Rd             ; Rd = Rd + Rs1
 SUB  Rs1, Rd             ; Rd = Rd - Rs1
+TEST Rs1, Rd             ; flags = Rd - Rs1 (result discarded)
 AND  Rs1, Rd             ; Rd = Rd & Rs1
 OR   Rs1, Rd             ; Rd = Rd | Rs1
-TEST Rs1, Rd             ; flags = Rd - Rs1 (result discarded)
+XOR  Rs1, Rd             ; Rd = Rd ^ Rs1
+SLL  Rs1, Rd             ; Rd = Rd << Rs1  (Rs1 = shift amount)
+SRL  Rs1, Rd             ; Rd = Rd >> Rs1  (logical)
+SRA  Rs1, Rd             ; Rd = Rd >> Rs1  (arithmetic)
+LSR  Rs1, Rd             ; Rd = SR[Rs1]    (Rs1 holds the SR index)
+SSR  Rs1, Rd             ; SR[Rs1] = Rd    (Rs1 holds the SR index)
+IRET                     ; return from interrupt handler
+STOP                     ; halt the emulator
 ```
 
 ### JUMP.* bare register form (Format 00)
@@ -200,7 +218,103 @@ JUMP.Z [R1+4], R15       ; if Z: PC = R1 + 4      (full form with offset)
 
 ```asm
 label:                   ; define a label at current address
-.org 0x1000              ; set current assembly address
-.word 0xABCD             ; emit a raw 16-bit word
+.org 0x1000              ; set current assembly address (gaps are zero-filled)
+.byte  0xAB              ; emit 1 byte
+.short 0xABCD            ; emit 2 bytes (little-endian)
+.int   0xABCDEF01        ; emit 4 bytes (little-endian)
+.long  0xABCDEF0123456789 ; emit 8 bytes (little-endian)
+.ascii  "hello"          ; emit raw bytes (no null terminator)
+.asciiz "hello"          ; emit bytes followed by a null terminator
 ; comment                ; semicolon starts a comment
+```
+
+## Special Registers
+
+Special registers are accessed by index using `LSR` (load) and `SSR` (store). The index is passed in Rs1; the value is in Rd.
+
+| Index | Name | Description |
+|---|---|---|
+| 0 | `cpu_control` | CPU control flags (see below) |
+| 1 | `interrupt_table_base` | Base address of the interrupt handler table (64 × 8-byte entries) |
+| 2 | `interrupt_mask` | Bit mask of unmasked interrupts; bit N = 1 enables interrupt N |
+| 3 | `interrupt_states` | Pending interrupt bits; writing bit N = 1 asserts interrupt N from software |
+| 4 | `interrupt_epc` | Saved PC on interrupt entry (return address) |
+| 5 | `interrupt_eflags` | Saved flags on interrupt entry |
+| 6 | `interrupt_except` | Exception number written on hardware exception entry |
+| 7–10 | `interrupt_data[0–3]` | Scratch registers for interrupt handlers (not used by hardware) |
+
+### `cpu_control` bit fields
+
+| Bit(s) | Name | Description |
+|---|---|---|
+| 0 | IE | Interrupt Enable — set to allow interrupts to be taken |
+| 1 | IN | In Interrupt — set by hardware on interrupt entry, cleared by IRET |
+| 2–7 | N | Currently-handled interrupt number (valid when IN=1) |
+
+## Interrupt System
+
+### Interrupt table
+
+The interrupt table is an array of 64 × 8-byte handler addresses located at `interrupt_table_base`. Entry N contains the absolute address of the handler for interrupt N. A zero entry means no handler is registered and the interrupt is silently dropped.
+
+### Taking an interrupt
+
+On each cycle, after the current instruction executes, the CPU checks:
+
+```
+pending = interrupt_states & interrupt_mask
+```
+
+If any bit is set and IE=1, the lowest-numbered pending interrupt is taken:
+
+1. IE is cleared and IN is set in `cpu_control`; the interrupt number is stored in N.
+2. The current PC (address of the next instruction to execute) is saved to `interrupt_epc`.
+3. The current flags are saved to `interrupt_eflags`.
+4. PC is set to the handler address from the interrupt table.
+
+Interrupts are **level-triggered**: `interrupt_states` is not automatically cleared when an interrupt is taken. The handler is responsible for clearing the relevant bit in `interrupt_states` (via `SSR 3, Rd`) before returning, otherwise the interrupt will re-fire immediately after `IRET`.
+
+Hardware exceptions set `interrupt_except` to the exception number in addition to the steps above.
+
+### Priority
+
+Lower interrupt numbers have higher priority. A regular interrupt (from `interrupt_states`) cannot preempt a running handler. A hardware exception can preempt a handler only if its interrupt number is strictly lower (higher priority) than the one currently being handled.
+
+### Returning from a handler (IRET)
+
+`IRET` atomically:
+1. Restores PC from `interrupt_epc`.
+2. Restores flags from `interrupt_eflags`.
+3. Clears IN and re-enables IE in `cpu_control`.
+
+### Minimal interrupt setup
+
+```asm
+; 1. Point interrupt_table_base at a table of 64-bit handler addresses
+LDI.S0 <lo(table)>, R1
+LDI.S1 <hi(table)>, R1
+LDI.S0 1, R2            ; SR index 1 = interrupt_table_base
+SSR R2, R1
+
+; 2. Unmask the desired interrupt(s) in interrupt_mask
+LDI.S0 <mask_lo>, R3    ; build a bitmask of interrupts to enable
+LDI.S0 2, R2            ; SR index 2 = interrupt_mask
+SSR R2, R3
+
+; 3. Enable interrupts globally
+LDI.S0 0, R2            ; SR index 0 = cpu_control
+LSR R2, R1              ; read current cpu_control
+LDI.S0 1, R4
+OR  R4, R1              ; set IE bit
+SSR R2, R1
+
+; Handler skeleton:
+handler:
+    ; ... do work ...
+    ; Clear the interrupt's pending bit before returning
+    LDI.S0 3, R1         ; SR index 3 = interrupt_states
+    LSR R1, R2
+    ; (clear the relevant bit in R2, then:)
+    SSR R1, R2
+    IRET
 ```
