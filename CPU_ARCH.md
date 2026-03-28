@@ -14,8 +14,25 @@ Goal: a minimal 64-bit processor, capable of running a UNIX-like OS.
 | R14 | Link register (LR) |
 | R15 | Program counter (PC) |
 
+## Calling Convention
+
 ### Function arguments
-Function arguments are given in order from R10 to R6; afterwards, on the stack.
+Function arguments are passed in registers and on the stack:
+- **Arguments 0–4:** Passed in registers R10, R9, R8, R7, R6 (in order)
+- **Arguments 5+:** Passed on the stack (oldest arguments pushed first)
+
+Registers R1–R5 are **caller-saved** and must be preserved by the caller if their values are needed after a function call.
+
+### Return values
+- **Single return value (≤64 bits):** Returned in **R1**
+- **Pair return value (128 bits):** Low 64 bits in **R1**, high 64 bits in **R2**
+- **Larger return values:** By reference (caller allocates, passes pointer as first argument)
+
+### Stack
+- **Stack grows downward** — SP decreases when allocating space
+- **R13 = SP (stack pointer):** Points to the top of the stack (lowest allocated address)
+- **Allocation:** `SP -= size` (e.g., `PUSH Rs, R13` decrements SP by 8)
+- **Deallocation:** `SP += size` (e.g., `POP Rs, R13` increments SP by 8)
 
 ## Flags Register
 
