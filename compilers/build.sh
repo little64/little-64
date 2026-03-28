@@ -13,10 +13,9 @@
 #   ./build.sh clean [compiler]     # clean build artifacts
 #
 # Examples:
-#   ./build.sh vbcc m68k            # build vbcc for m68k
-#   ./build.sh vbcc little64        # build vbcc for little64
+#   ./build.sh lily-cc              # build lily-cc
 #   ./build.sh all                  # build all compilers with defaults
-#   ./build.sh clean vbcc           # clean vbcc
+#   ./build.sh clean lily-cc        # clean lily-cc
 #   ./build.sh clean                # clean all compilers
 #
 
@@ -44,7 +43,7 @@ print_usage() {
     echo "Usage: $(basename "$0") [COMMAND] [OPTIONS]"
     echo ""
     echo "Commands:"
-    echo "  <compiler> [TARGET]  Build a specific compiler for a target (default: m68k)"
+    echo "  <compiler> [TARGET]  Build a specific compiler for a target"
     echo "  all [TARGET]         Build all available compilers"
     echo "  clean [compiler]     Clean build artifacts"
     echo "  help                 Print this help message"
@@ -60,10 +59,9 @@ print_usage() {
     fi
     echo ""
     echo "Examples:"
-    echo "  $(basename "$0") vbcc m68k       # Build vbcc for m68k"
-    echo "  $(basename "$0") vbcc little64   # Build vbcc for little64"
-    echo "  $(basename "$0") all             # Build all compilers"
-    echo "  $(basename "$0") clean vbcc      # Clean vbcc artifacts"
+    echo "  $(basename "$0") lily-cc          # Build lily-cc"
+    echo "  $(basename "$0") all              # Build all compilers"
+    echo "  $(basename "$0") clean lily-cc    # Clean lily-cc artifacts"
 }
 
 # Main logic
@@ -101,8 +99,8 @@ case "$COMMAND" in
         ;;
 
     all)
-        # Build all compilers with optional target (default: m68k)
-        local target="${OPTION:-m68k}"
+        # Build all compilers with optional target
+        local target="${OPTION:-little64}"
         echo "Building all compilers for target: $target"
         echo "========================================"
         local compilers=($(discover_compilers))
@@ -119,8 +117,8 @@ case "$COMMAND" in
         # Build a specific compiler with optional target
         if [ -f "$SCRIPT_DIR/$COMMAND/build.sh" ]; then
             if [ -z "$OPTION" ]; then
-                # No target specified, use default (m68k)
-                "$SCRIPT_DIR/$COMMAND/build.sh" m68k build
+                # No target specified, use default (little64)
+                "$SCRIPT_DIR/$COMMAND/build.sh" little64 build
             else
                 # Target specified
                 "$SCRIPT_DIR/$COMMAND/build.sh" "$OPTION" build
