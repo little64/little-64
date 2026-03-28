@@ -16,7 +16,7 @@ This projet uses meson. The build folder is located in `builddir/`.
 | `disassembler/disassembler.cpp` | Only if the disassembly text differs from the default `[Rs1+N], Rd` pattern |
 | `CPU_ARCH.md` | Update the OPCODE_LS table |
 | `docs/assembly-syntax.md` | Update if the syntax is affected |
-| `test_program.asm` | Update any uses of the changed instruction |
+| `asm/test_program.asm` | Update any uses of the changed instruction |
 
 ### GP instructions (Format 11 — ALU)
 
@@ -28,7 +28,7 @@ This projet uses meson. The build folder is located in `builddir/`.
 | `disassembler/disassembler.cpp` | Only if the disassembly text differs from the default pattern |
 | `CPU_ARCH.md` | Update the OPCODE_GP table |
 | `docs/assembly-syntax.md` | Update if the syntax is affected |
-| `test_program.asm` | Update any uses of the changed instruction |
+| `asm/test_program.asm` | Update any uses of the changed instruction |
 
 `gui/panels/assembler_panel.cpp` never needs updating — the keyword list is built automatically from `Assembler::getAllMnemonics()`.
 
