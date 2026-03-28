@@ -2,6 +2,26 @@
 
 Goal: a minimal 64-bit processor, capable of running a UNIX-like OS.
 
+## Quick Reference — Where Instructions Are Defined
+
+To find or modify instruction definitions, look at these files:
+
+| Task | File(s) | Notes |
+|---|---|---|
+| **View/modify opcodes and mnemonics** | `arch/opcodes_ls.def`, `arch/opcodes_gp.def` | X-macro files; includes both LS and GP instruction definitions |
+| **View opcode values** | `arch/opcodes.hpp` | Generated enum (via `.def` files); includes `GP::Encoding` type |
+| **Implement instruction behavior** | `emulator/cpu.cpp` | CPU execution logic: `_dispatchLSReg()`, `_dispatchLSPCRel()`, `_dispatchGP()` |
+| **Assembler support** | `assembler/assembler.cpp`, `assembler/encoder.cpp` | Mnemonic-to-encoding mapping, operand parsing, validation |
+| **Disassembler support** | `disassembler/disassembler.cpp` | Decoding and human-readable output |
+| **Test instructions** | `tests/test_cpu_*.cpp` | CPU behavior tests (organized by category: gp, ldi, memory, jumps, special, integration) |
+| **Assembly examples** | `asm/test_program.asm` | Example assembly code |
+| **Documentation** | `docs/assembly-syntax.md` | Assembly language syntax guide |
+
+**Common workflows:**
+- **Add a new LS instruction:** Update `arch/opcodes_ls.def`, then add case to `_dispatchLSReg()` or `_dispatchLSPCRel()` in `emulator/cpu.cpp`
+- **Add a new GP instruction:** Update `arch/opcodes_gp.def` (set encoding to NONE/RD/RS1_RD/IMM4_RD), then add case to `_dispatchGP()` in `emulator/cpu.cpp`
+- **Add a pseudo-instruction:** Modify `assembler/assembler.cpp` pseudo_table only (no other changes needed)
+
 ## Registers
 
 | Register | Role |
@@ -125,15 +145,27 @@ Branch range: **±511 instructions** (±1022 bytes) relative to the following in
 Behavior:
 - `SHIFT == 0`: `Rd = IMM8` (clears Rd, then loads the immediate)
 - `SHIFT > 0`: `Rd |= (IMM8 << (SHIFT × 8))` (OR into existing Rd value)
-- `SHIFT == 3`: Also sign-extend the value ORed in to cover the upper 32-bits
+- `SHIFT == 3` with MSB set: Sign-extend from bit 31 upward if IMM8 bit 7 = 1
+  - If bit 7 of IMM8 is set: `Rd |= 0xFFFFFFFF_00000000` (fill bits [63:32] with 1s)
+  - This converts a signed 32-bit value to a 64-bit sign-extended value
 
-This allows the assembler to build up wider immediates across multiple LDI instructions:
+This allows building 32-bit constants:
 ```asm
 LDI    #0x78, R1    ; R1 = 0x78
 LDI.S1 #0x56, R1   ; R1 = 0x5678
 LDI.S2 #0x34, R1   ; R1 = 0x345678
-LDI.S3 #0x12, R1   ; R1 = 0x12345678
+LDI.S3 #0x12, R1   ; R1 = 0x12345678  (bit 7 of 0x12 is 0, no sign extension)
 ```
+
+For sign-extended 64-bit values from negative 32-bit constants:
+```asm
+LDI    #0x00, R1    ; R1 = 0x00
+LDI.S1 #0x00, R1   ; R1 = 0x0000
+LDI.S2 #0x00, R1   ; R1 = 0x000000
+LDI.S3 #0x80, R1   ; R1 = 0xFFFFFFFF80000000  (bit 7 of 0x80 is 1, sign extend)
+```
+
+Use `LDI64` pseudo-instruction for convenient 64-bit constant loading.
 
 ### Format 11 — GP ALU
 
@@ -144,11 +176,16 @@ LDI.S3 #0x12, R1   ; R1 = 0x12345678
 
 | Field | Bits | Width | Description |
 |---|---|---|---|
-| OPCODE_GP | [13:8] | 6 | GP opcode (see table below) |
-| Rs1 | [7:4] | 4 | Source register |
+| OPCODE_GP | [13:8] | 6 | GP opcode (see OPCODE_GP table below) |
+| Rs1 | [7:4] | 4 | Register (register-form) or Immediate (immediate-form); see table |
 | Rd | [3:0] | 4 | Destination (and second source) register |
 
-Operation: `Rd = Rd OP Rs1` (except TEST, which does not store the result).
+**Operand encoding:** The meaning of the Rs1 field depends on the opcode:
+- **Register-form** (ADD, SUB, TEST, AND, OR, XOR, SLL, SRL, SRA, LSR, SSR, IRET, STOP): Rs1 = register index (0–15)
+  - Operation: `Rd = Rd OP Rs1` (or appropriate register-indexed behavior)
+- **Immediate-form** (SLLI, SRLI, SRAI): Rs1 = 4-bit immediate (0–15)
+  - Operation: `Rd = Rd OP #Rs1` (shift by the literal count in Rs1)
+  - The assembler validates that the immediate is in range [0–15]
 
 ## OPCODE_LS Table
 
@@ -177,30 +214,32 @@ Operation: `Rd = Rd OP Rs1` (except TEST, which does not store the result).
 
 ## OPCODE_GP Table
 
-| Value | Mnemonic | Operands | Operation |
-|---|---|---|---|
-| 0 | ADD | Rs1, Rd | `Rd = Rd + Rs1` |
-| 1 | SUB | Rs1, Rd | `Rd = Rd - Rs1` |
-| 2 | TEST | Rs1, Rd | Compute `Rd - Rs1`, update flags, discard result |
-| 16 | AND | Rs1, Rd | `Rd = Rd & Rs1` |
-| 17 | OR | Rs1, Rd | `Rd = Rd \| Rs1` |
-| 18 | XOR | Rs1, Rd | `Rd = Rd ^ Rs1` |
-| 20 | SLL | Rs1, Rd | `Rd = Rd << Rs1` (logical left shift, shift count in Rs1) |
-| 21 | SRL | Rs1, Rd | `Rd = Rd >> Rs1` (logical right shift, shift count in Rs1) |
-| 22 | SRA | Rs1, Rd | `Rd = Rd >> Rs1` (arithmetic right shift, shift count in Rs1) |
-| 23 | SLLI | #N, Rd | `Rd = Rd << N` (logical left shift, 4-bit immediate count, N ∈ 0–15) |
-| 24 | SRLI | #N, Rd | `Rd = Rd >> N` (logical right shift, 4-bit immediate count, N ∈ 0–15) |
-| 25 | SRAI | #N, Rd | `Rd = Rd >> N` (arithmetic right shift, 4-bit immediate count, N ∈ 0–15) |
-| 56 | LSR | Rs1, Rd | `Rd = SR[Rs1]` (load special register by index) |
-| 57 | SSR | Rs1, Rd | `SR[Rs1] = Rd` (store special register by index) |
-| 60 | IRET | — | Return from interrupt: restore PC, flags, re-enable interrupts |
-| 63 | STOP | — | Halt the emulator |
+| Value | Mnemonic | Encoding | Operands | Operation |
+|---|---|---|---|---|
+| 0 | ADD | register-form | Rs1, Rd | `Rd = Rd + Rs1` |
+| 1 | SUB | register-form | Rs1, Rd | `Rd = Rd - Rs1` |
+| 2 | TEST | register-form | Rs1, Rd | Compute `Rd - Rs1`, update flags, discard result |
+| 16 | AND | register-form | Rs1, Rd | `Rd = Rd & Rs1` |
+| 17 | OR | register-form | Rs1, Rd | `Rd = Rd \| Rs1` |
+| 18 | XOR | register-form | Rs1, Rd | `Rd = Rd ^ Rs1` |
+| 20 | SLL | register-form | Rs1, Rd | `Rd = Rd << Rs1` (logical left shift, shift count in Rs1) |
+| 21 | SRL | register-form | Rs1, Rd | `Rd = Rd >> Rs1` (logical right shift, shift count in Rs1) |
+| 22 | SRA | register-form | Rs1, Rd | `Rd = Rd >> Rs1` (arithmetic right shift, shift count in Rs1) |
+| 23 | SLLI | immediate-form | #N, Rd | `Rd = Rd << N` (left shift by 4-bit immediate, N ∈ 0–15) |
+| 24 | SRLI | immediate-form | #N, Rd | `Rd = Rd >> N` (logical right shift by 4-bit immediate, N ∈ 0–15) |
+| 25 | SRAI | immediate-form | #N, Rd | `Rd = Rd >> N` (arithmetic right shift by 4-bit immediate, N ∈ 0–15) |
+| 56 | LSR | register-form | Rs1, Rd | `Rd = SR[Rs1]` (load special register by index in Rs1) |
+| 57 | SSR | register-form | Rs1, Rd | `SR[Rs1] = Rd` (store special register by index in Rs1) |
+| 60 | IRET | — | — | Return from interrupt: restore PC, flags, re-enable interrupts |
+| 63 | STOP | — | — | Halt the emulator |
 
-All arithmetic and bitwise GP operations update the Zero, Carry, and Sign flags. LSR, SSR, IRET, and STOP do not affect flags.
+**Encoding column:** Register-form instructions use the Rs1 field as a register index (0–15). Immediate-form instructions (SLLI/SRLI/SRAI) use the Rs1 field as a 4-bit literal value (0–15). The assembler automatically selects the encoding based on the mnemonic.
 
-**SLL/SRL/SRA carry flag:** set to the last bit shifted out. Shifts by 0 leave Rd unchanged and set flags on the unshifted value; shifts by ≥ 64 produce 0 (SRA: fills with sign bit).
+**Flags:** All arithmetic and bitwise operations update the Zero, Carry, and Sign flags. LSR, SSR, IRET, and STOP do not affect flags.
 
-**SLLI/SRLI/SRAI** are the immediate-count variants. The 4-bit Rs1 field in the encoding carries a literal shift count (0–15) rather than a register index. Behaviour otherwise matches SLL/SRL/SRA. For shifts by 16–63 use the register variants.
+**Shift instructions (SLL/SRL/SRA):** The carry flag is set to the last bit shifted out. Shifts by 0 leave Rd unchanged and set flags on the unshifted value; shifts by ≥ 64 produce 0 (SRA fills with the sign bit).
+
+**Immediate shift instructions (SLLI/SRLI/SRAI):** Provide fast shifts by constant amounts (0–15). For larger shift counts, use the register variants (SLL, SRL, SRA).
 
 ## Assembler Syntax
 
@@ -234,6 +273,8 @@ LDI.S3 #0xEF, R1        ; R1 |= 0xEF << 24
 
 ### Format 11 — GP ALU
 
+#### Register-form instructions
+
 ```asm
 ADD  Rs1, Rd             ; Rd = Rd + Rs1
 SUB  Rs1, Rd             ; Rd = Rd - Rs1
@@ -241,14 +282,24 @@ TEST Rs1, Rd             ; flags = Rd - Rs1 (result discarded)
 AND  Rs1, Rd             ; Rd = Rd & Rs1
 OR   Rs1, Rd             ; Rd = Rd | Rs1
 XOR  Rs1, Rd             ; Rd = Rd ^ Rs1
-SLL  Rs1, Rd             ; Rd = Rd << Rs1  (Rs1 = shift amount)
-SRL  Rs1, Rd             ; Rd = Rd >> Rs1  (logical)
-SRA  Rs1, Rd             ; Rd = Rd >> Rs1  (arithmetic)
-LSR  Rs1, Rd             ; Rd = SR[Rs1]    (Rs1 holds the SR index)
-SSR  Rs1, Rd             ; SR[Rs1] = Rd    (Rs1 holds the SR index)
+SLL  Rs1, Rd             ; Rd = Rd << Rs1       (Rs1 = register with shift amount)
+SRL  Rs1, Rd             ; Rd = Rd >> Rs1       (logical right shift)
+SRA  Rs1, Rd             ; Rd = Rd >> Rs1       (arithmetic right shift)
+LSR  Rs1, Rd             ; Rd = SR[Rs1]         (Rs1 = SR index)
+SSR  Rs1, Rd             ; SR[Rs1] = Rd         (Rs1 = SR index)
 IRET                     ; return from interrupt handler
 STOP                     ; halt the emulator
 ```
+
+#### Immediate-form instructions
+
+```asm
+SLLI #5, Rd              ; Rd = Rd << 5         (left shift by 4-bit literal, 0–15)
+SRLI #7, Rd              ; Rd = Rd >> 7         (logical right shift by 4-bit literal)
+SRAI #3, Rd              ; Rd = Rd >> 3         (arithmetic right shift by 4-bit literal)
+```
+
+**Note:** SLLI, SRLI, and SRAI use the Rs1 field in the instruction encoding as a 4-bit immediate (the shift count), not as a register index. The assembler validates the immediate is in range [0–15].
 
 ### JUMP.* bare register form (Format 00)
 
