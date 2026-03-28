@@ -29,20 +29,36 @@ vbcc/
 
 ## Getting vbcc Source
 
-The vbcc source code is managed as a **git submodule**. To set it up:
+The vbcc source code is maintained by Volker Barthelmann and distributed as a **tarball snapshot**
+(not an official git repository). The latest source can be downloaded from:
 
-```bash
-cd /home/alexander/projects/little-64
-git submodule add https://github.com/easyaspi314/vbcc compilers/vbcc/vbcc
-git submodule update --init --recursive
-```
+**Official vbcc website:** http://www.compilers.de/vbcc.html
 
-This clones the vbcc repository into `compilers/vbcc/vbcc/`.
+### Setup Instructions
 
-If the submodule is already initialized:
-```bash
-git submodule update --init --recursive
-```
+1. **Download the latest vbcc snapshot:**
+   ```bash
+   # Visit http://www.compilers.de/vbcc.html to find the latest version
+   # Download vbcc-<version>.tar.gz
+   # Example:
+   wget http://www.compilers.de/download/vbcc-<latest-version>.tar.gz
+   ```
+
+2. **Extract into the submodule directory:**
+   ```bash
+   cd /home/alexander/projects/little-64
+   mkdir -p compilers/vbcc/vbcc
+   tar -xzf vbcc-<latest-version>.tar.gz -C compilers/vbcc/vbcc --strip-components=1
+   ```
+
+3. **Create a git submodule to track the snapshot:**
+   The submodule is already initialized in the repository. It points to a snapshot
+   of vbcc committed as a subtree rather than a remote git repository.
+
+4. **Verify the submodule:**
+   ```bash
+   git submodule status
+   ```
 
 ## Building vbcc with the Little-64 Backend
 
@@ -115,7 +131,7 @@ A machine description file that vbcc tools use to understand the target:
 - **vbcc Backend Manual**: `compilers/vbcc/vbcc/doc/vbcc.pdf` Section 13 (Writing a Backend)
 - **Little-64 ISA**: `CPU_ARCH.md` and `docs/assembly-syntax.md`
 - **Example Backends**: Study `compilers/vbcc/vbcc/machines/m68k.h` and `m68k.c` for reference
-- **vbcc Project**: https://github.com/easyaspi314/vbcc (original source)
+- **Official vbcc Website**: http://www.compilers.de/vbcc.html (maintained by Volker Barthelmann)
 
 ## Troubleshooting
 
@@ -125,9 +141,12 @@ A machine description file that vbcc tools use to understand the target:
 error: directory 'compilers/vbcc/vbcc' does not exist
 ```
 
-**Fix**: Initialize the submodule:
+**Fix**: Download vbcc and extract it:
 ```bash
-git submodule update --init --recursive
+cd /home/alexander/projects/little-64
+wget http://www.compilers.de/download/vbcc-<latest>.tar.gz
+mkdir -p compilers/vbcc/vbcc
+tar -xzf vbcc-<latest>.tar.gz -C compilers/vbcc/vbcc --strip-components=1
 ```
 
 ### Backend files not found

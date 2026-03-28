@@ -10,8 +10,9 @@ Each phase is a distinct milestone. Mark items `[x]` when complete.
 
 Get vbcc source, understand the architecture, and study reference backends.
 
-- [ ] Clone vbcc source as git submodule: `git submodule add https://github.com/easyaspi314/vbcc compilers/vbcc/vbcc`
-- [ ] Read vbcc backend manual (Section 13 of `vbcc/doc/vbcc.pdf`)
+- [ ] Download vbcc from http://www.compilers.de/vbcc.html
+- [ ] Extract into `compilers/vbcc/vbcc/`
+- [ ] Read vbcc backend manual (Section 13 of `compilers/vbcc/vbcc/doc/vbcc.pdf`)
 - [ ] Study M68k backend: `vbcc/machines/m68k.h` and `m68k.c`
 - [ ] Study PowerPC backend: `vbcc/machines/ppc.h` and `ppc.c` (alternative reference)
 - [ ] Skim Little-64 ISA reference: `CPU_ARCH.md`

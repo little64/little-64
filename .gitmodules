@@ -1,0 +1,3 @@
+[submodule "compilers/vbcc/vbcc"]
+	path = compilers/vbcc/vbcc
+	url = ./compilers/vbcc/vbcc

@@ -20,12 +20,9 @@ Quick reference for starting the vbcc backend porting effort.
    ```
 
 4. **Start Phase 0 (Setup):**
-   - Initialize the vbcc git submodule:
-     ```bash
-     git submodule add https://github.com/easyaspi314/vbcc vbcc
-     git submodule update --init --recursive
-     ```
-   - Read Section 13 of the vbcc manual (`vbcc/doc/vbcc.pdf`)
+   - Download vbcc from http://www.compilers.de/vbcc.html
+   - Extract into `compilers/vbcc/vbcc/` directory
+   - Read Section 13 of the vbcc manual (`compilers/vbcc/vbcc/doc/vbcc.pdf`)
    - Study the M68k or PowerPC backend for reference
 
 ## Directory Layout
@@ -64,9 +61,10 @@ compilers/
 ## Next Steps
 
 1. Read `compilers/vbcc/README.md`
-2. Follow the "Getting vbcc Source" section
-3. Open `PROGRESS.md` and start Phase 0
-4. Document your progress in `PROGRESS.md` as you complete checklist items
+2. Download vbcc from http://www.compilers.de/vbcc.html
+3. Extract into `compilers/vbcc/vbcc/`
+4. Open `PROGRESS.md` and start Phase 0
+5. Document your progress in `PROGRESS.md` as you complete checklist items
 
 ## Useful Commands
 
@@ -75,10 +73,10 @@ compilers/
 git submodule status
 ```
 
-**Update submodule to latest:**
-```bash
-git submodule update --remote
-```
+**Update to a newer vbcc snapshot:**
+1. Download the new vbcc tarball from http://www.compilers.de/vbcc.html
+2. Extract over the existing `compilers/vbcc/vbcc/` directory
+3. Commit the updated submodule
 
 **Track progress:**
 Edit `PROGRESS.md` and check off completed items as you go.
