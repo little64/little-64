@@ -58,10 +58,11 @@ int main() {
             return 1;
         }
         CHECK_EQ((*linked2)[0], (uint16_t)0xFF00, "handler = STOP");
+        // JUMP.Z now uses PCREL10 encoding: bits[9:0] = 10-bit offset, no Rd field.
         // JUMP.Z at byte 2, handler at byte 0: rel = (0-(2+2))/2 = -2
-        // initial: (1<<14)|(11<<10)|(0<<4)|15 = 0x6C0F
-        // patched: (0x6C0F & 0xFC0F) | ((-2 & 0x3F) << 4) = 0x6C0F | 0x03E0 = 0x6FEF
-        CHECK_EQ((*linked2)[1], (uint16_t)0x6FEF, "JUMP.Z with external target: correct opcode and offset");
+        // initial: (1<<14)|(11<<10)|0x000 = 0x6C00
+        // patched (PCREL10): (0x6C00 & 0xFC00) | (-2 & 0x3FF) = 0x6C00 | 0x3FE = 0x6FFE
+        CHECK_EQ((*linked2)[1], (uint16_t)0x6FFE, "JUMP.Z with external target: correct 10-bit opcode and offset");
         CHECK_EQ((*linked2)[2], (uint16_t)0xFF00, "zz_local = STOP");
     }
 

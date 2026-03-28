@@ -50,7 +50,7 @@ test_asm = executable('test-assembler',
   include_directories : [include_directories('assembler'), arch_inc],
   install : false,
 )
-test('assembler', test_asm)
+test('assembler', test_asm, suite : 'assembler')
 
 linker_lib = static_library('little-64-linker-lib',
   ['linker/linker.cpp'],
@@ -72,7 +72,33 @@ test_linker = executable('test-linker',
   install : false,
 )
 
-test('linker', test_linker)
+test('linker', test_linker, suite : 'linker')
+
+# --- CPU execution test suite ---
+test_inc = include_directories('tests')
+
+cpu_tests = {
+    'gp':          'tests/test_cpu_gp.cpp',
+    'ldi':         'tests/test_cpu_ldi.cpp',
+    'memory':      'tests/test_cpu_memory.cpp',
+    'jumps':       'tests/test_cpu_jumps.cpp',
+    'special':     'tests/test_cpu_special.cpp',
+    'integration': 'tests/test_cpu_integration.cpp',
+}
+
+foreach name, src : cpu_tests
+    t = executable('test-cpu-' + name, src,
+        link_with : [emulator_lib, asm_lib],
+        include_directories : [
+            include_directories('emulator'),
+            include_directories('assembler'),
+            arch_inc,
+            test_inc,
+        ],
+        install : false,
+    )
+    test('cpu-' + name, t, suite : ['cpu', name], timeout : 60)
+endforeach
 
 # --- Project library and runner ---
 project_lib = static_library('little-64-project-lib',

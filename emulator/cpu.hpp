@@ -9,6 +9,8 @@ class Little64CPU {
 public:
     Little64CPU();
     ~Little64CPU() = default;
+    Little64CPU(Little64CPU&&) = default;
+    Little64CPU& operator=(Little64CPU&&) = default;
 
     struct Registers {
         // R0 is defined to always be zero, and writes to it are ignored.
@@ -148,7 +150,9 @@ public:
         uint8_t rs1 = 0;        // bits[7:4]  (also used by format 11)
 
         // Format 01 (LS PC-Relative)
-        int8_t pc_rel = 0;      // bits[9:4]: 6-bit signed, byte offset = pc_rel * 2
+        // For non-JUMP opcodes: bits[9:4] are the 6-bit signed offset; bits[3:0] are Rd.
+        // For JUMP.* opcodes (11–15): bits[9:0] are the 10-bit signed offset; Rd is always R15.
+        int16_t pc_rel = 0;     // signed offset in instruction units; byte offset = pc_rel * 2
 
         // Format 10 (Load Immediate)
         uint8_t shift = 0;      // bits[13:12]
@@ -171,8 +175,15 @@ public:
                     break;
                 case 1: { // LS PC-Relative
                     opcode_ls = (raw >> 10) & 0xF;
-                    uint8_t raw6 = (raw >> 4) & 0x3F;
-                    pc_rel = (raw6 & 0x20) ? (int8_t)(raw6 | 0xC0) : (int8_t)raw6;
+                    if (opcode_ls >= 11 && opcode_ls <= 15) {
+                        // JUMP.* opcodes: 10-bit signed offset in bits[9:0], Rd implicit = R15
+                        uint16_t raw10 = raw & 0x3FF;
+                        pc_rel = (raw10 & 0x200) ? (int16_t)(raw10 | 0xFC00) : (int16_t)raw10;
+                        rd = 15;
+                    } else {
+                        uint8_t raw6 = (raw >> 4) & 0x3F;
+                        pc_rel = (raw6 & 0x20) ? (int16_t)(int8_t)(raw6 | 0xC0) : (int16_t)raw6;
+                    }
                     break;
                 }
                 case 2: // Load Immediate
@@ -189,25 +200,33 @@ public:
         uint16_t encode() const {
             uint16_t raw = 0;
             raw |= (format & 0x3) << 14;
-            raw |= (rd & 0xF);
 
             switch (format) {
                 case 0:
                     raw |= (opcode_ls & 0xF) << 10;
                     raw |= (offset2   & 0x3) << 8;
                     raw |= (rs1       & 0xF) << 4;
+                    raw |= (rd        & 0xF);
                     break;
                 case 1:
-                    raw |= (opcode_ls         & 0xF)  << 10;
-                    raw |= ((uint8_t)pc_rel   & 0x3F) << 4;
+                    raw |= (opcode_ls & 0xF) << 10;
+                    if (opcode_ls >= 11 && opcode_ls <= 15) {
+                        // JUMP.* opcodes: 10-bit signed offset in bits[9:0], Rd implicit = R15
+                        raw |= (uint16_t)pc_rel & 0x3FF;
+                    } else {
+                        raw |= ((uint16_t)pc_rel & 0x3F) << 4;
+                        raw |= (rd & 0xF);
+                    }
                     break;
                 case 2:
                     raw |= (shift & 0x3)  << 12;
                     raw |= (imm8  & 0xFF) << 4;
+                    raw |= (rd    & 0xF);
                     break;
                 case 3:
                     raw |= (opcode_gp & 0x3F) << 8;
                     raw |= (rs1       & 0xF)  << 4;
+                    raw |= (rd        & 0xF);
                     break;
             }
             return raw;

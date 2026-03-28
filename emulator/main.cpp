@@ -173,7 +173,21 @@ int main(int argc, char* argv[]) {
                     if (rel < -32 || rel > 31) {
                         std::cerr << "ELF relocation PCREL6 out of range\n";
                     }
-                    uint16_t new_instr = (instr & 0xF00F) | ((uint16_t)(rel & 0x3F) << 4);
+                    // Mask 0xFC0F keeps bits[15:10] (format + full opcode) and bits[3:0] (Rd).
+                    uint16_t new_instr = (instr & 0xFC0F) | ((uint16_t)(rel & 0x3F) << 4);
+                    text[r_offset] = new_instr & 0xFF;
+                    text[r_offset+1] = (new_instr >> 8) & 0xFF;
+                } else if (r_type == 3) { // PCREL10 (JUMP.* conditional branches)
+                    if (r_offset + 2 > text.size()) continue;
+                    uint16_t instr = (uint16_t)text[r_offset] | ((uint16_t)text[r_offset+1] << 8);
+                    int64_t pc = (int64_t)r_offset;
+                    int64_t diff = (int64_t)target - (pc + 2);
+                    int64_t rel = diff / 2;
+                    if (rel < -511 || rel > 511) {
+                        std::cerr << "ELF relocation PCREL10 out of range\n";
+                    }
+                    // Mask 0xFC00 keeps bits[15:10] (format + full opcode), clears bits[9:0].
+                    uint16_t new_instr = (instr & 0xFC00) | ((uint16_t)(rel & 0x3FF));
                     text[r_offset] = new_instr & 0xFF;
                     text[r_offset+1] = (new_instr >> 8) & 0xFF;
                 } else if (r_type == 2) { // ABS64

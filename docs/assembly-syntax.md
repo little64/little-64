@@ -176,7 +176,11 @@ Used by load/store and jump instructions with PC-relative addressing (format LS-
 @-5             ; explicit negative offset (in instruction units)
 ```
 
-Offsets are counted in **instruction units** (each instruction is 2 bytes), relative to the instruction *following* the current one (i.e. PC + 2). The encodable range is **−32 to +31** instruction units.
+Offsets are counted in **instruction units** (each instruction is 2 bytes), relative to the instruction *following* the current one (i.e. PC + 2).
+
+The encodable range depends on the opcode:
+- Non-JUMP opcodes (LOAD, STORE, PUSH, POP, MOVE, BYTE\_LOAD, etc.): **−32 to +31** instruction units (6-bit signed field).
+- JUMP.\* opcodes (conditional branches): **−511 to +511** instruction units (10-bit signed field).
 
 The full instruction syntax is:
 
@@ -184,6 +188,8 @@ The full instruction syntax is:
 MNEMONIC @label, Rd
 MNEMONIC @±N, Rd
 ```
+
+For JUMP.\* in PC-relative form, the `Rd` operand is accepted but ignored — the destination is always R15 (the PC).
 
 ---
 
@@ -194,10 +200,21 @@ The assembler recognises four instruction formats. The format is inferred automa
 ### GP — General-purpose ALU instructions
 
 ```
-MNEMONIC                    ; 0-register form
-MNEMONIC Rd                 ; 1-register form
-MNEMONIC Rs1, Rd            ; 2-register form
+MNEMONIC                    ; 0-register form  (e.g. IRET, STOP)
+MNEMONIC Rd                 ; 1-register form  (reserved for future use)
+MNEMONIC Rs1, Rd            ; 2-register form  (e.g. ADD, SLL)
+MNEMONIC #N, Rd             ; immediate form   (e.g. SLLI, SRLI, SRAI)
 ```
+
+The **immediate form** encodes a 4-bit literal `N` (0–15) in the Rs1 field of the instruction word. It is used by the immediate-shift instructions:
+
+```
+SLLI #N, Rd      ; Rd = Rd << N   (logical left,  N ∈ 0–15)
+SRLI #N, Rd      ; Rd = Rd >> N   (logical right, N ∈ 0–15)
+SRAI #N, Rd      ; Rd = Rd >> N   (arithmetic right, sign-extends, N ∈ 0–15)
+```
+
+For shift counts 16–63 use the register-operand variants `SLL`, `SRL`, `SRA`.
 
 ### LDI — Load immediate
 
@@ -327,7 +344,10 @@ JUMP @ext_fn
 
 ### PC-relative relocations for ELF
 
-PC-relative label operands like `JUMP @label` in ELF output generate `PCREL6` relocations. The linker turns those into the final 6-bit offset when code sections are laid out.
+PC-relative label operands generate relocations in ELF object output:
+
+- `JUMP @label` and all non-JUMP PC-relative instructions generate `PCREL6` relocations. The linker fills in the final 6-bit offset when sections are laid out.
+- `JUMP.Z @label`, `JUMP.C @label`, etc. (conditional branches) generate `PCREL10` relocations. The linker fills in the final 10-bit offset.
 
 ---
 
@@ -407,14 +427,14 @@ JUMP R3+2, R15          ; Rd = R3 + 2, explicit Rd
 
 ### Conditional jumps — `JUMP.*`
 
-Conditional jump mnemonics (those of the form `JUMP.*`) are LS-class instructions and accept the same syntactic forms as `JUMP`. When no destination register is given, `R15` (the PC) is used implicitly.
+Conditional jump mnemonics (those of the form `JUMP.*`) are LS-class instructions. In PC-relative form (Format 01), they use a **10-bit signed offset** (range ±511 instructions) and the destination is always R15 (the PC) — no explicit `Rd` field exists in the encoding. In register form (Format 00), any `Rd` is valid.
 
 ```
-JUMP.Z @loop            ; PC-relative, Rd = R15 (implicit)
-JUMP.Z @loop, R15       ; PC-relative, Rd explicit
+JUMP.Z @loop            ; PC-relative, Rd = R15 (implicit), ±511 instruction range
+JUMP.Z @loop, R15       ; PC-relative, Rd argument is accepted but ignored
 JUMP.Z @+2              ; PC-relative numeric offset, Rd = R15
-JUMP.Z R3               ; register form, offset = 0, Rd = R15
-JUMP.Z R3, R0           ; register form, Rd = R0 (conditional move)
+JUMP.Z R3               ; register form (Format 00), offset = 0, Rd = R15
+JUMP.Z R3, R0           ; register form (Format 00), Rd = R0 (conditional move)
 ```
 
 ---
@@ -521,7 +541,7 @@ Like `.ascii` but appends a **null byte** (`0x00`) after the string content.
 
 String literals are enclosed in double quotes. Supported escape sequences: `\"`, `\\`, `\n`, `\t`, `\0`.
 
-Data directives are emitted **in source order**, interleaved with instructions. This is essential for PC-relative addressing, which has a limited range of ±32 instruction units (±64 bytes).
+Data directives are emitted **in source order**, interleaved with instructions. This is essential for PC-relative addressing: non-JUMP instructions have a range of ±31 instruction units (±62 bytes), while JUMP.\* branches reach ±511 instruction units (±1022 bytes).
 
 ---
 

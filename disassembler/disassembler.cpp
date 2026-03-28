@@ -17,8 +17,8 @@ static const std::unordered_map<uint8_t, std::string> kGPOpcodes = {
 #undef LITTLE64_GP_OPCODE
 };
 
-static const std::unordered_map<uint8_t, uint8_t> kGPNumRegs = {
-#define LITTLE64_GP_OPCODE(name, value, mnemonic, num_regs) { value, num_regs },
+static const std::unordered_map<uint8_t, GP::Encoding> kGPEncoding = {
+#define LITTLE64_GP_OPCODE(name, value, mnemonic, enc) { value, static_cast<GP::Encoding>(enc) },
 #include "opcodes_gp.def"
 #undef LITTLE64_GP_OPCODE
 };
@@ -65,9 +65,6 @@ DisassembledInstruction Disassembler::disassemble(uint16_t word, uint16_t addres
         }
         case 1: { // LS PC-Relative
             result.opcode_ls = (word >> 10) & 0xF;
-            uint8_t raw6 = (word >> 4) & 0x3F;
-            result.pc_rel = (raw6 & 0x20) ? (int8_t)(raw6 | 0xC0) : (int8_t)raw6;
-            result.effective_address = address + 2 + (int16_t)result.pc_rel * 2;
 
             auto it = kLSOpcodes.find(result.opcode_ls);
             if (it == kLSOpcodes.end()) {
@@ -77,14 +74,34 @@ DisassembledInstruction Disassembler::disassemble(uint16_t word, uint16_t addres
             }
             result.mnemonic = it->second;
 
-            oss << result.mnemonic << " @";
-            if (result.pc_rel >= 0)
-                oss << "+" << (int)result.pc_rel;
-            else
-                oss << (int)result.pc_rel;
-            oss << ", R" << (int)result.rd;
-            oss << std::dec << "  ; 0x" << std::hex << std::setw(4) << std::setfill('0')
-                << result.effective_address;
+            if (result.opcode_ls >= 11 && result.opcode_ls <= 15) {
+                // JUMP.* opcodes: 10-bit signed offset in bits[9:0], Rd implicit = R15
+                uint16_t raw10 = word & 0x3FF;
+                result.pc_rel = (raw10 & 0x200) ? (int16_t)(raw10 | 0xFC00) : (int16_t)raw10;
+                result.rd = 15;
+                result.effective_address = address + 2 + (int16_t)result.pc_rel * 2;
+
+                oss << result.mnemonic << " @";
+                if (result.pc_rel >= 0)
+                    oss << "+" << (int)result.pc_rel;
+                else
+                    oss << (int)result.pc_rel;
+                oss << std::dec << "  ; 0x" << std::hex << std::setw(4) << std::setfill('0')
+                    << result.effective_address;
+            } else {
+                uint8_t raw6 = (word >> 4) & 0x3F;
+                result.pc_rel = (raw6 & 0x20) ? (int16_t)(int8_t)(raw6 | 0xC0) : (int16_t)raw6;
+                result.effective_address = address + 2 + (int16_t)result.pc_rel * 2;
+
+                oss << result.mnemonic << " @";
+                if (result.pc_rel >= 0)
+                    oss << "+" << (int)result.pc_rel;
+                else
+                    oss << (int)result.pc_rel;
+                oss << ", R" << (int)result.rd;
+                oss << std::dec << "  ; 0x" << std::hex << std::setw(4) << std::setfill('0')
+                    << result.effective_address;
+            }
             break;
         }
         case 2: { // Load Immediate
@@ -111,12 +128,21 @@ DisassembledInstruction Disassembler::disassemble(uint16_t word, uint16_t addres
             }
             result.mnemonic = it->second;
 
-            uint8_t nregs = kGPNumRegs.at(result.opcode_gp);
+            GP::Encoding enc = kGPEncoding.at(result.opcode_gp);
             oss << result.mnemonic;
-            if (nregs >= 2)
-                oss << " R" << (int)result.rs1 << ",";
-            if (nregs >= 1)
-                oss << " R" << (int)result.rd;
+            switch (enc) {
+                case GP::Encoding::RS1_RD:
+                    oss << " R" << (int)result.rs1 << ", R" << (int)result.rd;
+                    break;
+                case GP::Encoding::RD:
+                    oss << " R" << (int)result.rd;
+                    break;
+                case GP::Encoding::IMM4_RD:
+                    oss << " #" << (int)result.rs1 << ", R" << (int)result.rd;
+                    break;
+                case GP::Encoding::NONE:
+                    break;
+            }
             break;
         }
     }

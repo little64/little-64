@@ -21,7 +21,9 @@ struct DisassembledInstruction {
     uint8_t rs1;                // bits[7:4]: base register (also used by format 11)
 
     // Format 01 only
-    int8_t  pc_rel;             // bits[9:4]: signed 6-bit; byte offset = pc_rel * 2
+    // For non-JUMP opcodes: 6-bit signed offset from bits[9:4]; bits[3:0] are Rd.
+    // For JUMP.* opcodes (11–15): 10-bit signed offset from bits[9:0]; Rd is always R15.
+    int16_t pc_rel;             // signed offset in instruction units; byte offset = pc_rel * 2
     uint16_t effective_address; // address + 2 + (pc_rel * 2)
 
     // Format 10 only

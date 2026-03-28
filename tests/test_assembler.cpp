@@ -451,25 +451,28 @@ static void test_elf_extern_jal_reloc() {
 // ---------------------------------------------------------------------------
 
 static void test_conditional_jumps() {
-    // JUMP.Z @+0 → LS_PCREL, opcode=11=0xB, pc_rel=0, rd=15
-    // (1<<14) | (0xB<<10) | (0<<4) | 15 = 0x4000|0x2C00|0x000F = 0x6C0F
-    CHECK_EQ(assemble("JUMP.Z @+0")[0], 0x6C0F, "JUMP.Z @+0 implicit R15");
+    // New encoding: JUMP.* in Format 01 uses 10-bit offset in bits[9:0], Rd implicit = R15.
+    // Bits[3:0] are part of the offset, NOT the Rd field.
+    //
+    // JUMP.Z @+0 → LS_PCREL, opcode=11=0xB, 10-bit offset=0
+    // (1<<14) | (0xB<<10) | 0x000 = 0x4000|0x2C00 = 0x6C00
+    CHECK_EQ(assemble("JUMP.Z @+0")[0], 0x6C00, "JUMP.Z @+0 implicit R15");
 
-    // JUMP.Z R2 → LS_REG, opcode=0xB, offset2=0, rs1=2, rd=15
+    // JUMP.Z R2 → LS_REG (register form, unaffected by this change), opcode=0xB, rs1=2, rd=15
     // (0xB<<10) | (0<<8) | (2<<4) | 15 = 0x2C00|0x0020|0x000F = 0x2C2F
     CHECK_EQ(assemble("JUMP.Z R2")[0], 0x2C2F, "JUMP.Z R2 implicit R15");
 
-    // JUMP.C @+0 → opcode=12=0xC, pc_rel=0, rd=15
-    // (1<<14) | (0xC<<10) | 0 | 15 = 0x4000|0x3000|0x000F = 0x700F
-    CHECK_EQ(assemble("JUMP.C @+0")[0], 0x700F, "JUMP.C @+0");
+    // JUMP.C @+0 → opcode=12=0xC, 10-bit offset=0
+    // (1<<14) | (0xC<<10) | 0x000 = 0x4000|0x3000 = 0x7000
+    CHECK_EQ(assemble("JUMP.C @+0")[0], 0x7000, "JUMP.C @+0");
 
-    // JUMP.Z @+0, R0 → explicit rd=0
-    // (1<<14) | (0xB<<10) | 0 | 0 = 0x6C00
-    CHECK_EQ(assemble("JUMP.Z @+0, R0")[0], 0x6C00, "JUMP.Z @+0, R0 explicit dest");
+    // JUMP.Z @+0, R0 → explicit Rd is ignored for JUMP.* in Format 01; encodes as R15 implicit
+    // (1<<14) | (0xB<<10) | 0x000 = 0x6C00
+    CHECK_EQ(assemble("JUMP.Z @+0, R0")[0], 0x6C00, "JUMP.Z @+0, R0 Rd ignored (implicit R15)");
 
-    // JUMP.GT @+0 → opcode=14=0xE
-    // (1<<14)|(0xE<<10)|0|15 = 0x4000|0x3800|0x000F = 0x7C0F
-    CHECK_EQ(assemble("JUMP.GT @+0")[0], 0x780F, "JUMP.GT @+0");
+    // JUMP.GT @+0 → opcode=14=0xE, 10-bit offset=0
+    // (1<<14) | (0xE<<10) | 0x000 = 0x4000|0x3800 = 0x7800
+    CHECK_EQ(assemble("JUMP.GT @+0")[0], 0x7800, "JUMP.GT @+0");
 }
 
 // ---------------------------------------------------------------------------
@@ -695,6 +698,44 @@ static void test_ascii_directives() {
 // main
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Group K — IMM4_RD encoding (immediate shifts)
+// Format 11: (3<<14) | (opcode<<8) | (imm4<<4) | rd
+// SLLI=23 (0x17), SRLI=24 (0x18), SRAI=25 (0x19)
+// ---------------------------------------------------------------------------
+
+static void test_imm4_rd_encoding() {
+    // SLLI #5, R3 → op=23, imm=5, rd=3
+    // 0xC000 | 0x1700 | 0x0050 | 0x0003 = 0xD753
+    CHECK_EQ(assemble("SLLI #5, R3")[0], 0xD753, "SLLI #5, R3");
+
+    // SLLI #0, R2 → op=23, imm=0, rd=2
+    // 0xC000 | 0x1700 | 0x0000 | 0x0002 = 0xD702
+    CHECK_EQ(assemble("SLLI #0, R2")[0], 0xD702, "SLLI #0, R2");
+
+    // SLLI #15, R15 — maximum immediate and register
+    // 0xC000 | 0x1700 | 0x00F0 | 0x000F = 0xD7FF
+    CHECK_EQ(assemble("SLLI #15, R15")[0], 0xD7FF, "SLLI #15, R15");
+
+    // SRLI #7, R1 → op=24, imm=7, rd=1
+    // 0xC000 | 0x1800 | 0x0070 | 0x0001 = 0xD871
+    CHECK_EQ(assemble("SRLI #7, R1")[0], 0xD871, "SRLI #7, R1");
+
+    // SRAI #15, R0 → op=25, imm=15, rd=0
+    // 0xC000 | 0x1900 | 0x00F0 | 0x0000 = 0xD9F0
+    CHECK_EQ(assemble("SRAI #15, R0")[0], 0xD9F0, "SRAI #15, R0");
+
+    // SLLI and SLL with the same number must produce different encodings
+    // SLLI #5, R3 = 0xD753; SLL R5, R3 = 0xD453 (op=20=0x14)
+    CHECK_EQ(assemble("SLL R5, R3")[0], 0xD453, "SLL R5, R3 (baseline)");
+
+    // SLLI #16, R0 — immediate out of range; must throw
+    CHECK_THROWS(assemble("SLLI #16, R0"), "SLLI #16 should throw (out of range)");
+
+    // SLLI Rx, Rd — register where immediate expected; must throw
+    CHECK_THROWS(assemble("SLLI R5, R3"), "SLLI with register operand should throw");
+}
+
 int main() {
     std::printf("=== Little-64 assembler tests ===\n\n");
 
@@ -745,6 +786,9 @@ int main() {
 
     std::printf("J: .ascii / .asciiz\n");
     test_ascii_directives();
+
+    std::printf("K: IMM4_RD encoding (immediate shifts)\n");
+    test_imm4_rd_encoding();
 
     std::printf("\n=== Results: %d passed, %d failed ===\n", _pass, _fail);
     return _fail != 0 ? 1 : 0;

@@ -1,5 +1,5 @@
-// LITTLE64_GP_OPCODE(enum_name, opcode_value, mnemonic_string, num_regs)
-// num_regs: 2 = Rs1+Rd, 1 = Rd only (Rs1 ignored), 0 = no registers (both ignored)
+// LITTLE64_GP_OPCODE(enum_name, opcode_value, mnemonic_string, encoding)
+// encoding: GP::Encoding value — 0=NONE, 1=RD, 2=RS1_RD, 3=IMM4_RD
 // Format 11 instructions (bits[15:14]=11): 6-bit opcode space for GP ALU operations
 LITTLE64_GP_OPCODE(ADD,  0, "ADD",  2)
 LITTLE64_GP_OPCODE(SUB,  1, "SUB",  2)
@@ -12,6 +12,10 @@ LITTLE64_GP_OPCODE(SLL,  20, "SLL", 2)
 LITTLE64_GP_OPCODE(SRL,  21, "SRL", 2)
 LITTLE64_GP_OPCODE(SRA,  22, "SRA", 2)
 
+// Immediate-shift variants: Rs1 field holds a 4-bit literal shift count (0–15)
+LITTLE64_GP_OPCODE(SLLI, 23, "SLLI", 3)
+LITTLE64_GP_OPCODE(SRLI, 24, "SRLI", 3)
+LITTLE64_GP_OPCODE(SRAI, 25, "SRAI", 3)
 
 // Opcodes >= 56 are defined as "special"; while they are in ALU space,
 // they have non-ALU effects.

@@ -1,6 +1,16 @@
 #pragma once
 #include <cstdint>
 
+// ---- GP operand encoding kinds (4th column in opcodes_gp.def) ----
+namespace GP {
+    enum class Encoding : uint8_t {
+        NONE    = 0,  // no operands           (IRET, STOP)
+        RD      = 1,  // Rd only, Rs1 zeroed   (reserved for future use)
+        RS1_RD  = 2,  // Rs1 register + Rd     (ADD, SLL, …)
+        IMM4_RD = 3,  // 4-bit imm in Rs1 + Rd (SLLI, SRLI, SRAI)
+    };
+}
+
 // ---- GP opcodes (6-bit, format 11: bits[15:14]=11) ----
 namespace GP {
     enum class Opcode : uint8_t {

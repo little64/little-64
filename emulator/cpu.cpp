@@ -169,10 +169,14 @@ void Little64CPU::_dispatchLSPCRel(const Instruction& instr) {
         case LS::Opcode::JUMP_C:
         case LS::Opcode::JUMP_S:
         case LS::Opcode::JUMP_GT:
-        case LS::Opcode::JUMP_LT:
+        case LS::Opcode::JUMP_LT: {
+            // JUMP.* in Format 01 uses a 10-bit offset with implicit Rd = R15.
+            // The effective address is recomputed here using the full bits[9:0].
+            uint64_t jump_effective = registers.regs[15] + (static_cast<int64_t>(instr.pc_rel) * 2);
             if (checkCondition(registers.flags, static_cast<LS::Opcode>(instr.opcode_ls)))
-                registers.regs[instr.rd] = effective;
+                registers.regs[15] = jump_effective;
             break;
+        }
     }
 }
 
@@ -182,9 +186,9 @@ void Little64CPU::_dispatchLDI(const Instruction& instr) {
     } else {
         registers.regs[instr.rd] |= (static_cast<uint64_t>(instr.imm8) << (instr.shift * 8));
 
-        // If the shift is the max value (3), also sign-extend the immediate to fill the upper bits of the register.
+        // If the shift is 3 and the immediate's MSB is set, sign-extend from bit 31 upward.
         if (instr.shift == 3 && (instr.imm8 & 0x80) != 0) {
-            registers.regs[instr.rd] |= 0xFFFFFFFFFFFFFF00ULL;
+            registers.regs[instr.rd] |= 0xFFFFFFFF00000000ULL;
         }
     }
 }
@@ -261,6 +265,34 @@ void Little64CPU::_dispatchGP(const Instruction& instr) {
             }
             uint64_t result = uint64_t(int64_t(a) >> b);
             bool carry = (a >> (b - 1)) & 1;
+            _updateFlags(result, carry);
+            registers.regs[instr.rd] = result;
+            break;
+        }
+
+        case GP::Opcode::SLLI: {
+            uint64_t imm = instr.rs1;  // 4-bit immediate, range 0–15
+            if (imm == 0) { _updateFlags(a); registers.regs[instr.rd] = a; break; }
+            uint64_t result = a << imm;
+            bool carry = (a >> (64 - imm)) != 0;
+            _updateFlags(result, carry);
+            registers.regs[instr.rd] = result;
+            break;
+        }
+        case GP::Opcode::SRLI: {
+            uint64_t imm = instr.rs1;  // 4-bit immediate, range 0–15
+            if (imm == 0) { _updateFlags(a); registers.regs[instr.rd] = a; break; }
+            uint64_t result = a >> imm;
+            bool carry = (a >> (imm - 1)) & 1;
+            _updateFlags(result, carry);
+            registers.regs[instr.rd] = result;
+            break;
+        }
+        case GP::Opcode::SRAI: {
+            uint64_t imm = instr.rs1;  // 4-bit immediate, range 0–15
+            if (imm == 0) { _updateFlags(a); registers.regs[instr.rd] = a; break; }
+            uint64_t result = uint64_t(int64_t(a) >> imm);
+            bool carry = (a >> (imm - 1)) & 1;
             _updateFlags(result, carry);
             registers.regs[instr.rd] = result;
             break;

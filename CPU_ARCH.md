@@ -57,6 +57,10 @@ Effective address = `Rs1 + OFFSET × 2`
 
 ### Format 01 — LS PC-Relative
 
+Format 01 has two sub-encodings depending on the opcode.
+
+#### Sub-layout A — Non-JUMP opcodes (LOAD, STORE, PUSH, POP, MOVE, BYTE\_LOAD, BYTE\_STORE, SHORT\_LOAD, SHORT\_STORE, WORD\_LOAD, WORD\_STORE)
+
 ```
 15 14 13 12 11 10  9  8  7  6  5  4  3  2  1  0
  0  1 [  OPCODE_LS  ] [    PC-REL OFFSET   ] [Rd ]
@@ -69,6 +73,24 @@ Effective address = `Rs1 + OFFSET × 2`
 | Rd | [3:0] | 4 | Destination (loads) or source (stores) |
 
 Effective address = `PC_next + PC-REL × 2` (PC_next = address of following instruction)
+
+#### Sub-layout B — JUMP.\* opcodes (opcodes 11–15: JUMP.Z, JUMP.C, JUMP.S, JUMP.GT, JUMP.LT)
+
+```
+15 14 13 12 11 10  9  8  7  6  5  4  3  2  1  0
+ 0  1 [  OPCODE_LS  ] [         PC-REL OFFSET        ]
+```
+
+| Field | Bits | Width | Description |
+|---|---|---|---|
+| OPCODE_LS | [13:10] | 4 | JUMP.\* opcode (11–15) |
+| PC-REL | [9:0] | 10 | Signed offset; byte offset = PC-REL × 2 |
+
+Rd is always R15 (the PC) — there is no Rd field. Bits [3:0] are the low 4 bits of the 10-bit offset.
+
+Effective address = `PC_next + PC-REL × 2`
+
+Branch range: **±511 instructions** (±1022 bytes) relative to the following instruction.
 
 ### Format 10 — Load Immediate (LDI)
 
@@ -132,7 +154,7 @@ Operation: `Rd = Rd OP Rs1` (except TEST, which does not store the result).
 | 14 | JUMP.GT | If Z=0 and S=0: `Rd = addr` |
 | 15 | JUMP.LT | If S=1: `Rd = addr` |
 
-**Note on JUMP instructions:** JUMP.* are conditional MOVEs. When `Rd = R15` (the PC), the instruction behaves as a conditional branch. The same encoding is valid for any `Rd` (conditional data move). The mnemonic `JUMP.*` should be used when the intent is to branch (i.e., when `Rd = R15`).
+**Note on JUMP instructions:** In Format 00 (register), JUMP.* are conditional MOVEs. The same encoding is valid for any `Rd` (conditional data move), and `Rd = R15` causes a conditional branch. In Format 01 (PC-relative), JUMP.* always target R15 (the PC) with a 10-bit signed offset — no explicit `Rd` field exists. The `JUMP.*` mnemonic should be used when the intent is to branch.
 
 **Note on PUSH / POP:** `Rd` is always the stack pointer and is adjusted as part of the operation. In Format 00, the value pushed or popped is the **register value** of `Rs1`. In Format 01 (PC-relative), the value pushed or popped is the **memory contents** at the PC-relative address — PUSH reads `MEM64[effective]` onto the stack, POP writes the top of the stack to `MEM64[effective]`.
 
@@ -146,9 +168,12 @@ Operation: `Rd = Rd OP Rs1` (except TEST, which does not store the result).
 | 16 | AND | Rs1, Rd | `Rd = Rd & Rs1` |
 | 17 | OR | Rs1, Rd | `Rd = Rd \| Rs1` |
 | 18 | XOR | Rs1, Rd | `Rd = Rd ^ Rs1` |
-| 20 | SLL | Rs1, Rd | `Rd = Rd << Rs1` (logical left shift) |
-| 21 | SRL | Rs1, Rd | `Rd = Rd >> Rs1` (logical right shift) |
-| 22 | SRA | Rs1, Rd | `Rd = Rd >> Rs1` (arithmetic right shift, sign-extends) |
+| 20 | SLL | Rs1, Rd | `Rd = Rd << Rs1` (logical left shift, shift count in Rs1) |
+| 21 | SRL | Rs1, Rd | `Rd = Rd >> Rs1` (logical right shift, shift count in Rs1) |
+| 22 | SRA | Rs1, Rd | `Rd = Rd >> Rs1` (arithmetic right shift, shift count in Rs1) |
+| 23 | SLLI | #N, Rd | `Rd = Rd << N` (logical left shift, 4-bit immediate count, N ∈ 0–15) |
+| 24 | SRLI | #N, Rd | `Rd = Rd >> N` (logical right shift, 4-bit immediate count, N ∈ 0–15) |
+| 25 | SRAI | #N, Rd | `Rd = Rd >> N` (arithmetic right shift, 4-bit immediate count, N ∈ 0–15) |
 | 56 | LSR | Rs1, Rd | `Rd = SR[Rs1]` (load special register by index) |
 | 57 | SSR | Rs1, Rd | `SR[Rs1] = Rd` (store special register by index) |
 | 60 | IRET | — | Return from interrupt: restore PC, flags, re-enable interrupts |
@@ -157,6 +182,8 @@ Operation: `Rd = Rd OP Rs1` (except TEST, which does not store the result).
 All arithmetic and bitwise GP operations update the Zero, Carry, and Sign flags. LSR, SSR, IRET, and STOP do not affect flags.
 
 **SLL/SRL/SRA carry flag:** set to the last bit shifted out. Shifts by 0 leave Rd unchanged and set flags on the unshifted value; shifts by ≥ 64 produce 0 (SRA: fills with sign bit).
+
+**SLLI/SRLI/SRAI** are the immediate-count variants. The 4-bit Rs1 field in the encoding carries a literal shift count (0–15) rather than a register index. Behaviour otherwise matches SLL/SRL/SRA. For shifts by 16–63 use the register variants.
 
 ## Assembler Syntax
 
@@ -173,10 +200,10 @@ POP   Rs1, Rd            ; Rs1 = MEM64[Rd]; Rd += 8  (Rd is the stack pointer)
 ### Format 01 — LS PC-Relative
 
 ```asm
-LOAD  @label, Rd         ; load from label-relative address
+LOAD  @label, Rd         ; load from label-relative address (6-bit offset, ±31 instructions)
 STORE @-4, Rd            ; store to PC-relative offset -4 instructions
-JUMP.Z @label            ; branch to label if zero flag set (Rd=R15 inferred)
-JUMP.Z @label, R1        ; conditional move: R1 = effective addr if zero
+JUMP.Z @label            ; branch to label if zero flag set (10-bit offset, ±511 instructions)
+JUMP.Z @label, R1        ; Rd is ignored; always branches to R15 (PC)
 ```
 
 ### Format 10 — Load Immediate

@@ -4,7 +4,7 @@
 
 std::unordered_map<std::string, uint8_t> Encoder::ls_mnemonics;
 std::unordered_map<std::string, uint8_t> Encoder::gp_mnemonics;
-std::unordered_map<std::string, uint8_t> Encoder::gp_num_regs;
+std::unordered_map<std::string, GP::Encoding> Encoder::gp_encoding;
 
 void Encoder::init() {
 #define LITTLE64_LS_OPCODE(name, value, mnemonic) \
@@ -14,7 +14,7 @@ void Encoder::init() {
 
 #define LITTLE64_GP_OPCODE(name, value, mnemonic, nregs) \
     gp_mnemonics[mnemonic] = value; \
-    gp_num_regs[mnemonic]  = nregs;
+    gp_encoding[mnemonic]  = static_cast<GP::Encoding>(nregs);
 #include "opcodes_gp.def"
 #undef LITTLE64_GP_OPCODE
 }
@@ -37,13 +37,22 @@ uint16_t Encoder::encodeLSReg(uint8_t opcode_ls, uint8_t offset2, uint8_t rs1, u
     return raw;
 }
 
-// Format 01: bits[15:14]=01
+// Format 01: bits[15:14]=01 (non-JUMP opcodes)
 uint16_t Encoder::encodeLSPCRel(uint8_t opcode_ls, int8_t pc_rel, uint8_t rd) {
     uint16_t raw = 0;
     raw |= 1 << 14;                          // bits[15:14]=01
     raw |= (opcode_ls       & 0xF)  << 10;
     raw |= ((uint8_t)pc_rel & 0x3F) << 4;   // 6-bit signed, mask handles negative values
     raw |= (rd              & 0xF);
+    return raw;
+}
+
+// Format 01: bits[15:14]=01 (JUMP.* opcodes — 10-bit offset, Rd implicit = R15)
+uint16_t Encoder::encodeLSPCRelJump(uint8_t opcode_ls, int16_t pc_rel10) {
+    uint16_t raw = 0;
+    raw |= 1 << 14;                           // bits[15:14]=01
+    raw |= (opcode_ls & 0xF) << 10;
+    raw |= (uint16_t)pc_rel10 & 0x3FF;        // 10-bit signed, mask handles negative values
     return raw;
 }
 
@@ -81,9 +90,9 @@ uint8_t Encoder::getGPOpcode(const std::string& mnemonic) {
     return it->second;
 }
 
-uint8_t Encoder::getGPNumRegs(const std::string& mnemonic) {
-    auto it = gp_num_regs.find(mnemonic);
-    if (it == gp_num_regs.end())
+GP::Encoding Encoder::getGPEncoding(const std::string& mnemonic) {
+    auto it = gp_encoding.find(mnemonic);
+    if (it == gp_encoding.end())
         throw std::runtime_error("Unknown GP mnemonic: " + mnemonic);
     return it->second;
 }

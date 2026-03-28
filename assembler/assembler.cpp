@@ -739,6 +739,9 @@ void Assembler::pass1(const std::vector<Token>& tokens, SymbolTable& symbols) {
     }
 }
 
+// Forward declarations for helpers used by pass2 and encodeInstruction
+static bool isJumpMnemonic(const std::string& m);
+
 // Single-pass over emit_items, producing a packed byte buffer then folding
 // into uint16_t output words.  Items are emitted in source order so data and
 // instructions are interleaved correctly.
@@ -783,10 +786,13 @@ void Assembler::pass2(const SymbolTable& symbols, std::vector<uint16_t>& output,
                 !item.instr.operands.empty() &&
                 item.instr.operands[0].kind == TokenKind::PCRelLabel) {
                 if (out_relocs) {
+                    // JUMP.* (conditional branches) use 10-bit offset encoding; all others use 6-bit
+                    bool is_cond_jump = isJumpMnemonic(item.instr.mnemonic) &&
+                                       item.instr.mnemonic != "JUMP";
                     out_relocs->push_back({
                         item_addr,
                         item.instr.operands[0].lexeme,
-                        RelocType::PCREL6,
+                        is_cond_jump ? RelocType::PCREL10 : RelocType::PCREL6,
                         0
                     });
                 }
@@ -945,28 +951,33 @@ ParsedInstruction Assembler::parseInstruction(const std::vector<Token>& tokens,
 
     if (Encoder::isGPMnemonic(base_mnemonic)) {
         result.detected_format = Format::GP;
-        uint8_t nregs = Encoder::getGPNumRegs(base_mnemonic);
+        GP::Encoding enc = Encoder::getGPEncoding(base_mnemonic);
 
-        if (nregs == 0) {
-            // No register operands — consume nothing (any trailing tokens are an error)
-        } else if (nregs == 1) {
-            // Rd only
-            if (idx >= tokens.size() || tokens[idx].kind == TokenKind::Newline ||
-                tokens[idx].kind == TokenKind::EndOfFile)
-                throw std::runtime_error(base_mnemonic + " requires Rd at line " +
-                                         std::to_string(line_count));
-            if (tokens[idx].kind != TokenKind::Register)
-                throw std::runtime_error("Expected register for Rd at line " +
-                                         std::to_string(line_count));
-            result.operands.push_back(tokens[idx++]);  // Rd
-        } else {
-            // Rs1, Rd
-            while (idx < tokens.size() && tokens[idx].kind != TokenKind::Newline &&
-                   tokens[idx].kind != TokenKind::EndOfFile) {
-                if (tokens[idx].kind != TokenKind::Comma)
-                    result.operands.push_back(tokens[idx]);
-                idx++;
-            }
+        switch (enc) {
+            case GP::Encoding::NONE:
+                // No register operands — consume nothing (any trailing tokens are an error)
+                break;
+            case GP::Encoding::RD:
+                // Rd only
+                if (idx >= tokens.size() || tokens[idx].kind == TokenKind::Newline ||
+                    tokens[idx].kind == TokenKind::EndOfFile)
+                    throw std::runtime_error(base_mnemonic + " requires Rd at line " +
+                                             std::to_string(line_count));
+                if (tokens[idx].kind != TokenKind::Register)
+                    throw std::runtime_error("Expected register for Rd at line " +
+                                             std::to_string(line_count));
+                result.operands.push_back(tokens[idx++]);  // Rd
+                break;
+            case GP::Encoding::RS1_RD:
+            case GP::Encoding::IMM4_RD:
+                // Collect all operand tokens; validation happens in pass 2
+                while (idx < tokens.size() && tokens[idx].kind != TokenKind::Newline &&
+                       tokens[idx].kind != TokenKind::EndOfFile) {
+                    if (tokens[idx].kind != TokenKind::Comma)
+                        result.operands.push_back(tokens[idx]);
+                    idx++;
+                }
+                break;
         }
         return result;
     }
@@ -1142,22 +1153,36 @@ uint16_t Assembler::encodeInstruction(const ParsedInstruction& instr,
         }
 
         case Format::GP: {
-            uint8_t opcode = Encoder::getGPOpcode(instr.mnemonic);
-            uint8_t nregs  = Encoder::getGPNumRegs(instr.mnemonic);
+            uint8_t opcode    = Encoder::getGPOpcode(instr.mnemonic);
+            GP::Encoding enc  = Encoder::getGPEncoding(instr.mnemonic);
             uint8_t rs1 = 0, rd = 0;
 
-            if (nregs == 0) {
-                if (!instr.operands.empty()) err(instr.mnemonic + " takes no operands");
-            } else if (nregs == 1) {
-                if (instr.operands.size() < 1) err(instr.mnemonic + " requires Rd");
-                if (instr.operands[0].kind != TokenKind::Register) err("Expected register for Rd");
-                rd = instr.operands[0].int_value;
-            } else {
-                if (instr.operands.size() < 2) err(instr.mnemonic + " requires Rs1, Rd");
-                if (instr.operands[0].kind != TokenKind::Register) err("Expected register for Rs1");
-                if (instr.operands[1].kind != TokenKind::Register) err("Expected register for Rd");
-                rs1 = instr.operands[0].int_value;
-                rd  = instr.operands[1].int_value;
+            switch (enc) {
+                case GP::Encoding::NONE:
+                    if (!instr.operands.empty()) err(instr.mnemonic + " takes no operands");
+                    break;
+                case GP::Encoding::RD:
+                    if (instr.operands.size() < 1) err(instr.mnemonic + " requires Rd");
+                    if (instr.operands[0].kind != TokenKind::Register) err("Expected register for Rd");
+                    rd = instr.operands[0].int_value;
+                    break;
+                case GP::Encoding::RS1_RD:
+                    if (instr.operands.size() < 2) err(instr.mnemonic + " requires Rs1, Rd");
+                    if (instr.operands[0].kind != TokenKind::Register) err("Expected register for Rs1");
+                    if (instr.operands[1].kind != TokenKind::Register) err("Expected register for Rd");
+                    rs1 = instr.operands[0].int_value;
+                    rd  = instr.operands[1].int_value;
+                    break;
+                case GP::Encoding::IMM4_RD:
+                    if (instr.operands.size() < 2) err(instr.mnemonic + " requires #imm4, Rd");
+                    if (instr.operands[0].kind != TokenKind::ImmediateAbs)
+                        err("Expected immediate for " + instr.mnemonic + " shift count");
+                    if (instr.operands[1].kind != TokenKind::Register) err("Expected register for Rd");
+                    if (instr.operands[0].int_value > 15)
+                        err("Immediate shift count out of range (0–15)");
+                    rs1 = static_cast<uint8_t>(instr.operands[0].int_value);
+                    rd  = instr.operands[1].int_value;
+                    break;
             }
             return Encoder::encodeGP(opcode, rs1, rd);
         }
@@ -1215,13 +1240,21 @@ uint16_t Assembler::encodeInstruction(const ParsedInstruction& instr,
                 err("Expected @label or @offset");
             }
 
-            if (!elf_mode && (raw_offset < -32 || raw_offset > 31))
-                err("PC-relative offset out of range [-32, 31]");
-
             // JUMP is a pseudo-instruction aliased to MOVE
             const std::string& ls_mnemonic = (instr.mnemonic == "JUMP") ? "MOVE" : instr.mnemonic;
             uint8_t opcode = Encoder::getLSOpcode(ls_mnemonic);
-            return Encoder::encodeLSPCRel(opcode, static_cast<int8_t>(raw_offset), rd);
+
+            if (isJumpMnemonic(instr.mnemonic) && instr.mnemonic != "JUMP") {
+                // Conditional JUMP.* in Format 01: 10-bit signed offset, Rd implicit = R15
+                if (!elf_mode && (raw_offset < -511 || raw_offset > 511))
+                    err("PC-relative offset out of range [-511, 511] for conditional jump");
+                return Encoder::encodeLSPCRelJump(opcode, static_cast<int16_t>(raw_offset));
+            } else {
+                // All other LS PC-relative instructions: 6-bit signed offset
+                if (!elf_mode && (raw_offset < -32 || raw_offset > 31))
+                    err("PC-relative offset out of range [-32, 31]");
+                return Encoder::encodeLSPCRel(opcode, static_cast<int8_t>(raw_offset), rd);
+            }
         }
     }
 

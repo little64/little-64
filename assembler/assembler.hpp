@@ -49,8 +49,9 @@ public:
     };
 
     enum class RelocType : uint32_t {
-        PCREL6 = 1,
-        ABS64 = 2,
+        PCREL6  = 1,
+        ABS64   = 2,
+        PCREL10 = 3,  // 10-bit PC-relative offset for JUMP.* opcodes in Format 01
     };
 
     struct RelocEntry {

@@ -152,6 +152,8 @@ std::optional<std::vector<uint16_t>> Linker::linkObjects(const std::vector<std::
                 needed = 2;
             } else if (r.type == 2) {
                 needed = 8;
+            } else if (r.type == 3) {
+                needed = 2;
             } else {
                 if (err) err->message = "Unsupported relocation type";
                 return std::nullopt;
@@ -196,6 +198,29 @@ std::optional<std::vector<uint16_t>> Linker::linkObjects(const std::vector<std::
                 // 0xF00F would incorrectly zero opcode bits [11:10], corrupting all opcodes
                 // whose lower two bits are non-zero (STORE, PUSH, POP, JUMP.Z, JUMP.S, etc.).
                 uint16_t new_instr = (instr & 0xFC0F) | ((uint16_t)(rel & 0x3F) << 4);
+                linked_text[patch_addr] = new_instr & 0xFF;
+                linked_text[patch_addr+1] = (new_instr >> 8) & 0xFF;
+            } else if (r.type == 3) {
+                // PCREL10: patch the 10-bit signed PC-relative offset field in a JUMP.* LS_PCREL instruction.
+                // Encoding: bits[15:14]=01, bits[13:10]=opcode, bits[9:0]=offset.
+                if (patch_addr + 2 > linked_text.size()) {
+                    if (err) err->message = "PCREL10 patch out of range";
+                    return std::nullopt;
+                }
+                uint16_t instr = (uint16_t)linked_text[patch_addr] | ((uint16_t)linked_text[patch_addr+1] << 8);
+                int64_t target = (int64_t)sym_addr + r.addend;
+                int64_t diff = target - ((int64_t)patch_addr + 2);
+                if (diff % 2 != 0) {
+                    if (err) err->message = "PCREL10 target not instruction aligned";
+                    return std::nullopt;
+                }
+                int64_t rel = diff / 2;
+                if (rel < -511 || rel > 511) {
+                    if (err) err->message = "PCREL10 reloc out of range";
+                    return std::nullopt;
+                }
+                // Mask 0xFC00 keeps bits[15:10] (format + opcode), clears bits[9:0] (the 10-bit offset).
+                uint16_t new_instr = (instr & 0xFC00) | ((uint16_t)(rel & 0x3FF));
                 linked_text[patch_addr] = new_instr & 0xFF;
                 linked_text[patch_addr+1] = (new_instr >> 8) & 0xFF;
             } else {
