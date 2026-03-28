@@ -12,3 +12,7 @@ subprojects/*
 !subprojects/*.wrap
 
 compile_commands.json
+
+# Compiled compiler binaries
+compilers/bin/*
+!compilers/bin/.keep
