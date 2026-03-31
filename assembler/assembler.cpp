@@ -130,8 +130,8 @@ static const std::unordered_map<std::string, PseudoDef> pseudo_table = {
     //   JUMP @+4      ; skip the 8-byte constant and continue
     //   .long imm64
     {"LDI64", {2, [](const std::vector<Token>& ops, uint16_t addr, int line) {
-        if (ops[0].kind != TokenKind::ImmediateAbs)
-            throw std::runtime_error("LDI64 requires a 64-bit immediate value");
+        if (ops[0].kind != TokenKind::ImmediateAbs && ops[0].kind != TokenKind::Ident)
+            throw std::runtime_error("LDI64 requires a 64-bit immediate value or symbol");
         if (ops[1].kind != TokenKind::Register)
             throw std::runtime_error("LDI64 requires a destination register");
 
@@ -161,8 +161,14 @@ static const std::unordered_map<std::string, PseudoDef> pseudo_table = {
 
         DataDirective dd;
         dd.kind = DataDirective::Kind::Long;
-        dd.value = ops[0].int_value;
         dd.line = line;
+        if (ops[0].kind == TokenKind::Ident) {
+            dd.isSymbol = true;
+            dd.symbol = ops[0].lexeme;
+        } else {
+            dd.isSymbol = false;
+            dd.value = ops[0].int_value;
+        }
 
         return std::vector<Assembler::EmitItem>{
             makeInstrItem(load),

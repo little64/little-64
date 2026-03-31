@@ -49,9 +49,12 @@ public:
     };
 
     enum class RelocType : uint32_t {
-        PCREL6  = 1,
-        ABS64   = 2,
-        PCREL10 = 3,  // 10-bit PC-relative offset for JUMP.* opcodes in Format 01
+        // Values match the LLVM ELF relocation numbers (ELFRelocs/Little64.def)
+        // so that assembler-emitted objects are compatible with LLVM-compiled objects.
+        ABS64   = 1,  // R_LITTLE64_ABS64  — 64-bit absolute address
+        ABS32   = 2,  // R_LITTLE64_ABS32  — 32-bit absolute address (reserved, unused by assembler)
+        PCREL6  = 3,  // R_LITTLE64_PCREL6  — 6-bit PC-relative instruction-unit offset
+        PCREL10 = 4,  // R_LITTLE64_PCREL10 — 10-bit PC-relative offset for JUMP.* opcodes
     };
 
     struct RelocEntry {

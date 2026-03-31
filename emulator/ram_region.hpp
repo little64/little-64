@@ -6,6 +6,8 @@
 class RamRegion : public MemoryRegion {
 public:
     RamRegion(uint64_t base, uint64_t size, std::string_view name = "RAM");
+    // Constructor that pre-populates the first bytes with init_data, padded to total_size.
+    RamRegion(uint64_t base, std::vector<uint8_t> init_data, uint64_t total_size, std::string_view name = "RAM");
 
     uint8_t read8(uint64_t addr) override;
     void    write8(uint64_t addr, uint8_t val) override;

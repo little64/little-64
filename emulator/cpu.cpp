@@ -1,8 +1,14 @@
 #include "cpu.hpp"
 #include "opcodes.hpp"
 #include "ram_region.hpp"
-#include "rom_region.hpp"
 #include <memory>
+#include <algorithm>
+#include <cstring>
+#include <elf.h>
+
+#ifndef EM_LITTLE64
+#define EM_LITTLE64 0x4C36
+#endif
 
 Little64CPU::Little64CPU() {
 }
@@ -326,7 +332,72 @@ void Little64CPU::_dispatchGP(const Instruction& instr) {
     }
 }
 
-void Little64CPU::loadProgram(const std::vector<uint16_t>& words, uint64_t base) {
+bool Little64CPU::loadProgramElf(const std::vector<uint8_t>& elf_bytes, uint64_t base) {
+    if (elf_bytes.size() < sizeof(Elf64_Ehdr))
+        return false;
+
+    const Elf64_Ehdr* ehdr = reinterpret_cast<const Elf64_Ehdr*>(elf_bytes.data());
+    if (ehdr->e_ident[EI_MAG0] != ELFMAG0 || ehdr->e_ident[EI_MAG1] != ELFMAG1 ||
+        ehdr->e_ident[EI_MAG2] != ELFMAG2 || ehdr->e_ident[EI_MAG3] != ELFMAG3) {
+        return false;
+    }
+    if (ehdr->e_ident[EI_CLASS] != ELFCLASS64 || ehdr->e_ident[EI_DATA] != ELFDATA2LSB)
+        return false;
+    if (ehdr->e_machine != EM_LITTLE64)
+        return false;
+    if (ehdr->e_phoff + ehdr->e_phnum * ehdr->e_phentsize > elf_bytes.size())
+        return false;
+
+    uint64_t max_addr = 0;
+    for (uint16_t i = 0; i < ehdr->e_phnum; ++i) {
+        const Elf64_Phdr* ph = reinterpret_cast<const Elf64_Phdr*>(
+            elf_bytes.data() + ehdr->e_phoff + i * ehdr->e_phentsize);
+        if (ph->p_type != PT_LOAD) continue;
+        max_addr = std::max(max_addr, ph->p_vaddr + ph->p_memsz);
+    }
+
+    constexpr uint64_t PAGE = 4096;
+    uint64_t alloc_size = ((max_addr + PAGE - 1) / PAGE) * PAGE;
+    if (alloc_size == 0) alloc_size = PAGE;
+
+    std::vector<uint8_t> bytes(alloc_size, 0);
+
+    for (uint16_t i = 0; i < ehdr->e_phnum; ++i) {
+        const Elf64_Phdr* ph = reinterpret_cast<const Elf64_Phdr*>(
+            elf_bytes.data() + ehdr->e_phoff + i * ehdr->e_phentsize);
+        if (ph->p_type != PT_LOAD) continue;
+        if (ph->p_offset + ph->p_filesz > elf_bytes.size())
+            return false;
+        if (ph->p_vaddr + ph->p_memsz > bytes.size())
+            return false;
+
+        std::memcpy(bytes.data() + ph->p_vaddr,
+                    elf_bytes.data() + ph->p_offset,
+                    static_cast<size_t>(ph->p_filesz));
+        if (ph->p_memsz > ph->p_filesz) {
+            std::fill(bytes.begin() + ph->p_vaddr + ph->p_filesz,
+                      bytes.begin() + ph->p_vaddr + ph->p_memsz,
+                      0);
+        }
+    }
+
+    constexpr uint64_t RAM_SIZE = 64 * 1024 * 1024;
+    constexpr uint64_t SERIAL_BASE = 0xFFFFFFFFFFFF0000ULL;
+    uint64_t total_size = alloc_size + RAM_SIZE;
+
+    _bus.clearRegions();
+    _bus.addRegion(std::make_unique<RamRegion>(base, std::move(bytes), total_size, "MEM"));
+    _bus.addRegion(std::make_unique<SerialDevice>(SERIAL_BASE, "SERIAL"));
+
+    registers = {};
+    registers.regs[13] = base + total_size - 8;
+    registers.regs[15] = base + ehdr->e_entry;
+    isRunning = true;
+
+    return true;
+}
+
+void Little64CPU::loadProgram(const std::vector<uint16_t>& words, uint64_t base, uint64_t entry_offset) {
     // Convert 16-bit words to bytes (little-endian)
     std::vector<uint8_t> bytes;
     bytes.reserve(words.size() * 2);
@@ -335,23 +406,28 @@ void Little64CPU::loadProgram(const std::vector<uint16_t>& words, uint64_t base)
         bytes.push_back((w >> 8) & 0xFF);
     }
 
-    // Align ROM size up to 4K boundary
+    // Round the program image up to a 4K page so the RAM starts on a clean boundary.
     constexpr uint64_t PAGE = 4096;
-    uint64_t rom_size = (bytes.size() + PAGE - 1) / PAGE * PAGE;
-    if (rom_size == 0) rom_size = PAGE;
-    bytes.resize(rom_size, 0);
+    uint64_t prog_size = (bytes.size() + PAGE - 1) / PAGE * PAGE;
+    if (prog_size == 0) prog_size = PAGE;
 
-    constexpr uint64_t RAM_SIZE = 64 * 1024 * 1024;  // 64MB
+    // Use a single writable RAM region that covers both the program image and the
+    // working RAM.  A separate RomRegion would silently discard writes to .data /
+    // .bss, breaking any C/C++ program that modifies global or static variables.
+    constexpr uint64_t RAM_SIZE    = 64 * 1024 * 1024;  // 64 MB
     constexpr uint64_t SERIAL_BASE = 0xFFFFFFFFFFFF0000ULL;
+    uint64_t total_size = prog_size + RAM_SIZE;
 
     _bus.clearRegions();
-    _bus.addRegion(std::make_unique<RomRegion>(base, std::move(bytes), "ROM"));
-    _bus.addRegion(std::make_unique<RamRegion>(base + rom_size, RAM_SIZE, "RAM"));
+    _bus.addRegion(std::make_unique<RamRegion>(base, std::move(bytes), total_size, "MEM"));
     _bus.addRegion(std::make_unique<SerialDevice>(SERIAL_BASE, "SERIAL"));
 
-    // Reset CPU state
+    // Reset CPU state.
     registers = {};
-    registers.regs[15] = base;
+    // R13 is the stack pointer.  Initialise it to the top of the memory region
+    // (stacks grow downward) so that C/C++ function prologues work correctly.
+    registers.regs[13] = base + total_size - 8;
+    registers.regs[15] = base + entry_offset;
     isRunning = true;
 }
 

@@ -241,7 +241,12 @@ public:
 
     // Load program words as a ROM region (4K-aligned) at base address.
     // Creates ROM + 64MB RAM + serial device. Resets CPU state.
-    void loadProgram(const std::vector<uint16_t>& words, uint64_t base = 0);
+    // `entry_offset` specifies the start PC relative to base (defaults to 0).
+    void loadProgram(const std::vector<uint16_t>& words, uint64_t base = 0, uint64_t entry_offset = 0);
+
+    // Load a linked ELF image into RAM at base address. Entry point is taken from e_entry.
+    // Returns true if loading succeeded, false on error.
+    bool loadProgramElf(const std::vector<uint8_t>& elf_bytes, uint64_t base = 0);
 
     // Resets basic CPU state. Does not modify memory or devices.
     void reset() {

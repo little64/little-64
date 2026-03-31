@@ -102,7 +102,10 @@ endforeach
 
 # --- Project library and runner ---
 project_lib = static_library('little-64-project-lib',
-  ['project/project.cpp'],
+  [
+    'project/project.cpp',
+    'project/compiler.cpp',
+  ],
   include_directories : [include_directories('project')],
   install : false,
 )

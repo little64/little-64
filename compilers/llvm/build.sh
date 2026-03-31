@@ -31,6 +31,16 @@ ACTION="${2:-build}"
 # Tools needed for C/C++ work and debugging
 LLVM_TOOLS=(clang llc llvm-objdump llvm-mc lld)
 
+# Tools to copy
+COPY_TOOLS=(
+    clang
+    llc
+    llvm-objdump
+    llvm-mc
+    lld
+    ld.lld
+)
+
 if [ ! -d "$LLVM_SOURCE_DIR" ]; then
     echo "Error: LLVM source not found at: $LLVM_SOURCE_DIR"
     echo "Please ensure the llvm-project submodule is initialized and populated."
@@ -64,12 +74,14 @@ case "$ACTION" in
         cmake --build "$BUILD_DIR" --target "${LLVM_TOOLS[@]}" -- -j"$(nproc)"
 
         echo ""
-        echo "Copying binaries to: $BIN_OUTPUT_DIR"
-        for tool in "${LLVM_TOOLS[@]}"; do
+        echo "Copying and stripping binaries to: $BIN_OUTPUT_DIR"
+        for tool in "${COPY_TOOLS[@]}"; do
             src="$BUILD_DIR/bin/$tool"
+            dst="$BIN_OUTPUT_DIR/$tool"
             if [ -f "$src" ]; then
-                cp "$src" "$BIN_OUTPUT_DIR/$tool"
-                echo "  ✓ $tool"
+                strip -o "$dst" "$src"
+                size=$(du -sh "$dst" | cut -f1)
+                echo "  ✓ $tool ($size)"
             else
                 echo "  Warning: expected binary not found: $src"
             fi

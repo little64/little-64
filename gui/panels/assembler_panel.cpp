@@ -1,6 +1,7 @@
 #include "assembler_panel.hpp"
 #include "../app.hpp"
 #include "assembler.hpp"
+#include "compiler.hpp"
 #include "disassembler.hpp"
 #include "linker.hpp"
 #include "project.hpp"
@@ -102,6 +103,18 @@ std::unique_ptr<TextEditor> AssemblerPanel::makeConfiguredEditor() {
     return ed;
 }
 
+static std::string fileExtension(const std::string& path) {
+    auto dot = path.find_last_of('.');
+    if (dot == std::string::npos) return {};
+    std::string ext = path.substr(dot + 1);
+    for (auto& c : ext) c = static_cast<char>(std::tolower(c));
+    return ext;
+}
+
+static bool isCSource(const std::string& ext) {
+    return ext == "c" || ext == "cpp" || ext == "cc";
+}
+
 std::string AssemblerPanel::dialogDefaultDir() const {
     // Use active tab's directory, then project directory, then cwd
     if (!tabs_.empty() && !tabs_[active_tab_]->path.empty()) {
@@ -128,8 +141,9 @@ void AssemblerPanel::syncCurrentFile() {
     }
 }
 
-void AssemblerPanel::loadProgramIntoState(const std::vector<uint16_t>& program) {
-    state_.cpu.loadProgram(program);
+void AssemblerPanel::loadProgramIntoState(const std::vector<uint16_t>& program,
+                                           uint64_t entry_offset) {
+    state_.cpu.loadProgram(program, 0, entry_offset);
     state_.disassembly = Disassembler::disassembleBuffer(program.data(), program.size(), 0);
 }
 
@@ -352,7 +366,7 @@ void AssemblerPanel::saveProject() {
 }
 
 void AssemblerPanel::addFileToProject() {
-    nfdfilteritem_t filters[] = {{"Assembly Files", "asm,s"}};
+    nfdfilteritem_t filters[] = {{"Assembly/C/C++ Files", "asm,s,c,cpp,cc"}};
     nfdchar_t* out = nullptr;
     std::string dir = dialogDefaultDir();
     nfdresult_t res = NFD_OpenDialog(&out, filters, 1,
@@ -365,7 +379,7 @@ void AssemblerPanel::addFileToProject() {
 }
 
 void AssemblerPanel::createNewFileInProject() {
-    nfdfilteritem_t filters[] = {{"Assembly Files", "asm"}};
+    nfdfilteritem_t filters[] = {{"Assembly/C/C++ Files", "asm,c,cpp,cc"}};
     nfdchar_t* out = nullptr;
     std::string dir = dialogDefaultDir();
     nfdresult_t res = NFD_SaveDialog(&out, filters, 1,
@@ -406,19 +420,38 @@ void AssemblerPanel::confirmDeleteTabFile(int idx) {
 // Build
 // ===========================================================================
 
+static std::optional<std::vector<uint8_t>> compileOrAssembleSource(
+    const std::string& source_path,
+    const std::string& source_text,
+    const std::string& opt_level,
+    std::string& error) {
+    std::string ext = fileExtension(source_path);
+    if (isCSource(ext)) {
+        bool is_cpp = (ext == "cpp" || ext == "cc");
+        auto compiled = Compiler::compileSourceText(source_text, source_path, is_cpp, opt_level, error);
+        if (!compiled) return std::nullopt;
+        return compiled;
+    }
+
+    try {
+        Assembler assembler;
+        return assembler.assembleElf(source_text);
+    } catch (const std::exception& e) {
+        error = e.what();
+        return std::nullopt;
+    }
+}
+
 void AssemblerPanel::assembleActiveTab() {
     if (tabs_.empty()) return;
     state_.assemble_error.clear();
-    try {
-        Assembler assembler;
-        std::string source = activeTab().editor->GetText();
-        auto output = assembler.assemble(source);
-        loadProgramIntoState(output);
-        activeTab().editor->SetErrorMarkers({});
-    } catch (const std::exception& e) {
-        state_.assemble_error = std::string("Error: ") + e.what();
+    std::string source = activeTab().editor->GetText();
+    std::string path = activeTab().path;
+    if (path.empty()) path = "untitled.asm";
+    auto output = compileOrAssembleSource(path, source, opt_level, state_.assemble_error);
+    if (!output) {
         TextEditor::ErrorMarkers markers;
-        std::string msg = e.what();
+        std::string msg = state_.assemble_error;
         auto pos = msg.rfind("at line ");
         if (pos != std::string::npos) {
             try {
@@ -427,8 +460,18 @@ void AssemblerPanel::assembleActiveTab() {
             } catch (...) {}
         }
         activeTab().editor->SetErrorMarkers(markers);
+        return;
     }
+    LinkError link_err;
+    auto linked = Linker::linkObjects({*output}, &link_err);
+    if (!linked) {
+        state_.assemble_error = "Link error: " + link_err.message;
+        return;
+    }
+    loadProgramIntoState(*linked);
+    activeTab().editor->SetErrorMarkers({});
 }
+
 
 void AssemblerPanel::buildProject() {
     if (tabs_.empty()) return;
@@ -436,17 +479,19 @@ void AssemblerPanel::buildProject() {
 
     for (auto& t : tabs_) t->editor->SetErrorMarkers({});
 
-    Assembler assembler;
     std::vector<std::vector<uint8_t>> objects;
 
     for (int i = 0; i < (int)tabs_.size(); ++i) {
         std::string source = tabs_[i]->editor->GetText();
-        try {
-            objects.push_back(assembler.assembleElf(source));
-        } catch (const std::exception& e) {
-            state_.assemble_error = tabs_[i]->displayName() + ": " + e.what();
+        std::string source_path = tabs_[i]->path;
+        if (source_path.empty())
+            source_path = (isCSource(fileExtension(source_path)) ? "untitled.c" : "untitled.asm");
+
+        auto obj = compileOrAssembleSource(source_path, source, opt_level, state_.assemble_error);
+        if (!obj) {
+            state_.assemble_error = tabs_[i]->displayName() + ": " + state_.assemble_error;
             TextEditor::ErrorMarkers markers;
-            std::string msg = e.what();
+            std::string msg = state_.assemble_error;
             auto pos = msg.rfind("at line ");
             if (pos != std::string::npos) {
                 try {
@@ -459,6 +504,7 @@ void AssemblerPanel::buildProject() {
             request_switch_to_ = i;
             return;
         }
+        objects.push_back(std::move(*obj));
     }
 
     LinkError link_err;
@@ -467,7 +513,8 @@ void AssemblerPanel::buildProject() {
         state_.assemble_error = "Link error: " + link_err.message;
         return;
     }
-    loadProgramIntoState(*linked);
+    uint64_t entry_offset = link_err.has_entry ? link_err.entry_address : 0;
+    loadProgramIntoState(*linked, entry_offset);
 }
 
 // ===========================================================================
@@ -475,7 +522,7 @@ void AssemblerPanel::buildProject() {
 // ===========================================================================
 
 void AssemblerPanel::openFileDialog() {
-    nfdfilteritem_t filters[] = {{"Assembly Files", "asm,s"}};
+    nfdfilteritem_t filters[] = {{"Assembly/C/C++ Files", "asm,s,c,cpp,cc"}};
     nfdchar_t* out = nullptr;
     std::string dir = dialogDefaultDir();
     nfdresult_t res = NFD_OpenDialog(&out, filters, 1,
@@ -524,6 +571,29 @@ void AssemblerPanel::renderToolbar() {
         if (ImGui::Button("Remove"))       removeTabFromProject(active_tab_);
         ImGui::SameLine();
         if (ImGui::Button("Delete"))       confirmDeleteTabFile(active_tab_);
+    }
+
+    // Optimization selection (always visible)
+    ImGui::SameLine();
+    ImGui::Text("Opt:");
+    ImGui::SameLine();
+    const char* opt_items[] = {"0", "1", "2", "3", "s", "z"};
+    int opt_current = 0;
+    for (int i = 0; i < IM_ARRAYSIZE(opt_items); ++i) {
+        if (opt_level == opt_items[i]) {
+            opt_current = i;
+            break;
+        }
+    }
+    if (ImGui::BeginCombo("##opt", opt_items[opt_current])) {
+        for (int i = 0; i < IM_ARRAYSIZE(opt_items); ++i) {
+            bool selected = (opt_current == i);
+            if (ImGui::Selectable(opt_items[i], selected)) {
+                opt_level = opt_items[i];
+            }
+            if (selected) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
     }
 
     // Font size buttons (always visible, right side)
@@ -687,15 +757,19 @@ void AssemblerPanel::render() {
         if (in_project) {
             if (ImGui::Button("Build Project", ImVec2(130, 0))) buildProject();
         } else {
-            if (ImGui::Button("Assemble", ImVec2(100, 0))) assembleActiveTab();
+            if (ImGui::Button("Build", ImVec2(100, 0))) assembleActiveTab();
         }
 
         // Error message
         if (!state_.assemble_error.empty()) {
-            ImGui::SameLine();
+            ImGui::Spacing();
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
             ImGui::TextWrapped("%s", state_.assemble_error.c_str());
             ImGui::PopStyleColor();
+
+            if (ImGui::Button("Copy Error")) {
+                ImGui::SetClipboardText(state_.assemble_error.c_str());
+            }
         }
     }
     ImGui::End();

@@ -64,7 +64,9 @@ private:
     // -----------------------------------------------------------------------
     void assembleActiveTab();
     void buildProject();
-    void loadProgramIntoState(const std::vector<uint16_t>& program);
+    void loadProgramIntoState(const std::vector<uint16_t>& program, uint64_t entry_offset = 0);
+
+    std::string opt_level = "0";
 
     // -----------------------------------------------------------------------
     // Rendering helpers

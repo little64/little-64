@@ -4,3 +4,6 @@
 [submodule "compilers/lily-cc/lily-cc"]
 	path = compilers/lily-cc/lily-cc
 	url = https://github.com/robotman2412/lily-cc.git
+[submodule "compilers/llvm/llvm-project"]
+	path = compilers/llvm/llvm-project
+	url = ./compilers/llvm/llvm-project

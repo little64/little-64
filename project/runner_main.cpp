@@ -1,4 +1,5 @@
 #include "project.hpp"
+#include "compiler.hpp"
 #include "assembler.hpp"
 #include "linker.hpp"
 #include "cpu.hpp"
@@ -43,10 +44,29 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // Assemble each source as an ELF object
+    // Assemble or compile each source as an ELF object
     Assembler assembler;
     std::vector<std::vector<uint8_t>> objects;
     for (const auto& src_path : proj.sources) {
+        std::string ext;
+        auto dot = src_path.find_last_of('.') ;
+        if (dot != std::string::npos) {
+            ext = src_path.substr(dot + 1);
+            std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c){ return std::tolower(c); });
+        }
+
+        if (ext == "c" || ext == "cpp" || ext == "cc") {
+            std::string compile_err;
+            bool is_cpp = (ext == "cpp" || ext == "cc");
+            auto compiled = Compiler::compileSourceFile(src_path, is_cpp, "0", compile_err);
+            if (!compiled) {
+                std::cerr << "Compiler error in " << src_path << ": " << compile_err << "\n";
+                return 1;
+            }
+            objects.push_back(std::move(*compiled));
+            continue;
+        }
+
         std::ifstream f(src_path);
         if (!f.is_open()) {
             std::cerr << "Cannot open source: " << src_path << "\n";
@@ -64,20 +84,37 @@ int main(int argc, char* argv[]) {
 
     // Link
     LinkError link_err;
-    auto linked = Linker::linkObjects(objects, &link_err);
-    if (!linked) {
-        std::cerr << "Link error: " << link_err.message << "\n";
-        return 1;
+    bool useElfLoader = true;
+    const char* loadElfEnv = std::getenv("LITTLE64_LOAD_ELF");
+    if (loadElfEnv && loadElfEnv[0] == '0')
+        useElfLoader = false;
+
+    Little64CPU cpu;
+
+    if (useElfLoader) {
+        auto elf_image = Linker::linkObjectsElf(objects, &link_err);
+        if (!elf_image) {
+            std::cerr << "Link error (ELF): " << link_err.message << "\n";
+            return 1;
+        }
+        if (!cpu.loadProgramElf(*elf_image, 0)) {
+            std::cerr << "CPU ELF load failed\n";
+            return 1;
+        }
+    } else {
+        auto linked = Linker::linkObjects(objects, &link_err);
+        if (!linked) {
+            std::cerr << "Link error: " << link_err.message << "\n";
+            return 1;
+        }
+        uint64_t entry_offset = link_err.has_entry ? link_err.entry_address : 0;
+        cpu.loadProgram(*linked, 0, entry_offset);
     }
 
     if (proj.expectations.empty()) {
         std::cout << "Assembled and linked successfully (no EXPECT assertions).\n";
         return 0;
     }
-
-    // Run in the emulator
-    Little64CPU cpu;
-    cpu.loadProgram(*linked);
 
     uint64_t cycles = 0;
     while (cpu.isRunning && cycles < max_cycles) {

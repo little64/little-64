@@ -319,7 +319,7 @@ static void test_elf_relocations() {
 
     uint32_t sym_idx = static_cast<uint32_t>(r_info >> 32);
     uint32_t reltype = static_cast<uint32_t>(r_info & 0xFFFFFFFF);
-    CHECK_EQ(reltype, 1, "Relocation type is PCREL6");
+    CHECK_EQ(reltype, 3, "Relocation type is PCREL6");
 
     CHECK_EQ(sym_idx > 0, true, "Relocation symbol index should be nonzero");
 
@@ -430,7 +430,7 @@ static void test_elf_extern_jal_reloc() {
     uint64_t r_info = read_u64(elf, rela_offset + 8);
     uint32_t sym_idx = static_cast<uint32_t>(r_info >> 32);
     uint32_t r_type = static_cast<uint32_t>(r_info & 0xFFFFFFFF);
-    CHECK_EQ(r_type, 1, "Relocation type PCREL6");
+    CHECK_EQ(r_type, 3, "Relocation type PCREL6");
 
     // Symbol i in symtab (skipping null entry) should include ext_fn.
     uint64_t sym_entry_off = symtab_offset + (sym_idx * 24);
