@@ -16,3 +16,4 @@ compile_commands.json
 # Compiled compiler binaries
 compilers/bin/*
 !compilers/bin/.keep
+compilers/llvm/build
