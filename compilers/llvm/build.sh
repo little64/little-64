@@ -29,7 +29,7 @@ BIN_OUTPUT_DIR="$SCRIPT_DIR/../bin"
 ACTION="${2:-build}"
 
 # Tools needed for C/C++ work and debugging
-LLVM_TOOLS=(clang llc llvm-objdump llvm-mc lld)
+LLVM_TOOLS=(clang llc llvm-objdump llvm-mc lld llvm-readelf llvm-readobj)
 
 # Tools to copy
 COPY_TOOLS=(
@@ -39,6 +39,8 @@ COPY_TOOLS=(
     llvm-mc
     lld
     ld.lld
+    llvm-readelf
+    llvm-readobj
 )
 
 if [ ! -d "$LLVM_SOURCE_DIR" ]; then

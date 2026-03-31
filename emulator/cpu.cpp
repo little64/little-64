@@ -4,6 +4,7 @@
 #include <memory>
 #include <algorithm>
 #include <cstring>
+#include <iostream>
 #include <elf.h>
 
 #ifndef EM_LITTLE64
@@ -326,13 +327,17 @@ void Little64CPU::_dispatchGP(const Instruction& instr) {
         }
 
         case GP::Opcode::STOP: {
+            std::cerr << "STOP instruction hit. Register state:" << std::endl;
+            for (int i = 0; i < 16; ++i) {
+                std::cerr << "  R" << i << ": 0x" << std::hex << registers.regs[i] << std::dec << std::endl;
+            }
             isRunning = false;
             break;
         }
     }
 }
 
-bool Little64CPU::loadProgramElf(const std::vector<uint8_t>& elf_bytes, uint64_t base) {
+bool Little64CPU::loadProgramElf(const std::vector<uint8_t>& elf_bytes, uint64_t /*base_unused*/) {
     if (elf_bytes.size() < sizeof(Elf64_Ehdr))
         return false;
 
@@ -343,55 +348,55 @@ bool Little64CPU::loadProgramElf(const std::vector<uint8_t>& elf_bytes, uint64_t
     }
     if (ehdr->e_ident[EI_CLASS] != ELFCLASS64 || ehdr->e_ident[EI_DATA] != ELFDATA2LSB)
         return false;
-    if (ehdr->e_machine != EM_LITTLE64)
+    if (ehdr->e_machine != 0x4C36) // EM_LITTLE64
         return false;
     if (ehdr->e_phoff + ehdr->e_phnum * ehdr->e_phentsize > elf_bytes.size())
         return false;
 
+    uint64_t min_addr = UINT64_MAX;
     uint64_t max_addr = 0;
+    bool found_load = false;
+
     for (uint16_t i = 0; i < ehdr->e_phnum; ++i) {
         const Elf64_Phdr* ph = reinterpret_cast<const Elf64_Phdr*>(
             elf_bytes.data() + ehdr->e_phoff + i * ehdr->e_phentsize);
         if (ph->p_type != PT_LOAD) continue;
+        min_addr = std::min(min_addr, ph->p_vaddr);
         max_addr = std::max(max_addr, ph->p_vaddr + ph->p_memsz);
+        found_load = true;
     }
 
-    constexpr uint64_t PAGE = 4096;
-    uint64_t alloc_size = ((max_addr + PAGE - 1) / PAGE) * PAGE;
-    if (alloc_size == 0) alloc_size = PAGE;
+    if (!found_load) return false;
 
-    std::vector<uint8_t> bytes(alloc_size, 0);
+    // Align min_addr down to page boundary
+    constexpr uint64_t PAGE = 4096;
+    uint64_t base_addr = (min_addr / PAGE) * PAGE;
+    uint64_t alloc_size = ((max_addr - base_addr + PAGE - 1) / PAGE) * PAGE;
+
+    std::vector<uint8_t> ram_bytes(alloc_size, 0);
 
     for (uint16_t i = 0; i < ehdr->e_phnum; ++i) {
         const Elf64_Phdr* ph = reinterpret_cast<const Elf64_Phdr*>(
             elf_bytes.data() + ehdr->e_phoff + i * ehdr->e_phentsize);
         if (ph->p_type != PT_LOAD) continue;
-        if (ph->p_offset + ph->p_filesz > elf_bytes.size())
-            return false;
-        if (ph->p_vaddr + ph->p_memsz > bytes.size())
-            return false;
-
-        std::memcpy(bytes.data() + ph->p_vaddr,
+        
+        uint64_t offset_in_ram = ph->p_vaddr - base_addr;
+        std::memcpy(ram_bytes.data() + offset_in_ram,
                     elf_bytes.data() + ph->p_offset,
                     static_cast<size_t>(ph->p_filesz));
-        if (ph->p_memsz > ph->p_filesz) {
-            std::fill(bytes.begin() + ph->p_vaddr + ph->p_filesz,
-                      bytes.begin() + ph->p_vaddr + ph->p_memsz,
-                      0);
-        }
     }
 
-    constexpr uint64_t RAM_SIZE = 64 * 1024 * 1024;
+    constexpr uint64_t RAM_EXTRA = 64 * 1024 * 1024;
     constexpr uint64_t SERIAL_BASE = 0xFFFFFFFFFFFF0000ULL;
-    uint64_t total_size = alloc_size + RAM_SIZE;
+    uint64_t total_ram = alloc_size + RAM_EXTRA;
 
     _bus.clearRegions();
-    _bus.addRegion(std::make_unique<RamRegion>(base, std::move(bytes), total_size, "MEM"));
+    _bus.addRegion(std::make_unique<RamRegion>(base_addr, std::move(ram_bytes), total_ram, "MEM"));
     _bus.addRegion(std::make_unique<SerialDevice>(SERIAL_BASE, "SERIAL"));
 
     registers = {};
-    registers.regs[13] = base + total_size - 8;
-    registers.regs[15] = base + ehdr->e_entry;
+    registers.regs[13] = base_addr + total_ram - 8;
+    registers.regs[15] = ehdr->e_entry;
     isRunning = true;
 
     return true;

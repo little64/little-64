@@ -54,3 +54,38 @@ In Format 00, the instruction encoding is:
 [OPCODE_LS 4b] [OFFSET 2b] [Rs1 4b] [Rd 4b]
 ```
 In Format 01, only `Rd` is available (no `Rs1`); the other bits are the signed PC-relative offset.
+
+## Testing & Verification
+
+### Building the Toolchain
+```bash
+# Rebuild the emulator
+meson compile -C builddir
+
+# Rebuild the LLVM toolchain (clang, lld, etc.)
+bash compilers/build.sh llvm
+```
+
+The built LLVM toolchain binaries are located in `compilers/bin`. The target triple is `little64` or `little64-unknown-unknown`, depending on what you need.
+
+### Running Assembly Tests
+The recommended workflow for testing architectural changes is to write a small assembly program and run it through the full LLVM pipeline:
+
+1. **Write assembly:** Create a `.asm` file (e.g., `test.asm`). Use `.global _start` to define the entry point.
+2. **Assemble:** `compilers/bin/llvm-mc -triple=little64 -filetype=obj test.asm -o test.o`
+3. **Link:** `compilers/bin/ld.lld test.o -o test.elf`
+4. **Disassemble (optional):** `compilers/bin/llvm-objdump -d --triple=little64 test.elf`
+5. **Run:** `builddir/little-64 test.elf`
+
+The `STOP` instruction in the emulator will trigger a full register state dump to `stderr` upon execution, which is useful for verifying program results.
+
+### Running C Tests
+1. **Write C code:** Create a `.c` file (e.g., `test.c`). Define `void _start(void)` as the entry point (use `__attribute__((naked))` for custom startup).
+2. **Compile:** `compilers/bin/clang -target little64 -O0 -c test.c -o test.o`
+3. **Link:** `compilers/bin/ld.lld test.o -o test.elf --entry=_start`
+4. **Verify:** Always disassemble before running to ensure `STOP` or expected instructions are present:
+   `compilers/bin/llvm-objdump -d --triple=little64 test.elf`
+5. **Run:** Use `timeout` to prevent hangs if the program doesn't hit a `STOP` instruction:
+   `timeout 5s builddir/little-64 test.elf`
+
+Inline assembly for `STOP`: `__asm__ volatile ("STOP");`

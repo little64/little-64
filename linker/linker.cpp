@@ -8,6 +8,7 @@
 #include <vector>
 #include <cstring>
 #include <map>
+#include <array>
 
 #if defined(_WIN32)
 #include <io.h>
@@ -648,6 +649,13 @@ static std::optional<std::vector<uint16_t>> linkObjectsInternal(const std::vecto
             } else { // R_PCREL10
                 if (patch_addr + 2 > linked_text.size()) { if (err) err->message = "PCREL10 patch out of range"; return false; }
                 uint16_t instr = (uint16_t)linked_text[patch_addr] | ((uint16_t)linked_text[patch_addr+1] << 8);
+                // Verify this is actually a JUMP instruction (format 01, opcode 11-15)
+                uint8_t fmt = (instr >> 14) & 0x3;
+                uint8_t op  = (instr >> 10) & 0xF;
+                if (fmt != 1 || op < 11) {
+                    if (err) err->message = "R_PCREL10 applied to non-JUMP instruction";
+                    return false;
+                }
                 int64_t target  = (int64_t)sym_addr + rel.addend;
                 int64_t diff    = target - ((int64_t)patch_addr + 2);
                 if (diff % 2 != 0) { if (err) err->message = "PCREL10 target not instruction aligned"; return false; }

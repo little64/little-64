@@ -6,10 +6,10 @@ This directory contains ports of various C compilers and language tools to the L
 
 | Compiler | Language | Status | Backend | Notes |
 |----------|----------|--------|---------|-------|
+| LLVM | C/C++ | **Working** | — | Production compiler |
 | lily-cc | C | **In Progress** | [lily-cc/](lily-cc/) | Active development, working Little-64 backend |
 | Chibicc | C | Not started | — | Educational compiler (future comparison) |
 | TCC | C | Not started | — | Tiny C Compiler (future comparison) |
-| LLVM | C/C++ | Not started | — | Production compiler (future comparison) |
 
 ## Building
 

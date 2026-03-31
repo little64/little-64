@@ -1,6 +1,16 @@
 #pragma once
 
-struct AppState;
+#include "../app.hpp"
+#include <imgui.h>
+#include <vector>
+#include <string>
+
+struct MemoryRegionInfo {
+    uint64_t base;
+    uint64_t size;
+    std::string name;
+    bool is_serial;
+};
 
 class MemoryMapPanel {
 public:
@@ -9,4 +19,10 @@ public:
 
 private:
     AppState& state;
+    std::vector<MemoryRegionInfo> regions;
+    int selected_region;
+    bool show_serial_details;
+    void populateRegions();
+    void renderRegionDetails(const MemoryRegionInfo& region);
+    void renderSerialDetails();
 };

@@ -2,16 +2,7 @@
 
 #define SERIAL_BASE ((volatile unsigned char *)0xFFFFFFFFFFFF0000ULL)
 
-static const char message[] = "Hello, world!";
-
-void work(void) {
-    const unsigned char *p = (const unsigned char *)message;
-    while (*p) {
-        *SERIAL_BASE = *p;
-        p++;
-    }
-    for (;;) ;
-}
+static const char message[] = "GHello, world!";
 
 __attribute__((naked))
 void _start(void) {
@@ -26,3 +17,16 @@ void _start(void) {
         "MOVE R1, PC"
     );
 }
+
+
+void work(void) {
+    const unsigned char *p = (const unsigned char *)message;
+    while (*p) {
+        *SERIAL_BASE = *p;
+        p++;
+    }
+    __asm__ volatile ("STOP");
+}
+
+
+
