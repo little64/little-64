@@ -2,17 +2,24 @@
 
 Date: 2026-04-01
 
+## Status Snapshot
+
+- Phase 1: ✅ Completed
+- Phase 2: ⏳ Not started
+- Phase 3: 🟡 In progress (headless debug skeleton in place)
+- Phase 4: 🟡 In progress (LLVM tests integrated into Meson)
+
 ## Goals
 
 1. Prepare the project for a paging-capable ISA and UNIX-like OS bring-up.
 2. Make device addition simple, testable, and low-risk.
 3. Unify testing so every subsystem has automated tests and output is consistent/clean.
 
-## Current Baseline (from repo)
+## Current Baseline (updated)
 
 - Build/test is Meson-based and already split into core libraries (`emulator`, `assembler`, `disassembler`, `linker`, `project`).
-- CPU unit tests exist but use local macros (`tests/test_harness.hpp`) and custom per-binary summaries.
-- LLVM integration tests are run through a separate Python script (`tests/llvm/scripts/run_tests.py`) with ANSI output and custom metadata parsing.
+- CPU unit tests exist but still use local macros (`tests/test_harness.hpp`) and custom per-binary summaries.
+- LLVM integration tests are now integrated into Meson (`llvm-integration` suite) via `tests/llvm/scripts/run_tests.py`.
 - GUI debugger is useful for ISA-level bring-up but not yet suited for OS-level, multi-process, paging-heavy debugging workflows.
 - Device model is region-based (`MemoryRegion` + `MemoryBus`), but adding a device still requires manual wiring in emulator code/build files.
 
@@ -53,6 +60,8 @@ For editing/build/orchestration, use external tools (VS Code/CLI) and a debug pr
 
 ## Phase 1 — Project Structure & Boundaries (1–2 weeks)
 
+Status: ✅ Completed (2026-04-01)
+
 ### Objectives
 
 - Reduce clutter by making subsystem boundaries explicit.
@@ -73,6 +82,22 @@ For editing/build/orchestration, use external tools (VS Code/CLI) and a debug pr
 
 - GUI does not directly depend on internal CPU implementation details outside the public emulator API.
 - Core libraries can be built/tested without GUI dependencies.
+
+### Delivered
+
+1. Stable runtime API boundary
+   - Added `emulator/frontend_api.hpp` (`IEmulatorRuntime`, `RegisterSnapshot`, `MemoryRegionView`).
+   - Added `emulator/emulator_session.hpp/.cpp` as facade implementation used by frontends.
+2. GUI decoupling
+   - GUI panels consume narrow context structs (`gui/panels/panel_contexts.hpp`) instead of direct `AppState` coupling.
+   - Panel implementations use `EmulatorSession`/`IEmulatorRuntime` surface rather than raw CPU internals.
+3. Headless architecture convergence
+   - `emulator/main.cpp` now uses shared headless runtime helpers (`emulator/headless_runtime.hpp/.cpp`).
+   - Added modular `little-64-debug` entrypoint (`debug_server`, `debug_transport`, `debug_main`).
+4. Tool boundary cleanup
+   - `project/runner_main.cpp` migrated to `EmulatorSession` (no direct `Little64CPU` usage).
+5. Build/test boundary clarity
+   - Meson source organization split by module groups (`core_*`, `ui_gui_src`).
 
 ---
 
@@ -106,6 +131,8 @@ For editing/build/orchestration, use external tools (VS Code/CLI) and a debug pr
 
 ## Phase 3 — Paging/UNIX Bring-up Infrastructure (2–4 weeks)
 
+Status: 🟡 Started
+
 ### Objectives
 
 - Support OS-level iteration speed and observability before full OS porting.
@@ -130,9 +157,16 @@ For editing/build/orchestration, use external tools (VS Code/CLI) and a debug pr
 - Headless emulator can be run under scripted debug sessions.
 - Page fault and trap states are inspectable without GUI.
 
+### Progress so far
+
+- A modular headless debug skeleton exists (`little-64-debug`) with transport abstraction and command server over `IEmulatorRuntime`.
+- This is not a GDB remote implementation yet, but it establishes the seam where a GDB transport can plug in.
+
 ---
 
 ## Phase 4 — Unified Testing & Clean Output (1–2 weeks)
+
+Status: 🟡 Started
 
 ### Objectives
 
@@ -166,6 +200,11 @@ For editing/build/orchestration, use external tools (VS Code/CLI) and a debug pr
   - each device,
   - linker/project runner paths.
 
+### Progress so far
+
+- LLVM integration tests are wired into Meson as `llvm-integration`.
+- Test runner output is cleaner and timeout diagnostics are improved.
+
 ---
 
 ## Immediate High-Value Tasks (start now)
@@ -189,6 +228,7 @@ For editing/build/orchestration, use external tools (VS Code/CLI) and a debug pr
    - debug core: `emulator/debug_server.hpp/.cpp`,
    - stdio adapter: `StdioDebugTransport`,
    - entrypoint wiring: `emulator/debug_main.cpp`.
+   - Integrated LLVM tests into Meson (`llvm-integration`) and centralized required test environment in `meson.build`.
 
 This makes the future debug-server entrypoint straightforward: a new transport layer can drive the same `IEmulatorRuntime` + headless loader/loop without duplicating emulator startup logic.
 

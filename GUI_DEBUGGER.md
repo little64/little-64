@@ -100,7 +100,7 @@ Then click "Assemble". The disassembly view will display all instructions with t
 ### Modularity
 
 Each panel is a standalone class with a simple interface:
-- Panels receive a reference to shared `AppState` (dependency injection)
+- Panels receive a narrow panel-specific context (dependency injection)
 - No global state or inter-panel dependencies
 - Easy to add new panels or replace existing ones
 
@@ -177,11 +177,11 @@ The memory panel uses virtual scrolling (ImGuiListClipper) to only render visibl
 
 ### Architecture
 
-- **AppState**: Central shared state struct passed to all panels by reference (dependency injection)
+- **AppState**: Central shared UI/application state owned by `App`
    - `emulator`: `EmulatorSession` facade used by the GUI; hides raw `Little64CPU` internals
   - `current_file`: absolute path to the open file, or empty string if untitled
   - `editor_source`: copy of text in assembler (kept in sync with buffer)
-   - Panels no longer depend on `AppState` directly; each panel gets a narrow context from `gui/panels/panel_contexts.hpp`
+- **Panel contexts**: Panels do not depend on `AppState` directly; each panel receives a narrow context from `gui/panels/panel_contexts.hpp`
 - **AssemblerPanel**: Manages editor buffer, file I/O, and keyboard shortcuts (Ctrl+O/S)
 - **App lifecycle**: `loadLastFile()` on init, `saveLastFile()` on shutdown
 
@@ -194,7 +194,8 @@ The codebase is designed for easy modification:
 1. Add a new panel:
    - Create `gui/panels/my_panel.hpp` and `.cpp`
    - Inherit from the implicit panel interface (just implement `render()`)
-   - Receive `AppState& state` in constructor
+   - Define/extend a panel context in `gui/panels/panel_contexts.hpp`
+   - Receive that context in the panel constructor
    - Instantiate in `App::init()` using `std::make_unique`
 
 2. Modify existing panels without affecting others

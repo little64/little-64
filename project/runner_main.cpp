@@ -2,7 +2,7 @@
 #include "compiler.hpp"
 #include "assembler.hpp"
 #include "linker.hpp"
-#include "cpu.hpp"
+#include "emulator_session.hpp"
 #include <iostream>
 #include <fstream>
 #include <cstdio>
@@ -89,7 +89,7 @@ int main(int argc, char* argv[]) {
     if (loadElfEnv && loadElfEnv[0] == '0')
         useElfLoader = false;
 
-    Little64CPU cpu;
+    EmulatorSession runtime;
 
     if (useElfLoader) {
         auto elf_image = Linker::linkObjectsElf(objects, &link_err);
@@ -97,7 +97,7 @@ int main(int argc, char* argv[]) {
             std::cerr << "Link error (ELF): " << link_err.message << "\n";
             return 1;
         }
-        if (!cpu.loadProgramElf(*elf_image, 0)) {
+        if (!runtime.loadProgramElf(*elf_image, 0)) {
             std::cerr << "CPU ELF load failed\n";
             return 1;
         }
@@ -108,7 +108,7 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         uint64_t entry_offset = link_err.has_entry ? link_err.entry_address : 0;
-        cpu.loadProgram(*linked, 0, entry_offset);
+        runtime.loadProgram(*linked, 0, entry_offset);
     }
 
     if (proj.expectations.empty()) {
@@ -117,12 +117,12 @@ int main(int argc, char* argv[]) {
     }
 
     uint64_t cycles = 0;
-    while (cpu.isRunning && cycles < max_cycles) {
-        cpu.cycle();
+    while (runtime.isRunning() && cycles < max_cycles) {
+        runtime.cycle();
         ++cycles;
     }
 
-    if (cpu.isRunning) {
+    if (runtime.isRunning()) {
         std::cerr << "FAIL: program did not halt after " << max_cycles << " cycles\n";
         return 1;
     }
@@ -134,10 +134,10 @@ int main(int argc, char* argv[]) {
         char target_buf[64];
 
         if (exp.type == Expectation::Type::Register) {
-            actual = cpu.registers.regs[exp.reg_idx];
+            actual = runtime.reg(exp.reg_idx);
             std::snprintf(target_buf, sizeof(target_buf), "R%d", exp.reg_idx);
         } else {
-            actual = cpu.getMemoryBus().read8(exp.mem_addr);
+            actual = runtime.memoryRead8(exp.mem_addr);
             std::snprintf(target_buf, sizeof(target_buf), "mem:0x%llX",
                           static_cast<unsigned long long>(exp.mem_addr));
         }
