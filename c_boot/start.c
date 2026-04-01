@@ -2,7 +2,7 @@
 
 #define SERIAL_BASE ((volatile unsigned char *)0xFFFFFFFFFFFF0000ULL)
 
-static const char message[] = "GHello, world!";
+static const char message[] = "Hello, world!\n";
 
 __attribute__((naked))
 void _start(void) {
@@ -27,6 +27,7 @@ void work(void) {
     }
     __asm__ volatile ("STOP");
 }
+
 
 
 

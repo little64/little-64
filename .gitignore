@@ -17,3 +17,5 @@ compile_commands.json
 compilers/bin/*
 !compilers/bin/.keep
 compilers/llvm/build
+
+*.elf
