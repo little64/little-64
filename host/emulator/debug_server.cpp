@@ -2,11 +2,29 @@
 
 #include <algorithm>
 #include <charconv>
+#include <cctype>
 #include <iomanip>
 #include <sstream>
 #include <string>
 
 namespace {
+
+bool parseRegisterInfoIndex(const std::string& payload, uint64_t& out_index) {
+    static constexpr const char* kPrefix = "qRegisterInfo";
+    if (!payload.starts_with(kPrefix)) {
+        return false;
+    }
+
+    const std::string index_text = payload.substr(std::char_traits<char>::length(kPrefix));
+    if (index_text.empty()) {
+        return false;
+    }
+
+    const char* begin = index_text.data();
+    const char* end = begin + index_text.size();
+    auto [ptr, ec] = std::from_chars(begin, end, out_index, 16);
+    return ec == std::errc() && ptr == end;
+}
 
 } // namespace
 
@@ -26,9 +44,7 @@ int DebugServer::run() {
             _transport.writePacket(_last_stop_reply);
             continue;
         }
-        if (!handlePacket(payload, should_exit)) {
-            _transport.writePacket("");
-        }
+        handlePacket(payload, should_exit);
     }
 
     return 0;
@@ -45,8 +61,35 @@ bool DebugServer::handlePacket(const std::string& payload, bool& should_exit) {
         return true;
     }
 
-    if (payload == "qSupported") {
-        _transport.writePacket("PacketSize=4000;qXfer:features:read+;swbreak+;hwbreak+");
+    if (payload == "qSupported" || payload.starts_with("qSupported:")) {
+        _transport.writePacket(
+            "PacketSize=4000;"
+            "qXfer:features:read+;"
+            "QStartNoAckMode+;"
+            "QThreadSuffixSupported+;"
+            "QListThreadsInStopReply+;"
+            "swbreak+;hwbreak+;vContSupported+");
+        return true;
+    }
+
+    if (payload == "QStartNoAckMode") {
+        _transport.writePacket("OK");
+        _transport.setNoAckMode(true);
+        return true;
+    }
+
+    if (payload == "QThreadSuffixSupported") {
+        _transport.writePacket("OK");
+        return true;
+    }
+
+    if (payload == "QListThreadsInStopReply") {
+        _transport.writePacket("OK");
+        return true;
+    }
+
+    if (payload == "vMustReplyEmpty") {
+        _transport.writePacket("");
         return true;
     }
 
@@ -55,8 +98,88 @@ bool DebugServer::handlePacket(const std::string& payload, bool& should_exit) {
         return true;
     }
 
+    if (payload == "qProcessInfo") {
+        _transport.writePacket("pid:1;endian:little;ptrsize:8;triple:little64-unknown-unknown;");
+        return true;
+    }
+
+    if (payload == "qHostInfo") {
+        _transport.writePacket("triple:little64-unknown-unknown;endian:little;ptrsize:8;");
+        return true;
+    }
+
     if (payload == "qC") {
         _transport.writePacket("QC1");
+        return true;
+    }
+
+    if (payload == "qOffsets") {
+        _transport.writePacket("Text=0;Data=0;Bss=0");
+        return true;
+    }
+
+    if (payload.starts_with("qMemoryRegionInfo:")) {
+        _transport.writePacket("start:0;size:ffffffffffffffff;permissions:rwx;");
+        return true;
+    }
+
+    if (payload.starts_with("qThreadStopInfo")) {
+        _transport.writePacket(_last_stop_reply);
+        return true;
+    }
+
+    if (payload == "qTStatus") {
+        _transport.writePacket("");
+        return true;
+    }
+
+    if (payload == "qSymbol::") {
+        _transport.writePacket("OK");
+        return true;
+    }
+
+    if (payload == "jThreadsInfo") {
+        _transport.writePacket(R"([{"tid":1,"name":"main"}])");
+        return true;
+    }
+
+    if (payload.starts_with("jThreadExtendedInfo")) {
+        _transport.writePacket(R"({"name":"main","reason":"none"})");
+        return true;
+    }
+
+    if (payload.starts_with("qRegisterInfo")) {
+        uint64_t reg_index = 0;
+        if (!parseRegisterInfoIndex(payload, reg_index)) {
+            _transport.writePacket("E01");
+            return true;
+        }
+
+        if (reg_index > 16) {
+            _transport.writePacket("E45");
+            return true;
+        }
+
+        static constexpr const char* kNames[17] = {
+            "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7",
+            "r8", "r9", "r10", "r11", "r12", "sp", "lr", "pc", "flags"
+        };
+
+        std::ostringstream out;
+        out << "name:" << kNames[reg_index]
+            << ";bitsize:64;offset:" << (reg_index * 8)
+            << ";encoding:uint;format:hex;set:General Purpose Registers;"
+            << "gcc:" << reg_index << ";dwarf:" << reg_index << ";";
+
+        if (reg_index == 13) {
+            out << "generic:sp;";
+        } else if (reg_index == 14) {
+            out << "generic:ra;";
+        } else if (reg_index == 15) {
+            out << "generic:pc;";
+        }
+
+        _transport.writePacket(out.str());
         return true;
     }
 
@@ -70,13 +193,39 @@ bool DebugServer::handlePacket(const std::string& payload, bool& should_exit) {
         return true;
     }
 
-    if (payload == "Hc0" || payload == "Hc-1" || payload == "Hg0" || payload == "Hg1" || payload == "Hc1") {
+    if (payload.size() >= 3 && payload[0] == 'H' && (payload[1] == 'c' || payload[1] == 'g')) {
         _transport.writePacket("OK");
         return true;
     }
 
-    if (payload == "g") {
+    if (payload == "g" || payload.starts_with("g;")) {
         _transport.writePacket(registerPayload());
+        return true;
+    }
+
+    if (payload.starts_with("p")) {
+        const size_t suffix_pos = payload.find(';');
+        const std::string reg_text = suffix_pos == std::string::npos
+            ? payload.substr(1)
+            : payload.substr(1, suffix_pos - 1);
+
+        uint64_t reg_index = 0;
+        if (!parseHexU64(reg_text, reg_index)) {
+            _transport.writePacket("E01");
+            return true;
+        }
+
+        const RegisterSnapshot snapshot = _runtime.registers();
+        if (reg_index < 16) {
+            _transport.writePacket(encodeHexU64LE(snapshot.gpr[static_cast<size_t>(reg_index)]));
+            return true;
+        }
+        if (reg_index == 16) {
+            _transport.writePacket(encodeHexU64LE(snapshot.flags));
+            return true;
+        }
+
+        _transport.writePacket("E45");
         return true;
     }
 
@@ -101,16 +250,18 @@ bool DebugServer::handlePacket(const std::string& payload, bool& should_exit) {
     }
 
     if (payload == "vCont?") {
-        _transport.writePacket("vCont;c;s");
+        _transport.writePacket("vCont;c;C;s;S;t");
         return true;
     }
 
-    if (payload == "vCont;c" || payload == "vCont;C" || payload.starts_with("vCont;c:")) {
-        return handleContinue("c");
+    if (payload == "vCtrlC") {
+        setLastStopReply("S02");
+        _transport.writePacket(_last_stop_reply);
+        return true;
     }
 
-    if (payload == "vCont;s" || payload == "vCont;S" || payload.starts_with("vCont;s:")) {
-        return handleStep("s");
+    if (payload.starts_with("vCont;")) {
+        return handleVCont(payload);
     }
 
     if (payload.starts_with("qXfer:features:read:target.xml:")) {
@@ -276,7 +427,52 @@ bool DebugServer::handleStep(const std::string& payload) {
     return true;
 }
 
+bool DebugServer::handleVCont(const std::string& payload) {
+    if (!payload.starts_with("vCont;")) {
+        _transport.writePacket("E01");
+        return false;
+    }
+
+    const std::string actions = payload.substr(6);
+    if (actions.empty()) {
+        _transport.writePacket("E01");
+        return false;
+    }
+
+    size_t start = 0;
+    while (start < actions.size()) {
+        const size_t end = actions.find(';', start);
+        const std::string action = actions.substr(start, end == std::string::npos ? std::string::npos : end - start);
+        if (!action.empty()) {
+            const char kind = action[0];
+            if (kind == 'c' || kind == 'C') {
+                return handleContinue("c");
+            }
+            if (kind == 's' || kind == 'S') {
+                return handleStep("s");
+            }
+            if (kind == 't' || kind == 'T') {
+                setLastStopReply("S02");
+                _transport.writePacket(_last_stop_reply);
+                return true;
+            }
+        }
+
+        if (end == std::string::npos) {
+            break;
+        }
+        start = end + 1;
+    }
+
+    _transport.writePacket("E01");
+    return false;
+}
+
 void DebugServer::setLastStopReply(const std::string& reply) {
+    if (reply.size() == 3 && reply[0] == 'S') {
+        _last_stop_reply = "T" + reply.substr(1) + "thread:1;threads:1;";
+        return;
+    }
     _last_stop_reply = reply;
 }
 

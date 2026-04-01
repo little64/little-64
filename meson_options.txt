@@ -1,6 +1,6 @@
 option(
   'qt_frontend',
   type : 'feature',
-  value : 'auto',
+  value : 'enabled',
   description : 'Build the Qt frontend (little-64-qt) when Qt is available'
 )

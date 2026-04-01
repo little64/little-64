@@ -54,7 +54,13 @@ void work(void) {
     serial_puts(banner);
     serial_puts(mode_phys);
 
+#ifdef LITTLE64_DEBUG_HOLD
+    for (;;) {
+        __asm__ volatile ("" ::: "memory");
+    }
+#else
     __asm__ volatile ("STOP");
+#endif
 }
 
 

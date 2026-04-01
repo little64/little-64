@@ -10,6 +10,7 @@ public:
     virtual bool readPacket(std::string& payload, bool& is_interrupt) = 0;
     virtual bool writePacket(const std::string& payload) = 0;
     virtual bool pollInterrupt() = 0;
+    virtual void setNoAckMode(bool enabled) = 0;
 };
 
 class TcpRspTransport : public IDebugTransport {
@@ -20,9 +21,11 @@ public:
     bool readPacket(std::string& payload, bool& is_interrupt) override;
     bool writePacket(const std::string& payload) override;
     bool pollInterrupt() override;
+    void setNoAckMode(bool enabled) override;
 
 private:
     bool ensureConnected();
+    void adoptPendingClient();
     bool readByteBlocking(uint8_t& byte);
     bool sendByte(uint8_t byte);
     bool sendAll(const uint8_t* data, size_t size);
@@ -33,4 +36,5 @@ private:
     uint16_t _port;
     int _listen_fd = -1;
     int _client_fd = -1;
+    bool _no_ack_mode = false;
 };

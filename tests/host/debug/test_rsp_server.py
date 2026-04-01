@@ -82,6 +82,10 @@ def connect_with_retry(host: str, port: int, attempts: int = 40, delay: float = 
     raise RuntimeError(f"failed to connect to {host}:{port}: {last_error}")
 
 
+def is_stop_reply(reply: str, signal_hex: str) -> bool:
+    return reply == f"S{signal_hex}" or reply.startswith(f"T{signal_hex}")
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory(prefix="little64-rsp-") as td:
         tmpdir = pathlib.Path(td)
@@ -103,7 +107,7 @@ def main() -> int:
                 assert "qXfer:features:read+" in supported
 
                 stop = send_cmd(sock, "?")
-                assert stop == "S05", stop
+                assert is_stop_reply(stop, "05"), stop
 
                 regs = send_cmd(sock, "g")
                 assert len(regs) == 272, len(regs)
@@ -124,7 +128,7 @@ def main() -> int:
                 assert bp_set == "OK", bp_set
 
                 stop_bp = send_cmd(sock, "c")
-                assert stop_bp == "S05", stop_bp
+                assert is_stop_reply(stop_bp, "05"), stop_bp
 
                 bp_clear = send_cmd(sock, f"z0,{bp_addr_hex},2")
                 assert bp_clear == "OK", bp_clear

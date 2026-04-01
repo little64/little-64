@@ -1,17 +1,38 @@
 #include "debug_transport.hpp"
 
 #include <arpa/inet.h>
+#include <chrono>
 #include <cstdio>
 #include <cerrno>
 #include <cstring>
+#include <cstdlib>
+#include <fstream>
+#include <iomanip>
 #include <netinet/in.h>
 #include <poll.h>
+#include <sstream>
 #include <sys/socket.h>
 #include <unistd.h>
 
 namespace {
 
 constexpr int kBacklog = 1;
+
+void traceRsp(const std::string& line) {
+    const char* trace_path = std::getenv("LITTLE64_RSP_TRACE_PATH");
+    if (!trace_path || trace_path[0] == '\0') {
+        return;
+    }
+
+    std::ofstream out(trace_path, std::ios::app);
+    if (!out.is_open()) {
+        return;
+    }
+
+    const auto now = std::chrono::system_clock::now();
+    const auto t = std::chrono::system_clock::to_time_t(now);
+    out << std::put_time(std::localtime(&t), "%F %T") << " " << line << '\n';
+}
 
 } // namespace
 
@@ -31,6 +52,7 @@ TcpRspTransport::~TcpRspTransport() {
 
 bool TcpRspTransport::ensureConnected() {
     if (_client_fd >= 0) {
+        adoptPendingClient();
         return true;
     }
 
@@ -57,7 +79,37 @@ bool TcpRspTransport::ensureConnected() {
     }
 
     _client_fd = ::accept(_listen_fd, nullptr, nullptr);
+    if (_client_fd >= 0) {
+        _no_ack_mode = false;
+        traceRsp("CONNECT");
+    }
     return _client_fd >= 0;
+}
+
+void TcpRspTransport::adoptPendingClient() {
+    if (_listen_fd < 0) {
+        return;
+    }
+
+    pollfd pfd{};
+    pfd.fd = _listen_fd;
+    pfd.events = POLLIN;
+    const int rc = ::poll(&pfd, 1, 0);
+    if (rc <= 0 || !(pfd.revents & POLLIN)) {
+        return;
+    }
+
+    const int new_client = ::accept(_listen_fd, nullptr, nullptr);
+    if (new_client < 0) {
+        return;
+    }
+
+    if (_client_fd >= 0) {
+        ::close(_client_fd);
+    }
+    _client_fd = new_client;
+    _no_ack_mode = false;
+    traceRsp("CONNECT-SWITCH");
 }
 
 bool TcpRspTransport::readByteBlocking(uint8_t& byte) {
@@ -125,6 +177,7 @@ bool TcpRspTransport::readPacket(std::string& payload, bool& is_interrupt) {
 
         if (first == 0x03) {
             is_interrupt = true;
+            traceRsp("RX-INT 0x03");
             return true;
         }
         if (first == '+' || first == '-') {
@@ -154,24 +207,31 @@ bool TcpRspTransport::readPacket(std::string& payload, bool& is_interrupt) {
 
         uint8_t expected = 0;
         if (!decodeHexByte(hi, lo, expected)) {
-            if (!sendByte('-')) {
-                return false;
+            if (!_no_ack_mode) {
+                if (!sendByte('-')) {
+                    return false;
+                }
             }
             continue;
         }
 
         const uint8_t actual = checksum(candidate);
         if (actual != expected) {
-            if (!sendByte('-')) {
-                return false;
+            if (!_no_ack_mode) {
+                if (!sendByte('-')) {
+                    return false;
+                }
             }
             continue;
         }
 
-        if (!sendByte('+')) {
-            return false;
+        if (!_no_ack_mode) {
+            if (!sendByte('+')) {
+                return false;
+            }
         }
         payload = std::move(candidate);
+        traceRsp("RX $" + payload);
         return true;
     }
 }
@@ -186,6 +246,7 @@ bool TcpRspTransport::writePacket(const std::string& payload) {
     std::snprintf(checksum_buf, sizeof(checksum_buf), "%02x", sum);
 
     const std::string framed = "$" + payload + "#" + checksum_buf;
+    traceRsp("TX $" + payload);
     return sendAll(reinterpret_cast<const uint8_t*>(framed.data()), framed.size());
 }
 
@@ -203,8 +264,10 @@ bool TcpRspTransport::pollInterrupt() {
     }
 
     if (pfd.revents & (POLLHUP | POLLERR | POLLNVAL)) {
+        traceRsp("DISCONNECT poll error/hup");
         ::close(_client_fd);
         _client_fd = -1;
+        _no_ack_mode = false;
         return true;
     }
 
@@ -215,12 +278,18 @@ bool TcpRspTransport::pollInterrupt() {
     uint8_t byte = 0;
     const ssize_t n = ::recv(_client_fd, &byte, 1, MSG_DONTWAIT);
     if (n == 0) {
+        traceRsp("DISCONNECT eof");
         ::close(_client_fd);
         _client_fd = -1;
+        _no_ack_mode = false;
         return true;
     }
     if (n != 1) {
         return false;
     }
     return byte == 0x03;
+}
+
+void TcpRspTransport::setNoAckMode(bool enabled) {
+    _no_ack_mode = enabled;
 }

@@ -21,6 +21,7 @@ private:
     bool handleReadMemory(const std::string& payload);
     bool handleContinue(const std::string& payload);
     bool handleStep(const std::string& payload);
+    bool handleVCont(const std::string& payload);
 
     void setLastStopReply(const std::string& reply);
     std::string registerPayload() const;
@@ -33,5 +34,5 @@ private:
     IEmulatorRuntime& _runtime;
     IDebugTransport& _transport;
     std::set<uint64_t> _breakpoints;
-    std::string _last_stop_reply = "S05";
+    std::string _last_stop_reply = "T05thread:1;threads:1;";
 };
