@@ -115,9 +115,9 @@ static void test_gp_encoding() {
     // 0xC000 | 0x0200 | 0x0070 | 0x0007 = 0xC277
     CHECK_EQ(assemble("TEST R7, R7")[0], 0xC277, "TEST R7, R7");
 
-    // STOP → op=63, rs1=0, rd=0
-    // 0xC000 | 0x3F00 | 0x0000 | 0x0000 = 0xFF00
-    CHECK_EQ(assemble("STOP")[0], 0xFF00, "STOP");
+    // STOP → format 110, op=31, rs1=0, rd=0
+    // 0xC000 | 0x1F00 | 0x0000 | 0x0000 = 0xDF00
+    CHECK_EQ(assemble("STOP")[0], 0xDF00, "STOP");
 }
 
 // ---------------------------------------------------------------------------
@@ -192,31 +192,28 @@ static void test_ls_pcrel_encoding() {
 }
 
 // ---------------------------------------------------------------------------
-// Group E — JUMP pseudo-instruction (encodes as MOVE, opcode=4, Rd=R15)
+// Group E — JUMP instruction (dedicated format 111, 13-bit PC-relative)
 // ---------------------------------------------------------------------------
 
 static void test_jump_pseudo() {
-    // JUMP @+0 → MOVE PC-rel, pc_rel=0, rd=15
-    // 0x4000 | (4<<10) | (0<<4) | 15 = 0x4000 | 0x1000 | 0x000F = 0x500F
-    CHECK_EQ(assemble("JUMP @+0")[0], 0x500F, "JUMP @+0");
+    // JUMP @+0 → format 111, pc_rel=0
+    // 0xE000 | 0x0000 = 0xE000
+    CHECK_EQ(assemble("JUMP @+0")[0], 0xE000, "JUMP @+0");
 
-    // JUMP @-1 → MOVE PC-rel, pc_rel=-1 (0x3F), rd=15
-    // 0x4000 | 0x1000 | (0x3F<<4) | 0xF = 0x4000|0x1000|0x03F0|0x000F = 0x53FF
-    CHECK_EQ(assemble("JUMP @-1")[0], 0x53FF, "JUMP @-1");
+    // JUMP @-1 → format 111, pc_rel=-1 (13-bit 0x1FFF)
+    // 0xE000 | 0x1FFF = 0xFFFF
+    CHECK_EQ(assemble("JUMP @-1")[0], 0xFFFF, "JUMP @-1");
 
-    // JUMP R3 → MOVE LS_REG, offset2=0, rs1=3, rd=15
-    // (4<<10) | (0<<8) | (3<<4) | 15 = 0x1000 | 0x0030 | 0x000F = 0x103F
-    CHECK_EQ(assemble("JUMP R3")[0], 0x103F, "JUMP R3");
+    // Register forms are no longer valid for unconditional JUMP.
+    CHECK_THROWS(assemble("JUMP R3"), "JUMP R3 should throw");
 
-    // JUMP R2+4 → MOVE LS_REG, offset2=2, rs1=2, rd=15
-    // (4<<10) | (2<<8) | (2<<4) | 15 = 0x1000|0x0200|0x0020|0x000F = 0x122F
-    CHECK_EQ(assemble("JUMP R2+4, R15")[0], 0x122F, "JUMP R2+4, R15");
+    CHECK_THROWS(assemble("JUMP R2+4, R15"), "JUMP register+offset form should throw");
 
-    // JUMP label forward: resolves same as MOVE @label, R15
+    // JUMP label forward
     {
         auto out = assemble(".org 0\n    JUMP @target\n    STOP\n    STOP\ntarget:\n    STOP\n");
-        // MOVE pc_rel=2, rd=15: 0x4000|0x1000|(2<<4)|0xF = 0x500F|0x20 = 0x502F
-        CHECK_EQ(out[0], 0x502F, "JUMP @label forward (=MOVE @label, R15)");
+        // pc_rel=2: 0xE000 | 0x0002 = 0xE002
+        CHECK_EQ(out[0], 0xE002, "JUMP @label forward");
     }
 }
 
@@ -225,12 +222,12 @@ static void test_ldi64_pseudo() {
 
     // LDI64 expands to 2 instructions + 8-byte constant
     CHECK_EQ(out[0], 0x4013, "LDI64 load instruction");   // LOAD @+1, R3
-    CHECK_EQ(out[1], 0x504F, "LDI64 jump instruction");   // JUMP @+4, R15
+    CHECK_EQ(out[1], 0xE004, "LDI64 jump instruction");   // JUMP @+4
     CHECK_EQ(out[2], 0x6677, "LDI64 constant word0 (lower)");
     CHECK_EQ(out[3], 0x4455, "LDI64 constant word1");
     CHECK_EQ(out[4], 0x2233, "LDI64 constant word2");
     CHECK_EQ(out[5], 0x0011, "LDI64 constant word3 (upper)");
-    CHECK_EQ(out[6], 0xFF00, "LDI64 following STOP");
+    CHECK_EQ(out[6], 0xDF00, "LDI64 following STOP");
 }
 
 static uint16_t read_u16(const std::vector<uint8_t>& buf, size_t off) {
@@ -319,7 +316,7 @@ static void test_elf_relocations() {
 
     uint32_t sym_idx = static_cast<uint32_t>(r_info >> 32);
     uint32_t reltype = static_cast<uint32_t>(r_info & 0xFFFFFFFF);
-    CHECK_EQ(reltype, 3, "Relocation type is PCREL6");
+    CHECK_EQ(reltype, 5, "Relocation type is PCREL13");
 
     CHECK_EQ(sym_idx > 0, true, "Relocation symbol index should be nonzero");
 
@@ -430,7 +427,7 @@ static void test_elf_extern_jal_reloc() {
     uint64_t r_info = read_u64(elf, rela_offset + 8);
     uint32_t sym_idx = static_cast<uint32_t>(r_info >> 32);
     uint32_t r_type = static_cast<uint32_t>(r_info & 0xFFFFFFFF);
-    CHECK_EQ(r_type, 3, "Relocation type PCREL6");
+    CHECK_EQ(r_type, 5, "Relocation type PCREL13");
 
     // Symbol i in symtab (skipping null entry) should include ext_fn.
     uint64_t sym_entry_off = symtab_offset + (sym_idx * 24);
@@ -481,10 +478,10 @@ static void test_conditional_jumps() {
 
 static void test_data_directives() {
     // .byte 0xAB after STOP
-    // Instructions: [0xFF00]. Data bytes: [0xAB, 0x00(pad)]. Word: 0x00AB.
+    // Instructions: [0xDF00]. Data bytes: [0xAB, 0x00(pad)]. Word: 0x00AB.
     {
         auto out = assemble("STOP\n.byte 0xAB\n");
-        CHECK_EQ(out[0], 0xFF00, ".byte after STOP: instruction word");
+        CHECK_EQ(out[0], 0xDF00, ".byte after STOP: instruction word");
         CHECK_EQ(out[1], 0x00AB, ".byte after STOP: data word (padded)");
     }
 
@@ -498,7 +495,7 @@ static void test_data_directives() {
     // .short 0xBEEF after STOP → little-endian bytes [0xEF,0xBE] → word 0xBEEF
     {
         auto out = assemble("STOP\n.short 0xBEEF\n");
-        CHECK_EQ(out[0], 0xFF00, ".short after STOP: instruction");
+        CHECK_EQ(out[0], 0xDF00, ".short after STOP: instruction");
         CHECK_EQ(out[1], 0xBEEF, ".short 0xBEEF");
     }
 
@@ -547,14 +544,14 @@ static void test_mixed_code_data() {
     {
         auto out = assemble(".org 0\n    .short 0xABCD\n    STOP\n");
         CHECK_EQ(out[0], 0xABCD, "mixed: .short before STOP → output[0]");
-        CHECK_EQ(out[1], 0xFF00, "mixed: STOP after .short → output[1]");
+        CHECK_EQ(out[1], 0xDF00, "mixed: STOP after .short → output[1]");
     }
 
     // Data then instruction then data
     {
         auto out = assemble(".org 0\n    .short 0x0001\n    STOP\n    .short 0x0002\n");
         CHECK_EQ(out[0], 0x0001, "mixed: first .short");
-        CHECK_EQ(out[1], 0xFF00, "mixed: STOP in middle");
+        CHECK_EQ(out[1], 0xDF00, "mixed: STOP in middle");
         CHECK_EQ(out[2], 0x0002, "mixed: second .short");
     }
 }
@@ -607,7 +604,7 @@ static void test_org_addressing() {
     // .org 0 (explicit) works identically to no .org
     {
         auto out = assemble(".org 0\n    STOP\n");
-        CHECK_EQ(out[0], 0xFF00, ".org 0 + STOP");
+        CHECK_EQ(out[0], 0xDF00, ".org 0 + STOP");
     }
 
     // .org 0: forward label — same arithmetic as Group D
@@ -644,7 +641,7 @@ static void test_ascii_directives() {
     // bytes: ['A'=0x41, 'B'=0x42] → LE word: 0x41|(0x42<<8) = 0x4241
     {
         auto out = assemble("STOP\n.ascii \"AB\"\n");
-        CHECK_EQ(out[0], 0xFF00, ".ascii: instruction");
+        CHECK_EQ(out[0], 0xDF00, ".ascii: instruction");
         CHECK_EQ(out[1], 0x4241, ".ascii \"AB\" → LE word 0x4241");
     }
 

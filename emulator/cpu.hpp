@@ -136,7 +136,7 @@ public:
             return _raw == other._raw;
         }
 
-        // bits[15:14]: 0=LS_REG, 1=LS_PCREL, 2=LDI, 3=GP
+        // bits[15:14]: 0=LS_REG, 1=LS_PCREL, 2=LDI, 3=extended
         uint8_t format = 0;
 
         // Common to all formats
@@ -158,9 +158,12 @@ public:
         uint8_t shift = 0;      // bits[13:12]
         uint8_t imm8 = 0;       // bits[11:4]
 
-        // Format 11 (GP ALU)
-        uint8_t opcode_gp = 0;  // bits[13:8] (6 bits)
-        // rs1 reused at bits[7:4]
+        // Format 11 extensions:
+        //   110 = GP ALU, opcode bits [12:8] (5 bits)
+        //   111 = unconditional PC-relative jump, offset bits [12:0] (13-bit signed)
+        bool is_unconditional_jump = false;
+        uint8_t opcode_gp = 0;  // bits[12:8] (5 bits) for 110 GP
+        // rs1 reused at bits[7:4] for GP
 
         Instruction() = default;
         Instruction(uint16_t raw) : _raw(raw) {
@@ -190,9 +193,16 @@ public:
                     shift = (raw >> 12) & 0x3;
                     imm8  = (raw >> 4)  & 0xFF;
                     break;
-                case 3: // GP ALU
-                    opcode_gp = (raw >> 8) & 0x3F;
-                    rs1       = (raw >> 4) & 0xF;
+                case 3: // Extended: GP ALU (110) or unconditional JUMP (111)
+                    is_unconditional_jump = ((raw >> 13) & 0x1) != 0;
+                    if (is_unconditional_jump) {
+                        uint16_t raw13 = raw & 0x1FFF;
+                        pc_rel = (raw13 & 0x1000) ? (int16_t)(raw13 | 0xE000) : (int16_t)raw13;
+                        rd = 15;
+                    } else {
+                        opcode_gp = (raw >> 8) & 0x1F;
+                        rs1       = (raw >> 4) & 0xF;
+                    }
                     break;
             }
         }
@@ -224,9 +234,14 @@ public:
                     raw |= (rd    & 0xF);
                     break;
                 case 3:
-                    raw |= (opcode_gp & 0x3F) << 8;
-                    raw |= (rs1       & 0xF)  << 4;
-                    raw |= (rd        & 0xF);
+                    if (is_unconditional_jump) {
+                        raw |= 1 << 13; // 111 prefix
+                        raw |= (uint16_t)pc_rel & 0x1FFF;
+                    } else {
+                        raw |= (opcode_gp & 0x1F) << 8;
+                        raw |= (rs1       & 0xF)  << 4;
+                        raw |= (rd        & 0xF);
+                    }
                     break;
             }
             return raw;
@@ -277,6 +292,7 @@ private:
     void _dispatchLSPCRel(const Instruction& instr);
     void _dispatchLDI(const Instruction& instr);
     void _dispatchGP(const Instruction& instr);
+    void _dispatchUJMP(const Instruction& instr);
 
     void _updateFlags(uint64_t result, bool carry = false);
 

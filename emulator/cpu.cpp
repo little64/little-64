@@ -48,7 +48,10 @@ void Little64CPU::dispatchInstruction(const Instruction& instr) {
         case 0: _dispatchLSReg(instr);   break;
         case 1: _dispatchLSPCRel(instr); break;
         case 2: _dispatchLDI(instr);     break;
-        case 3: _dispatchGP(instr);      break;
+        case 3:
+            if (instr.is_unconditional_jump) _dispatchUJMP(instr);
+            else _dispatchGP(instr);
+            break;
     }
 }
 
@@ -198,6 +201,10 @@ void Little64CPU::_dispatchLDI(const Instruction& instr) {
             registers.regs[instr.rd] |= 0xFFFFFFFF00000000ULL;
         }
     }
+}
+
+void Little64CPU::_dispatchUJMP(const Instruction& instr) {
+    registers.regs[15] = registers.regs[15] + (static_cast<int64_t>(instr.pc_rel) * 2);
 }
 
 void Little64CPU::_dispatchGP(const Instruction& instr) {

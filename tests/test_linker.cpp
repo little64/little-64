@@ -32,11 +32,11 @@ int main() {
     // Check that linked output is non-empty and begins with a jump by comparing first instruction
     CHECK_EQ(linked->size() > 0, true, "Linked output exists");
 
-    // first object is start: STOP (0xFF00), second object has JAL @start (two instr: MOVE + JUMP)
-    CHECK_EQ((*linked)[0], (uint16_t)0xFF00, "First word is STOP from start");
+    // first object is start: STOP (0xDF00), second object has JAL @start (two instr: MOVE + JUMP)
+    CHECK_EQ((*linked)[0], (uint16_t)0xDF00, "First word is STOP from start");
     // The JUMP part of JAL is the third word (index 2) in final output.
-    // Resolves to target=0 from instruction at byte offset 4 => rel=-3 -> 0x53DF.
-    CHECK_EQ((*linked)[2], (uint16_t)0x53DF, "Third word is JAL to start with resolved PCREL6");
+    // Resolves to target=0 from instruction at byte offset 4 => rel=-3 -> 0xFFFD.
+    CHECK_EQ((*linked)[2], (uint16_t)0xFFFD, "Third word is JAL to start with resolved PCREL13");
 
     // Test: local symbol that sorts alphabetically after a global (exercises find_symbol_index)
     //       combined with an opcode whose bits [11:10] are non-zero (exercises PCREL6 mask).
@@ -57,13 +57,13 @@ int main() {
             std::fprintf(stderr, "Link failed: %s\n", err2.message.c_str());
             return 1;
         }
-        CHECK_EQ((*linked2)[0], (uint16_t)0xFF00, "handler = STOP");
+        CHECK_EQ((*linked2)[0], (uint16_t)0xDF00, "handler = STOP");
         // JUMP.Z now uses PCREL10 encoding: bits[9:0] = 10-bit offset, no Rd field.
         // JUMP.Z at byte 2, handler at byte 0: rel = (0-(2+2))/2 = -2
         // initial: (1<<14)|(11<<10)|0x000 = 0x6C00
         // patched (PCREL10): (0x6C00 & 0xFC00) | (-2 & 0x3FF) = 0x6C00 | 0x3FE = 0x6FFE
         CHECK_EQ((*linked2)[1], (uint16_t)0x6FFE, "JUMP.Z with external target: correct 10-bit opcode and offset");
-        CHECK_EQ((*linked2)[2], (uint16_t)0xFF00, "zz_local = STOP");
+        CHECK_EQ((*linked2)[2], (uint16_t)0xDF00, "zz_local = STOP");
     }
 
     return 0;

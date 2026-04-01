@@ -19,3 +19,4 @@ compilers/bin/*
 compilers/llvm/build
 
 *.elf
+.venv/

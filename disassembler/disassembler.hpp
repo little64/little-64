@@ -10,7 +10,7 @@ struct DisassembledInstruction {
     bool is_unknown;            // true if opcode not in any .def table
 
     // Decoded fields
-    uint8_t format;             // bits[15:14]: 0=LS_REG, 1=LS_PCREL, 2=LDI, 3=GP
+    uint8_t format;             // bits[15:14]: 0=LS_REG, 1=LS_PCREL, 2=LDI, 3=extended
     uint8_t rd;                 // bits[3:0]: destination (or source for stores)
 
     // Formats 00 and 01
@@ -30,8 +30,9 @@ struct DisassembledInstruction {
     uint8_t shift;              // bits[13:12]
     uint8_t imm8;               // bits[11:4]
 
-    // Format 11 only
-    uint8_t opcode_gp;          // bits[13:8]: GP opcode (6 bits)
+    // Format 11 extensions
+    bool is_unconditional_jump; // true for 111 (unconditional PC-relative jump)
+    uint8_t opcode_gp;          // bits[12:8]: GP opcode (5 bits) for 110
 
     // Display
     std::string mnemonic;       // e.g. "LOAD", "JUMP.Z", "LDI", "ADD"

@@ -116,8 +116,27 @@ DisassembledInstruction Disassembler::disassemble(uint16_t word, uint16_t addres
                 << std::dec << ", R" << (int)result.rd;
             break;
         }
-        case 3: { // GP ALU
-            result.opcode_gp = (word >> 8) & 0x3F;
+        case 3: { // Extended: 110 GP ALU or 111 unconditional jump
+            result.is_unconditional_jump = ((word >> 13) & 0x1) != 0;
+
+            if (result.is_unconditional_jump) {
+                uint16_t raw13 = word & 0x1FFF;
+                result.pc_rel = (raw13 & 0x1000) ? (int16_t)(raw13 | 0xE000) : (int16_t)raw13;
+                result.rd = 15;
+                result.mnemonic = "JUMP";
+                result.effective_address = address + 2 + (int16_t)result.pc_rel * 2;
+
+                oss << result.mnemonic << " @";
+                if (result.pc_rel >= 0)
+                    oss << "+" << (int)result.pc_rel;
+                else
+                    oss << (int)result.pc_rel;
+                oss << std::dec << "  ; 0x" << std::hex << std::setw(4) << std::setfill('0')
+                    << result.effective_address;
+                break;
+            }
+
+            result.opcode_gp = (word >> 8) & 0x1F;
             result.rs1       = (word >> 4) & 0xF;
 
             auto it = kGPOpcodes.find(result.opcode_gp);

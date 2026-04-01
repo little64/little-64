@@ -25,7 +25,7 @@ struct SymbolInfo {
 };
 
 // Instruction encoding format, determined during parsing.
-enum class Format { LS_REG, LS_PCREL, LDI, GP };
+enum class Format { LS_REG, LS_PCREL, LDI, GP, UJMP };
 
 // A fully-parsed instruction ready for pass2 encoding.
 struct ParsedInstruction {
@@ -55,6 +55,7 @@ public:
         ABS32   = 2,  // R_LITTLE64_ABS32  — 32-bit absolute address (reserved, unused by assembler)
         PCREL6  = 3,  // R_LITTLE64_PCREL6  — 6-bit PC-relative instruction-unit offset
         PCREL10 = 4,  // R_LITTLE64_PCREL10 — 10-bit PC-relative offset for JUMP.* opcodes
+        PCREL13 = 5,  // R_LITTLE64_PCREL13 — 13-bit PC-relative offset for unconditional JUMP
     };
 
     struct RelocEntry {

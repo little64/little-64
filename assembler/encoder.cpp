@@ -66,13 +66,21 @@ uint16_t Encoder::encodeLDI(uint8_t shift, uint8_t imm8, uint8_t rd) {
     return raw;
 }
 
-// Format 11: bits[15:14]=11
+// Format 110: bits[15:13]=110
 uint16_t Encoder::encodeGP(uint8_t opcode_gp, uint8_t rs1, uint8_t rd) {
     uint16_t raw = 0;
-    raw |= 3 << 14;              // bits[15:14]=11
-    raw |= (opcode_gp & 0x3F) << 8;
+    raw |= 0b110 << 13;          // bits[15:13]=110
+    raw |= (opcode_gp & 0x1F) << 8;
     raw |= (rs1       & 0xF)  << 4;
     raw |= (rd        & 0xF);
+    return raw;
+}
+
+// Format 111: bits[15:13]=111
+uint16_t Encoder::encodeUJMP(int16_t pc_rel13) {
+    uint16_t raw = 0;
+    raw |= 0b111 << 13;                 // bits[15:13]=111
+    raw |= static_cast<uint16_t>(pc_rel13) & 0x1FFF; // 13-bit signed
     return raw;
 }
 

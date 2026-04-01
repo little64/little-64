@@ -23,8 +23,11 @@ public:
     // Encode format 10 (Load Immediate): bits[15:14]=10
     static uint16_t encodeLDI(uint8_t shift, uint8_t imm8, uint8_t rd);
 
-    // Encode format 11 (GP ALU): bits[15:14]=11
+    // Encode format 110 (GP ALU): bits[15:13]=110
     static uint16_t encodeGP(uint8_t opcode_gp, uint8_t rs1, uint8_t rd);
+
+    // Encode format 111 (Unconditional PC-relative jump): bits[15:13]=111
+    static uint16_t encodeUJMP(int16_t pc_rel13);
 
     // Opcode lookups
     static uint8_t getLSOpcode(const std::string& mnemonic);

@@ -322,10 +322,12 @@ std::optional<std::vector<uint8_t>> Linker::linkObjectsElf(const std::vector<std
 // 2 = R_LITTLE64_ABS32   — 32-bit absolute address
 // 3 = R_LITTLE64_PCREL6  — 6-bit PC-relative, field [9:4]
 // 4 = R_LITTLE64_PCREL10 — 10-bit PC-relative, field [9:0]
+// 5 = R_LITTLE64_PCREL13 — 13-bit PC-relative, field [12:0] for 111 JUMP
 static constexpr uint32_t R_ABS64   = 1;
 static constexpr uint32_t R_ABS32   = 2;
 static constexpr uint32_t R_PCREL6  = 3;
 static constexpr uint32_t R_PCREL10 = 4;
+static constexpr uint32_t R_PCREL13 = 5;
 
 static std::optional<std::vector<uint16_t>> linkObjectsInternal(const std::vector<std::vector<uint8_t>>& objects, LinkError* err) {
     struct SectionInfo { uint64_t offset; uint64_t size; };
@@ -602,6 +604,7 @@ static std::optional<std::vector<uint16_t>> linkObjectsInternal(const std::vecto
             else if (rel.type == R_ABS32)   needed = 4;
             else if (rel.type == R_PCREL6)  needed = 2;
             else if (rel.type == R_PCREL10) needed = 2;
+            else if (rel.type == R_PCREL13) needed = 2;
             else return false; // unknown relocation type — skip silently
 
             if (rel.offset + needed > section_bytes.size()) {
@@ -646,7 +649,7 @@ static std::optional<std::vector<uint16_t>> linkObjectsInternal(const std::vecto
                 uint16_t new_instr = (instr & 0xFC0F) | ((uint16_t)(rel_val & 0x3F) << 4);
                 linked_text[patch_addr]   = new_instr & 0xFF;
                 linked_text[patch_addr+1] = (new_instr >> 8) & 0xFF;
-            } else { // R_PCREL10
+            } else if (rel.type == R_PCREL10) {
                 if (patch_addr + 2 > linked_text.size()) { if (err) err->message = "PCREL10 patch out of range"; return false; }
                 uint16_t instr = (uint16_t)linked_text[patch_addr] | ((uint16_t)linked_text[patch_addr+1] << 8);
                 // Verify this is actually a JUMP instruction (format 01, opcode 11-15)
@@ -662,6 +665,22 @@ static std::optional<std::vector<uint16_t>> linkObjectsInternal(const std::vecto
                 int64_t rel_val = diff / 2;
                 if (rel_val < -512 || rel_val > 511) { if (err) err->message = "PCREL10 reloc out of range"; return false; }
                 uint16_t new_instr = (instr & 0xFC00) | ((uint16_t)(rel_val & 0x3FF));
+                linked_text[patch_addr]   = new_instr & 0xFF;
+                linked_text[patch_addr+1] = (new_instr >> 8) & 0xFF;
+            } else { // R_PCREL13
+                if (patch_addr + 2 > linked_text.size()) { if (err) err->message = "PCREL13 patch out of range"; return false; }
+                uint16_t instr = (uint16_t)linked_text[patch_addr] | ((uint16_t)linked_text[patch_addr+1] << 8);
+                uint8_t top3 = (instr >> 13) & 0x7;
+                if (top3 != 0x7) {
+                    if (err) err->message = "R_PCREL13 applied to non-111 JUMP instruction";
+                    return false;
+                }
+                int64_t target  = (int64_t)sym_addr + rel.addend;
+                int64_t diff    = target - ((int64_t)patch_addr + 2);
+                if (diff % 2 != 0) { if (err) err->message = "PCREL13 target not instruction aligned"; return false; }
+                int64_t rel_val = diff / 2;
+                if (rel_val < -4096 || rel_val > 4095) { if (err) err->message = "PCREL13 reloc out of range"; return false; }
+                uint16_t new_instr = (instr & 0xE000) | ((uint16_t)(rel_val & 0x1FFF));
                 linked_text[patch_addr]   = new_instr & 0xFF;
                 linked_text[patch_addr+1] = (new_instr >> 8) & 0xFF;
             }

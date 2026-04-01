@@ -135,13 +135,14 @@ int main(int argc, char* argv[]) {
                         for (int j = 0; j < 8; ++j) text[r_offset+j] = (uint8_t)((target >> (8*j)) & 0xFF);
                     } else if (r_type == 2) { // ABS32
                         for (int j = 0; j < 4; ++j) text[r_offset+j] = (uint8_t)((target >> (8*j)) & 0xFF);
-                    } else if (r_type == 3 || r_type == 4) { // PCREL6 or PCREL10
+                    } else if (r_type == 3 || r_type == 4 || r_type == 5) { // PCREL6, PCREL10, or PCREL13
                         uint16_t instr = (uint16_t)text[r_offset] | ((uint16_t)text[r_offset+1] << 8);
                         int64_t pc = (int64_t)r_offset;
                         int64_t diff = (int64_t)target - (pc + 2);
                         int64_t rel = diff / 2;
                         if (r_type == 3) instr = (instr & 0xFC0F) | ((uint16_t)(rel & 0x3F) << 4);
-                        else instr = (instr & 0xFC00) | ((uint16_t)(rel & 0x3FF));
+                        else if (r_type == 4) instr = (instr & 0xFC00) | ((uint16_t)(rel & 0x3FF));
+                        else instr = (instr & 0xE000) | ((uint16_t)(rel & 0x1FFF));
                         text[r_offset] = instr & 0xFF;
                         text[r_offset+1] = (instr >> 8) & 0xFF;
                     }

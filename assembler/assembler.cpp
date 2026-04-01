@@ -73,8 +73,8 @@ static const std::unordered_map<std::string, PseudoDef> pseudo_table = {
 
         ParsedInstruction jump;
         jump.mnemonic        = "JUMP";
-        jump.detected_format = Format::LS_PCREL;
-        jump.operands        = {ops[0], makeRegToken(15, line)};
+        jump.detected_format = Format::UJMP;
+        jump.operands        = {ops[0]};
         jump.line            = line;
 
         return std::vector<Assembler::EmitItem>{
@@ -106,8 +106,8 @@ static const std::unordered_map<std::string, PseudoDef> pseudo_table = {
 
         ParsedInstruction jump;
         jump.mnemonic        = "JUMP";
-        jump.detected_format = Format::LS_PCREL;
-        jump.operands        = {ops[0], makeRegToken(15, line)};
+        jump.detected_format = Format::UJMP;
+        jump.operands        = {ops[0]};
         jump.line            = line;
 
         ParsedInstruction pop;
@@ -155,8 +155,8 @@ static const std::unordered_map<std::string, PseudoDef> pseudo_table = {
 
         ParsedInstruction jump;
         jump.mnemonic = "JUMP";
-        jump.detected_format = Format::LS_PCREL;
-        jump.operands = {pcrel_after, makeRegToken(15, line)};
+        jump.detected_format = Format::UJMP;
+        jump.operands = {pcrel_after};
         jump.line = line;
 
         DataDirective dd;
@@ -803,6 +803,18 @@ void Assembler::pass2(const SymbolTable& symbols, std::vector<uint16_t>& output,
                     });
                 }
             }
+            if (elf_mode && item.instr.detected_format == Format::UJMP &&
+                !item.instr.operands.empty() &&
+                item.instr.operands[0].kind == TokenKind::PCRelLabel) {
+                if (out_relocs) {
+                    out_relocs->push_back({
+                        item_addr,
+                        item.instr.operands[0].lexeme,
+                        RelocType::PCREL13,
+                        0
+                    });
+                }
+            }
             // Use the address computed in pass1 — correctly reflects .org
             uint16_t word = encodeInstruction(item.instr, symbols, item.instr.address, elf_mode);
             buf.push_back(static_cast<uint8_t>(word));
@@ -992,6 +1004,21 @@ ParsedInstruction Assembler::parseInstruction(const std::vector<Token>& tokens,
         throw std::runtime_error("Unknown mnemonic: " + base_mnemonic + " at line " +
                                  std::to_string(line_count));
 
+    if (base_mnemonic == "JUMP") {
+        result.detected_format = Format::UJMP;
+        if (idx >= tokens.size() || (tokens[idx].kind != TokenKind::PCRelLabel &&
+                                     tokens[idx].kind != TokenKind::PCRelOffset)) {
+            throw std::runtime_error("JUMP requires @label or @offset at line " +
+                                     std::to_string(line_count));
+        }
+        result.operands.push_back(tokens[idx++]);
+        if (idx < tokens.size() && tokens[idx].kind == TokenKind::Comma) {
+            throw std::runtime_error("JUMP does not take a destination register at line " +
+                                     std::to_string(line_count));
+        }
+        return result;
+    }
+
     // Stage 2: LS mnemonic — sub-format from first operand token
     if (idx >= tokens.size() || tokens[idx].kind == TokenKind::Newline ||
         tokens[idx].kind == TokenKind::EndOfFile)
@@ -1068,7 +1095,8 @@ ParsedInstruction Assembler::parseInstruction(const std::vector<Token>& tokens,
     }
 
     if (first_kind == TokenKind::Register &&
-        (isMoveMnemonic(base_mnemonic) || isJumpMnemonic(base_mnemonic))) {
+        (isMoveMnemonic(base_mnemonic) ||
+         (isJumpMnemonic(base_mnemonic) && base_mnemonic != "JUMP"))) {
         // Register form for MOVE/JUMP: Rs1[+offset][, Rd]
         // MOVE requires explicit Rd; JUMP defaults Rd to R15.
         result.detected_format = Format::LS_REG;
@@ -1207,9 +1235,7 @@ uint16_t Assembler::encodeInstruction(const ParsedInstruction& instr,
                 err("Offset must be 0, 2, 4, or 6 bytes");
             uint8_t offset2 = byte_offset / 2;
 
-            // JUMP is a pseudo-instruction aliased to MOVE
-            const std::string& ls_mnemonic = (instr.mnemonic == "JUMP") ? "MOVE" : instr.mnemonic;
-            uint8_t opcode = Encoder::getLSOpcode(ls_mnemonic);
+            uint8_t opcode = Encoder::getLSOpcode(instr.mnemonic);
             return Encoder::encodeLSReg(opcode, offset2, rs1, rd);
         }
 
@@ -1246,9 +1272,7 @@ uint16_t Assembler::encodeInstruction(const ParsedInstruction& instr,
                 err("Expected @label or @offset");
             }
 
-            // JUMP is a pseudo-instruction aliased to MOVE
-            const std::string& ls_mnemonic = (instr.mnemonic == "JUMP") ? "MOVE" : instr.mnemonic;
-            uint8_t opcode = Encoder::getLSOpcode(ls_mnemonic);
+            uint8_t opcode = Encoder::getLSOpcode(instr.mnemonic);
 
             if (isJumpMnemonic(instr.mnemonic) && instr.mnemonic != "JUMP") {
                 // Conditional JUMP.* in Format 01: 10-bit signed offset, Rd implicit = R15
@@ -1261,6 +1285,42 @@ uint16_t Assembler::encodeInstruction(const ParsedInstruction& instr,
                     err("PC-relative offset out of range [-32, 31]");
                 return Encoder::encodeLSPCRel(opcode, static_cast<int8_t>(raw_offset), rd);
             }
+        }
+
+        case Format::UJMP: {
+            if (instr.operands.size() != 1)
+                err("JUMP requires @label or @offset");
+
+            int32_t raw_offset = 0;
+            const Token& addr_tok = instr.operands[0];
+
+            if (addr_tok.kind == TokenKind::PCRelLabel) {
+                auto it = symbols.find(addr_tok.lexeme);
+                bool has_symbol = (it != symbols.end());
+                bool defined = has_symbol && it->second.defined;
+
+                if (!elf_mode && (!has_symbol || !defined))
+                    err("Undefined label: " + addr_tok.lexeme);
+
+                if (!elf_mode) {
+                    if (!has_symbol) err("Undefined label: " + addr_tok.lexeme);
+                    uint16_t target = it->second.value;
+                    int32_t byte_diff = (int32_t)target - (int32_t)(current_address + 2);
+                    if (byte_diff % 2 != 0) err("Target address is not instruction-aligned");
+                    raw_offset = byte_diff / 2;
+                } else {
+                    raw_offset = 0;
+                }
+            } else if (addr_tok.kind == TokenKind::PCRelOffset) {
+                raw_offset = (int32_t)(int64_t)addr_tok.int_value;
+            } else {
+                err("Expected @label or @offset");
+            }
+
+            if (!elf_mode && (raw_offset < -4096 || raw_offset > 4095))
+                err("PC-relative offset out of range [-4096, 4095] for JUMP");
+
+            return Encoder::encodeUJMP(static_cast<int16_t>(raw_offset));
         }
     }
 

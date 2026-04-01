@@ -1,6 +1,6 @@
 // LITTLE64_GP_OPCODE(enum_name, opcode_value, mnemonic_string, encoding)
 // encoding: GP::Encoding value — 0=NONE, 1=RD, 2=RS1_RD, 3=IMM4_RD
-// Format 11 instructions (bits[15:14]=11): 6-bit opcode space for GP ALU operations
+// Format 110 instructions (bits[15:13]=110): 5-bit opcode space for GP ALU operations
 LITTLE64_GP_OPCODE(ADD,  0, "ADD",  2)
 LITTLE64_GP_OPCODE(SUB,  1, "SUB",  2)
 LITTLE64_GP_OPCODE(TEST, 2, "TEST", 2)
@@ -17,13 +17,13 @@ LITTLE64_GP_OPCODE(SLLI, 23, "SLLI", 3)
 LITTLE64_GP_OPCODE(SRLI, 24, "SRLI", 3)
 LITTLE64_GP_OPCODE(SRAI, 25, "SRAI", 3)
 
-// Opcodes >= 56 are defined as "special"; while they are in ALU space,
+// Opcodes >= 28 are defined as "special"; while they are in ALU space,
 // they have non-ALU effects.
-LITTLE64_GP_OPCODE(LSR, 56, "LSR", 2) // Load special register; load the special register by ID in Rs1 into Rd
-LITTLE64_GP_OPCODE(SSR, 57, "SSR", 2) // Store special register; store the value in Rd into the special register by ID in Rs1
+LITTLE64_GP_OPCODE(LSR, 28, "LSR", 2) // Load special register; load the special register by ID in Rs1 into Rd
+LITTLE64_GP_OPCODE(SSR, 29, "SSR", 2) // Store special register; store the value in Rd into the special register by ID in Rs1
 
-// Opcodes >= 60 are no-operand instructions
-LITTLE64_GP_OPCODE(IRET, 60, "IRET", 0)
+// Opcodes >= 30 are no-operand instructions
+LITTLE64_GP_OPCODE(IRET, 30, "IRET", 0)
 
 // Emulator-specifc instruction: stop emulation
-LITTLE64_GP_OPCODE(STOP, 63, "STOP", 0)
+LITTLE64_GP_OPCODE(STOP, 31, "STOP", 0)
