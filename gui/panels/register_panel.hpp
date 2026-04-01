@@ -1,12 +1,12 @@
 #pragma once
 
-struct AppState;
+#include "panel_contexts.hpp"
 
 class RegisterPanel {
 public:
-    explicit RegisterPanel(AppState& state);
+    explicit RegisterPanel(RegisterPanelContext& state);
     void render();
 
 private:
-    AppState& state;
+    RegisterPanelContext& state;
 };

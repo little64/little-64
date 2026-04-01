@@ -1,16 +1,15 @@
 #include "control_panel.hpp"
-#include "../app.hpp"
 #include <imgui.h>
 
-ControlPanel::ControlPanel(AppState& state)
+ControlPanel::ControlPanel(ControlPanelContext& state)
     : state(state) {}
 
 void ControlPanel::render() {
     if (ImGui::Begin("Control")) {
-        auto status_text = state.cpu.isRunning ? "Running" : "Stopped";
+        auto status_text = state.emulator.isRunning() ? "Running" : "Stopped";
 
         // If the CPU stopped itself, we disable live running
-        if (!state.cpu.isRunning && live_running) {
+        if (!state.emulator.isRunning() && live_running) {
             live_running = false;
         }
 
@@ -18,7 +17,7 @@ void ControlPanel::render() {
         if (ImGui::Button("Step")) {
             if (!live_running) {
                 try {
-                    state.cpu.cycle();
+                    state.emulator.cycle();
                 } catch (const std::exception& e) {
                     error_text = e.what();
                 }
@@ -35,13 +34,13 @@ void ControlPanel::render() {
         ImGui::SameLine();
 
         if (ImGui::Button("Reset")) {
-            state.cpu.reset();
+            state.emulator.reset();
         }
 
         ImGui::SameLine();
 
         if (ImGui::Button("Fire Interrupt (63)")) {
-            state.cpu.assertInterrupt(63);
+            state.emulator.assertInterrupt(63);
         }
 
         if (ImGui::SliderInt("Running Speed (instr/frame)", &running_speed, 1, 10000)) {
@@ -56,7 +55,7 @@ void ControlPanel::render() {
         if (live_running) {
             try {
                 for (int i = 0; i < running_speed; ++i) {
-                    state.cpu.cycle();
+                    state.emulator.cycle();
                 }
             } catch (const std::exception& e) {
                 error_text = e.what();

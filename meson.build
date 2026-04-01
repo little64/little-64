@@ -4,16 +4,54 @@ project('little-64', 'cpp',
 
 arch_inc = include_directories('arch')
 
+core_emulator_src = [
+  'emulator/cpu.cpp',
+  'emulator/debug_server.cpp',
+  'emulator/debug_transport.cpp',
+  'emulator/emulator_session.cpp',
+  'emulator/headless_runtime.cpp',
+  'emulator/memory_region.cpp',
+  'emulator/memory_bus.cpp',
+  'emulator/ram_region.cpp',
+  'emulator/rom_region.cpp',
+  'emulator/serial_device.cpp',
+]
+
+core_assembler_src = [
+  'assembler/lexer.cpp',
+  'assembler/encoder.cpp',
+  'assembler/assembler.cpp',
+]
+
+core_linker_src = [
+  'linker/linker.cpp',
+]
+
+core_disassembler_src = [
+  'disassembler/disassembler.cpp',
+]
+
+core_project_src = [
+  'project/project.cpp',
+  'project/compiler.cpp',
+]
+
+ui_gui_src = [
+  'gui/main.cpp',
+  'gui/app.cpp',
+  'gui/panels/assembler_panel.cpp',
+  'gui/panels/control_panel.cpp',
+  'gui/panels/disassembly_panel.cpp',
+  'gui/panels/register_panel.cpp',
+  'gui/panels/memory_panel.cpp',
+  'gui/panels/serial_output_panel.cpp',
+  'gui/panels/memmap_panel.cpp',
+  'gui/vendor/TextEditor.cpp',
+]
+
 # --- Emulator (static library) ---
 emulator_lib = static_library('little-64-cpu',
-  [
-    'emulator/cpu.cpp',
-    'emulator/memory_region.cpp',
-    'emulator/memory_bus.cpp',
-    'emulator/ram_region.cpp',
-    'emulator/rom_region.cpp',
-    'emulator/serial_device.cpp',
-  ],
+  core_emulator_src,
   include_directories : [include_directories('emulator'), arch_inc],
   install : false,
 )
@@ -25,13 +63,16 @@ executable('little-64',
   install : true,
 )
 
+executable('little-64-debug',
+  ['emulator/debug_main.cpp'],
+  link_with : emulator_lib,
+  include_directories : [include_directories('emulator'), arch_inc],
+  install : true,
+)
+
 # --- Assembler (static library) ---
 asm_lib = static_library('little-64-asm-lib',
-  [
-    'assembler/lexer.cpp',
-    'assembler/encoder.cpp',
-    'assembler/assembler.cpp',
-  ],
+  core_assembler_src,
   include_directories : [include_directories('assembler'), arch_inc],
   install : false,
 )
@@ -53,7 +94,7 @@ test_asm = executable('test-assembler',
 test('assembler', test_asm, suite : 'assembler')
 
 linker_lib = static_library('little-64-linker-lib',
-  ['linker/linker.cpp'],
+  core_linker_src,
   include_directories : [include_directories('linker')],
   install : false,
 )
@@ -102,10 +143,7 @@ endforeach
 
 # --- Project library and runner ---
 project_lib = static_library('little-64-project-lib',
-  [
-    'project/project.cpp',
-    'project/compiler.cpp',
-  ],
+  core_project_src,
   include_directories : [include_directories('project')],
   install : false,
 )
@@ -130,7 +168,7 @@ test('project-runner',
 
 # --- Disassembler (static library for embedding) ---
 disasm_lib = static_library('little-64-disasm-lib',
-  ['disassembler/disassembler.cpp'],
+  core_disassembler_src,
   include_directories : [include_directories('disassembler'), arch_inc],
   install : true,
 )
@@ -155,21 +193,8 @@ nfd_dep = dependency('nativefiledialog-extended',
   fallback : ['nativefiledialog-extended', 'nfde_dep'],
 )
 
-gui_src = [
-  'gui/main.cpp',
-  'gui/app.cpp',
-  'gui/panels/assembler_panel.cpp',
-  'gui/panels/control_panel.cpp',
-  'gui/panels/disassembly_panel.cpp',
-  'gui/panels/register_panel.cpp',
-  'gui/panels/memory_panel.cpp',
-  'gui/panels/serial_output_panel.cpp',
-  'gui/panels/memmap_panel.cpp',
-  'gui/vendor/TextEditor.cpp',
-]
-
 executable('little-64-gui',
-  gui_src,
+  ui_gui_src,
   link_with : [asm_lib, disasm_lib, emulator_lib, linker_lib, project_lib],
   include_directories : [
     include_directories('gui'),

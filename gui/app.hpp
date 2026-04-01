@@ -9,12 +9,13 @@ struct SDL_Window;
 typedef void* SDL_GLContext;
 struct ImFont;
 
-#include "../emulator/cpu.hpp"
+#include "../emulator/emulator_session.hpp"
 #include "../disassembler/disassembler.hpp"
+#include "panels/panel_contexts.hpp"
 
 // Shared application state passed to all panels
 struct AppState {
-    Little64CPU cpu;
+    EmulatorSession emulator;
     std::vector<DisassembledInstruction> disassembly;
     std::string editor_source;
     std::string assemble_error;
@@ -50,6 +51,14 @@ private:
     void updateSerialOutput(); // drain serial TX buffer into state.serial_output
 
     AppState state;
+    AssemblerPanelContext assembler_ctx;
+    ControlPanelContext control_ctx;
+    DisassemblyPanelContext disassembly_ctx;
+    RegisterPanelContext register_ctx;
+    MemoryPanelContext memory_ctx;
+    SerialOutputPanelContext serial_output_ctx;
+    MemoryMapPanelContext memmap_ctx;
+
     std::unique_ptr<AssemblerPanel>    assembler_panel;
     std::unique_ptr<ControlPanel>      control_panel;
     std::unique_ptr<DisassemblyPanel>  disassembly_panel;

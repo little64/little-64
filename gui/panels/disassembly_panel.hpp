@@ -1,12 +1,12 @@
 #pragma once
 
-struct AppState;
+#include "panel_contexts.hpp"
 
 class DisassemblyPanel {
 public:
-    explicit DisassemblyPanel(AppState& state);
+    explicit DisassemblyPanel(DisassemblyPanelContext& state);
     void render();
 
 private:
-    AppState& state;
+    DisassemblyPanelContext& state;
 };

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../app.hpp"
+#include "panel_contexts.hpp"
 #include <imgui.h>
 #include <vector>
 #include <string>
@@ -14,11 +14,11 @@ struct MemoryRegionInfo {
 
 class MemoryMapPanel {
 public:
-    explicit MemoryMapPanel(AppState& state);
+    explicit MemoryMapPanel(MemoryMapPanelContext& state);
     void render();
 
 private:
-    AppState& state;
+    MemoryMapPanelContext& state;
     std::vector<MemoryRegionInfo> regions;
     int selected_region;
     bool show_serial_details;

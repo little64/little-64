@@ -107,7 +107,9 @@ Each panel is a standalone class with a simple interface:
 ### Key Classes
 
 - **`App`**: SDL2+OpenGL3 initialization, main event loop, panel lifecycle
-- **`AppState`**: Single source of truth for CPU state, disassembly cache, editor state
+- **`AppState`**: Shared UI state (disassembly cache, editor/session state, serial output)
+- **`EmulatorSession`**: Stable emulator-facing API used by GUI panels (run control, registers, memory, regions)
+- **`IEmulatorRuntime`** (`emulator/frontend_api.hpp`): Public frontend/runtime contract for headless or GUI integrations
 - **`AssemblerPanel`**: Text editor + assembly compilation
 - **`DisassemblyPanel`**: Instruction listing with PC highlight
 - **`RegisterPanel`**: GPR + PC display
@@ -176,9 +178,10 @@ The memory panel uses virtual scrolling (ImGuiListClipper) to only render visibl
 ### Architecture
 
 - **AppState**: Central shared state struct passed to all panels by reference (dependency injection)
+   - `emulator`: `EmulatorSession` facade used by the GUI; hides raw `Little64CPU` internals
   - `current_file`: absolute path to the open file, or empty string if untitled
   - `editor_source`: copy of text in assembler (kept in sync with buffer)
-  - All panels read from/write to this single state object
+   - Panels no longer depend on `AppState` directly; each panel gets a narrow context from `gui/panels/panel_contexts.hpp`
 - **AssemblerPanel**: Manages editor buffer, file I/O, and keyboard shortcuts (Ctrl+O/S)
 - **App lifecycle**: `loadLastFile()` on init, `saveLastFile()` on shutdown
 

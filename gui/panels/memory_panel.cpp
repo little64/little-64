@@ -1,19 +1,16 @@
 #include "memory_panel.hpp"
-#include "../app.hpp"
 #include <imgui.h>
 #include <cctype>
 #include <cstdio>
 #include <cstring>
 
-MemoryPanel::MemoryPanel(AppState& state)
+MemoryPanel::MemoryPanel(MemoryPanelContext& state)
     : state(state) {}
 
 void MemoryPanel::render() {
     if (ImGui::Begin("Memory")) {
-        const MemoryBus& bus = state.cpu.getMemoryBus();
-
         // If following PC, snap page_base to the 64KB-aligned page containing PC
-        uint64_t pc = state.cpu.registers.regs[15];
+        uint64_t pc = state.emulator.pc();
         if (follow_pc) {
             page_base = pc & ~uint64_t{0xFFFF};
         }
@@ -71,7 +68,7 @@ void MemoryPanel::render() {
                 // Hex bytes with gap at byte 8
                 uint8_t bytes[16];
                 for (int i = 0; i < 16; ++i) {
-                    bytes[i] = bus.read8(row_addr + i);
+                    bytes[i] = state.emulator.memoryRead8(row_addr + i);
                     if (i == 8) offset += snprintf(buf + offset, sizeof(buf) - offset, "  ");
                     offset += snprintf(buf + offset, sizeof(buf) - offset, "%02X ", bytes[i]);
                 }

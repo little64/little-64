@@ -7,7 +7,6 @@
 #include "panels/serial_output_panel.hpp"
 #include "panels/memmap_panel.hpp"
 
-#include "../emulator/serial_device.hpp"
 #include <SDL2/SDL.h>
 #include <GL/gl.h>
 #include <imgui.h>
@@ -20,7 +19,16 @@
 #include <cmath>
 #include <cstring>
 
-App::App() {}
+App::App()
+    : assembler_ctx{state.emulator, state.disassembly, state.assemble_error,
+                    state.current_file, state.project_path,
+                    state.editor_fonts, state.editor_font_idx}
+    , control_ctx{state.emulator}
+    , disassembly_ctx{state.emulator, state.disassembly}
+    , register_ctx{state.emulator}
+    , memory_ctx{state.emulator}
+    , serial_output_ctx{state.serial_output}
+    , memmap_ctx{state.emulator} {}
 
 App::~App() {
     shutdown();
@@ -101,13 +109,13 @@ bool App::init() {
     loadLastFile();
 
     // Initialize panels
-    assembler_panel     = std::make_unique<AssemblerPanel>(state);
-    control_panel       = std::make_unique<ControlPanel>(state);
-    disassembly_panel   = std::make_unique<DisassemblyPanel>(state);
-    register_panel      = std::make_unique<RegisterPanel>(state);
-    memory_panel        = std::make_unique<MemoryPanel>(state);
-    serial_output_panel = std::make_unique<SerialOutputPanel>(state);
-    memmap_panel        = std::make_unique<MemoryMapPanel>(state);
+    assembler_panel     = std::make_unique<AssemblerPanel>(assembler_ctx);
+    control_panel       = std::make_unique<ControlPanel>(control_ctx);
+    disassembly_panel   = std::make_unique<DisassemblyPanel>(disassembly_ctx);
+    register_panel      = std::make_unique<RegisterPanel>(register_ctx);
+    memory_panel        = std::make_unique<MemoryPanel>(memory_ctx);
+    serial_output_panel = std::make_unique<SerialOutputPanel>(serial_output_ctx);
+    memmap_panel        = std::make_unique<MemoryMapPanel>(memmap_ctx);
 
     running = true;
     return true;
@@ -235,12 +243,9 @@ void App::shutdown() {
 }
 
 void App::updateSerialOutput() {
-    SerialDevice* serial = state.cpu.getSerial();
-    if (!serial) return;
-    const std::string& buf = serial->txBuffer();
+    std::string buf = state.emulator.drainSerialTx();
     if (!buf.empty()) {
         state.serial_output += buf;
-        serial->clearTxBuffer();
     }
 }
 

@@ -1,5 +1,4 @@
 #include "assembler_panel.hpp"
-#include "../app.hpp"
 #include "assembler.hpp"
 #include "compiler.hpp"
 #include "disassembler.hpp"
@@ -77,7 +76,7 @@ std::string AssemblerPanel::Tab::displayName() const {
 // Constructor
 // ===========================================================================
 
-AssemblerPanel::AssemblerPanel(AppState& state)
+AssemblerPanel::AssemblerPanel(AssemblerPanelContext& state)
     : state_(state)
 {
     const std::string& last = state_.current_file;
@@ -143,7 +142,7 @@ void AssemblerPanel::syncCurrentFile() {
 
 void AssemblerPanel::loadProgramIntoState(const std::vector<uint16_t>& program,
                                            uint64_t entry_offset) {
-    state_.cpu.loadProgram(program, 0, entry_offset);
+    state_.emulator.loadProgram(program, 0, entry_offset);
     state_.disassembly = Disassembler::disassembleBuffer(program.data(), program.size(), 0);
 }
 

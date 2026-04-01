@@ -3,16 +3,16 @@
 #include <cstdint>
 #include <string>
 
-struct AppState;
+#include "panel_contexts.hpp"
 
 class ControlPanel {
 public:
-    explicit ControlPanel(AppState& state);
+    explicit ControlPanel(ControlPanelContext& state);
     void render();
 
     bool live_running = false;
     int running_speed = 1;  // number of instructions to execute per frame when live_running is true
 private:
-    AppState& state;
+    ControlPanelContext& state;
     std::string error_text = "";
 };

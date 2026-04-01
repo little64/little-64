@@ -1,8 +1,7 @@
 #include "serial_output_panel.hpp"
-#include "../app.hpp"
 #include <imgui.h>
 
-SerialOutputPanel::SerialOutputPanel(AppState& state)
+SerialOutputPanel::SerialOutputPanel(SerialOutputPanelContext& state)
     : state(state) {}
 
 void SerialOutputPanel::render() {

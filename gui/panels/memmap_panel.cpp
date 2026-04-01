@@ -1,13 +1,12 @@
 #include "memmap_panel.hpp"
-#include "../app.hpp"
 #include <imgui.h>
 
-MemoryMapPanel::MemoryMapPanel(AppState& state)
+MemoryMapPanel::MemoryMapPanel(MemoryMapPanelContext& state)
     : state(state) {}
 
 void MemoryMapPanel::render() {
     if (ImGui::Begin("Memory Map")) {
-        const auto& regions = state.cpu.getMemoryBus().regions();
+        const auto regions = state.emulator.memoryRegions();
 
         if (regions.empty()) {
             ImGui::TextDisabled("No memory regions loaded.");
@@ -24,7 +23,7 @@ void MemoryMapPanel::render() {
 
                 for (const auto& r : regions) {
                     // Determine type and row color
-                    std::string_view name = r->name();
+                    std::string_view name = r.name;
                     const char* type_str = "MMIO";
                     ImVec4 color = ImVec4(1.0f, 0.85f, 0.2f, 1.0f);  // yellow for MMIO
 
@@ -43,11 +42,11 @@ void MemoryMapPanel::render() {
                     ImGui::TextUnformatted(name.data(), name.data() + name.size());
 
                     ImGui::TableNextColumn();
-                    ImGui::Text("0x%016llX", (unsigned long long)r->base());
+                    ImGui::Text("0x%016llX", (unsigned long long)r.base);
 
                     ImGui::TableNextColumn();
                     // Human-readable size
-                    uint64_t sz = r->size();
+                    uint64_t sz = r.size;
                     if (sz >= 1024 * 1024)
                         ImGui::Text("%.0f MB", (double)sz / (1024.0 * 1024.0));
                     else if (sz >= 1024)
@@ -56,7 +55,7 @@ void MemoryMapPanel::render() {
                         ImGui::Text("%llu B", (unsigned long long)sz);
 
                     ImGui::TableNextColumn();
-                    ImGui::Text("0x%016llX", (unsigned long long)(r->end() - 1));
+                    ImGui::Text("0x%016llX", (unsigned long long)(r.base + r.size - 1));
 
                     ImGui::TableNextColumn();
                     ImGui::TextUnformatted(type_str);

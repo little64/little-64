@@ -4,12 +4,11 @@
 #include <vector>
 #include <memory>
 #include "TextEditor.h"
-
-struct AppState;
+#include "panel_contexts.hpp"
 
 class AssemblerPanel {
 public:
-    explicit AssemblerPanel(AppState& state);
+    explicit AssemblerPanel(AssemblerPanelContext& state);
     void render();
 
     // Open a project file (called externally, e.g. at startup).
@@ -29,7 +28,7 @@ private:
         std::string displayName() const;
     };
 
-    AppState& state_;
+    AssemblerPanelContext& state_;
     std::vector<std::unique_ptr<Tab>> tabs_;
     int active_tab_       = 0;
     int next_uid_         = 0;

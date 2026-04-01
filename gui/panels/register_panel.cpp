@@ -1,14 +1,15 @@
 #include "register_panel.hpp"
-#include "../app.hpp"
 #include <imgui.h>
 #include <iomanip>
 #include <sstream>
 
-RegisterPanel::RegisterPanel(AppState& state)
+RegisterPanel::RegisterPanel(RegisterPanelContext& state)
     : state(state) {}
 
 void RegisterPanel::render() {
     if (ImGui::Begin("Registers")) {
+        const RegisterSnapshot regs = state.emulator.registers();
+
         if (ImGui::BeginTable("regs_table", 2, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
             ImGui::TableSetupColumn("Register", ImGuiTableColumnFlags_WidthFixed, 80.0f);
             ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch);
@@ -43,7 +44,7 @@ void RegisterPanel::render() {
                 // Format as hex
                 std::ostringstream oss;
                 oss << "0x" << std::hex << std::setfill('0') << std::setw(16)
-                    << state.cpu.registers.regs[i];
+                    << regs.gpr[i];
                 ImGui::Text("%s", oss.str().c_str());
             }
 
@@ -54,20 +55,19 @@ void RegisterPanel::render() {
             ImGui::Text("— Special —");
             ImGui::PopStyleColor();
 
-            const auto& sr = state.cpu.registers;
             struct SREntry { const char* name; uint64_t value; const char* note; };
             SREntry sr_entries[] = {
-                { "cpu_ctrl",  sr.cpu_control,          nullptr },
-                { "int_table", sr.interrupt_table_base, nullptr },
-                { "int_mask",  sr.interrupt_mask,       nullptr },
-                { "int_state", sr.interrupt_states,     nullptr },
-                { "int_epc",   sr.interrupt_epc,        nullptr },
-                { "int_eflg",  sr.interrupt_eflags,     nullptr },
-                { "int_excp",  sr.interrupt_except,     nullptr },
-                { "int_dat0",  sr.interrupt_data[0],    nullptr },
-                { "int_dat1",  sr.interrupt_data[1],    nullptr },
-                { "int_dat2",  sr.interrupt_data[2],    nullptr },
-                { "int_dat3",  sr.interrupt_data[3],    nullptr },
+                { "cpu_ctrl",  regs.cpu_control,          nullptr },
+                { "int_table", regs.interrupt_table_base, nullptr },
+                { "int_mask",  regs.interrupt_mask,       nullptr },
+                { "int_state", regs.interrupt_states,     nullptr },
+                { "int_epc",   regs.interrupt_epc,        nullptr },
+                { "int_eflg",  regs.interrupt_eflags,     nullptr },
+                { "int_excp",  regs.interrupt_except,     nullptr },
+                { "int_dat0",  regs.interrupt_data[0],    nullptr },
+                { "int_dat1",  regs.interrupt_data[1],    nullptr },
+                { "int_dat2",  regs.interrupt_data[2],    nullptr },
+                { "int_dat3",  regs.interrupt_data[3],    nullptr },
             };
 
             for (const auto& e : sr_entries) {

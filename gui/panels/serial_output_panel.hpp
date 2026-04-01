@@ -1,13 +1,13 @@
 #pragma once
 
-struct AppState;
+#include "panel_contexts.hpp"
 
 class SerialOutputPanel {
 public:
-    explicit SerialOutputPanel(AppState& state);
+    explicit SerialOutputPanel(SerialOutputPanelContext& state);
     void render();
 
 private:
-    AppState& state;
+    SerialOutputPanelContext& state;
     bool auto_scroll = true;
 };

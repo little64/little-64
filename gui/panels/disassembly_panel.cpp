@@ -1,12 +1,12 @@
 #include "disassembly_panel.hpp"
-#include "../app.hpp"
 #include <imgui.h>
 
-DisassemblyPanel::DisassemblyPanel(AppState& state)
+DisassemblyPanel::DisassemblyPanel(DisassemblyPanelContext& state)
     : state(state) {}
 
 void DisassemblyPanel::render() {
     if (ImGui::Begin("Disassembly")) {
+        const uint64_t pc = state.emulator.pc();
         if (ImGui::BeginTable("disasm_table", 3,
                               ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY)) {
             ImGui::TableSetupColumn("Address", ImGuiTableColumnFlags_WidthFixed, 80.0f);
@@ -18,7 +18,7 @@ void DisassemblyPanel::render() {
                 ImGui::TableNextRow();
 
                 // Highlight row if PC matches this instruction's address
-                if (instr.address == state.cpu.registers.regs[15]) { // PC is R15
+                if (instr.address == pc) {
                     ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0,
                                           ImGui::GetColorU32(ImVec4(0.3f, 0.7f, 1.0f, 0.3f)));
                 }
