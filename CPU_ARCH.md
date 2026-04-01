@@ -73,7 +73,7 @@ Bits [15:14] | Format
      00      | LS Register
      01      | LS PC-Relative
      10      | Load Immediate (LDI)
-     11      | GP ALU
+  11      | Extended (GP or unconditional JUMP)
 ```
 
 ### Format 00 — LS Register
@@ -167,16 +167,20 @@ LDI.S3 #0x80, R1   ; R1 = 0xFFFFFFFF80000000  (bit 7 of 0x80 is 1, sign extend)
 
 Use `LDI64` pseudo-instruction for convenient 64-bit constant loading.
 
-### Format 11 — GP ALU
+### Format 11 — Extended
+
+Format 11 has two sub-encodings selected by bit 13.
+
+#### Sub-layout A — GP ALU (`110`)
 
 ```
 15 14 13 12 11 10  9  8  7  6  5  4  3  2  1  0
- 1  1 [        OPCODE_GP        ] [   Rs1  ] [Rd ]
+ 1  1  0 [    OPCODE_GP    ] [   Rs1  ] [Rd ]
 ```
 
 | Field | Bits | Width | Description |
 |---|---|---|---|
-| OPCODE_GP | [13:8] | 6 | GP opcode (see OPCODE_GP table below) |
+| OPCODE_GP | [12:8] | 5 | GP opcode (see OPCODE_GP table below) |
 | Rs1 | [7:4] | 4 | Register (register-form) or Immediate (immediate-form); see table |
 | Rd | [3:0] | 4 | Destination (and second source) register |
 
@@ -186,6 +190,23 @@ Use `LDI64` pseudo-instruction for convenient 64-bit constant loading.
 - **Immediate-form** (SLLI, SRLI, SRAI): Rs1 = 4-bit immediate (0–15)
   - Operation: `Rd = Rd OP #Rs1` (shift by the literal count in Rs1)
   - The assembler validates that the immediate is in range [0–15]
+
+#### Sub-layout B — Unconditional PC-Relative JUMP (`111`)
+
+```
+15 14 13 12 11 10  9  8  7  6  5  4  3  2  1  0
+ 1  1  1 [               PC-REL OFFSET               ]
+```
+
+| Field | Bits | Width | Description |
+|---|---|---|---|
+| PC-REL | [12:0] | 13 | Signed offset; byte offset = PC-REL × 2 |
+
+Destination is always R15 (the PC).
+
+Effective address = `PC_next + PC-REL × 2`
+
+Branch range: **±4095 instructions** (±8190 bytes) relative to the following instruction.
 
 ## OPCODE_LS Table
 
@@ -228,10 +249,10 @@ Use `LDI64` pseudo-instruction for convenient 64-bit constant loading.
 | 23 | SLLI | immediate-form | #N, Rd | `Rd = Rd << N` (left shift by 4-bit immediate, N ∈ 0–15) |
 | 24 | SRLI | immediate-form | #N, Rd | `Rd = Rd >> N` (logical right shift by 4-bit immediate, N ∈ 0–15) |
 | 25 | SRAI | immediate-form | #N, Rd | `Rd = Rd >> N` (arithmetic right shift by 4-bit immediate, N ∈ 0–15) |
-| 56 | LSR | register-form | Rs1, Rd | `Rd = SR[Rs1]` (load special register by index in Rs1) |
-| 57 | SSR | register-form | Rs1, Rd | `SR[Rs1] = Rd` (store special register by index in Rs1) |
-| 60 | IRET | — | — | Return from interrupt: restore PC, flags, re-enable interrupts |
-| 63 | STOP | — | — | Halt the emulator |
+| 28 | LSR | register-form | Rs1, Rd | `Rd = SR[Rs1]` (load special register by index in Rs1) |
+| 29 | SSR | register-form | Rs1, Rd | `SR[Rs1] = Rd` (store special register by index in Rs1) |
+| 30 | IRET | — | — | Return from interrupt: restore PC, flags, re-enable interrupts |
+| 31 | STOP | — | — | Halt the emulator |
 
 **Encoding column:** Register-form instructions use the Rs1 field as a register index (0–15). Immediate-form instructions (SLLI/SRLI/SRAI) use the Rs1 field as a 4-bit literal value (0–15). The assembler automatically selects the encoding based on the mnemonic.
 
@@ -300,6 +321,13 @@ SRAI #3, Rd              ; Rd = Rd >> 3         (arithmetic right shift by 4-bit
 ```
 
 **Note:** SLLI, SRLI, and SRAI use the Rs1 field in the instruction encoding as a 4-bit immediate (the shift count), not as a register index. The assembler validates the immediate is in range [0–15].
+
+### Format 11 — Unconditional JUMP
+
+```asm
+JUMP @label              ; branch to label (13-bit PC-relative offset, ±4095 instructions)
+JUMP @-4                 ; branch to PC-relative offset -4 instructions
+```
 
 ### JUMP.* bare register form (Format 00)
 

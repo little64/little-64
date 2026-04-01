@@ -45,7 +45,7 @@ Three symbolic aliases are also recognised (case-insensitive):
 | `LR`  | R14      | Link register |
 | `PC`  | R15      | Program counter |
 
-Register `R15` (PC) is implicitly used as the destination by jump instructions and by `MOVE` when no destination is given.
+Register `R15` (PC) is implicitly used as the destination by `JUMP` and by PC-relative `JUMP.*` forms that omit an explicit destination register.
 
 ---
 
@@ -150,11 +150,11 @@ MNEMONIC [Rs1+offset], Rd
 MNEMONIC [Rs1], Rd          ; offset defaults to 0
 ```
 
-`MOVE`, `JUMP`, `PUSH`, and `POP` do **not** use the bracket form (see their sections below).
+`MOVE`, `JUMP`, `JUMP.*`, `PUSH`, and `POP` do **not** use the bracket form (see their sections below).
 
 ### Register address `Rs1` / `Rs1+offset`
 
-Used by `MOVE` and `JUMP` for register-relative address computation (format LS-REG), without implying a memory dereference:
+Used by `MOVE` and register-form `JUMP.*` (conditional move/branch) for register-relative address computation (format LS-REG), without implying a memory dereference:
 
 ```
 R2          ; base register, offset = 0
@@ -168,7 +168,7 @@ MOVE Rs1+offset, Rd
 
 ### PC-relative address `@label` / `@±N`
 
-Used by load/store and jump instructions with PC-relative addressing (format LS-PCREL):
+Used by load/store instructions, conditional jump instructions, and unconditional `JUMP` with PC-relative addressing:
 
 ```
 @loop           ; resolve label to a PC-relative offset
@@ -181,21 +181,25 @@ Offsets are counted in **instruction units** (each instruction is 2 bytes), rela
 The encodable range depends on the opcode:
 - Non-JUMP opcodes (LOAD, STORE, PUSH, POP, MOVE, BYTE\_LOAD, etc.): **−32 to +31** instruction units (6-bit signed field).
 - JUMP.\* opcodes (conditional branches): **−511 to +511** instruction units (10-bit signed field).
+- JUMP (unconditional): **−4096 to +4095** instruction units (13-bit signed field).
 
 The full instruction syntax is:
 
 ```
 MNEMONIC @label, Rd
 MNEMONIC @±N, Rd
+JUMP @label
+JUMP @±N
 ```
 
 For JUMP.\* in PC-relative form, the `Rd` operand is accepted but ignored — the destination is always R15 (the PC).
+For unconditional `JUMP`, no `Rd` operand is accepted.
 
 ---
 
 ## Instruction format summary
 
-The assembler recognises four instruction formats. The format is inferred automatically from the mnemonic and the first operand token.
+The assembler recognises five instruction formats. The format is inferred automatically from the mnemonic and the first operand token.
 
 ### GP — General-purpose ALU instructions
 
@@ -234,11 +238,18 @@ MNEMONIC [Rs1+offset], Rd
 
 `MOVE`, `JUMP`, `PUSH`, and `POP` use a bracket-free register form instead (see their sections below).
 
-### LS-PCREL — Load/store/jump, PC-relative
+### LS-PCREL — Load/store and conditional jump, PC-relative
 
 ```
 MNEMONIC @label,  Rd
 MNEMONIC @±N,     Rd
+```
+
+### UJMP — Unconditional jump, PC-relative
+
+```
+JUMP @label
+JUMP @±N
 ```
 
 ---
@@ -346,7 +357,8 @@ JUMP @ext_fn
 
 PC-relative label operands generate relocations in ELF object output:
 
-- `JUMP @label` and all non-JUMP PC-relative instructions generate `PCREL6` relocations. The linker fills in the final 6-bit offset when sections are laid out.
+- `JUMP @label` generates `PCREL13` relocations. The linker fills in the final 13-bit offset.
+- Non-JUMP PC-relative instructions generate `PCREL6` relocations.
 - `JUMP.Z @label`, `JUMP.C @label`, etc. (conditional branches) generate `PCREL10` relocations. The linker fills in the final 10-bit offset.
 
 ---
