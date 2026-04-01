@@ -161,9 +161,31 @@ little64_run = executable('little-64-run',
   install : false,
 )
 
+little64_test_env = [
+  'LITTLE64_LD=' + meson.project_source_root() + '/compilers/bin/ld.lld',
+]
+
+little64_runner_test_env = little64_test_env + [
+  'LITTLE64_LOAD_ELF=0',
+  'LITTLE64_USE_INTERNAL_LINKER=1',
+]
+
 test('project-runner',
   little64_run,
-  args : [meson.source_root() / 'tests/projects/hello/hello.l64proj'],
+  args : [meson.project_source_root() / 'tests/projects/hello/hello.l64proj'],
+  env : little64_runner_test_env,
+)
+
+python3 = import('python').find_installation('python3')
+test('llvm-integration',
+  python3,
+  args : [
+    meson.project_source_root() / 'tests/llvm/scripts/run_tests.py',
+    '--no-color',
+  ],
+  env : little64_test_env,
+  suite : ['llvm', 'integration'],
+  timeout : 120,
 )
 
 # --- Disassembler (static library for embedding) ---

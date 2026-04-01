@@ -1,9 +1,16 @@
 // CHECK_REG: R5 = 0x5
-// Fibonacci test to check recursion and stack management
+// Fibonacci test (iterative) to check loops, arithmetic, and calling convention
 
 long fib(long n) {
-    if (n < 2) return n;
-    return fib(n-1) + fib(n-2);
+    long a = 0;
+    long b = 1;
+    while (n > 0) {
+        long next = a + b;
+        a = b;
+        b = next;
+        --n;
+    }
+    return a;
 }
 
 __attribute__((naked))

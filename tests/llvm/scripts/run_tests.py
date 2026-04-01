@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
+import argparse
 import os
 import subprocess
 import re
 import sys
 import glob
+import hashlib
 
 # Paths
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.."))
 BIN_DIR = os.path.join(ROOT_DIR, "compilers/bin")
 EMU_PATH = os.path.join(ROOT_DIR, "builddir/little-64")
+DBG_PATH = os.path.join(ROOT_DIR, "builddir/little-64-debug")
 TEST_DIR = os.path.join(ROOT_DIR, "tests/llvm")
 TMP_DIR = os.path.join(ROOT_DIR, "tests/llvm/tmp")
 
@@ -19,18 +22,25 @@ LD_LLD = os.path.join(BIN_DIR, "ld.lld")
 
 os.makedirs(TMP_DIR, exist_ok=True)
 
+GREEN = "\033[92m"
+RED = "\033[91m"
+RESET = "\033[0m"
+
+def colorize(text, color, use_color):
+    return f"{color}{text}{RESET}" if use_color else text
+
 class TestResult:
     def __init__(self, name, success, message=""):
         self.name = name
         self.success = success
         self.message = message
 
-def run_cmd(cmd, check=False):
+def run_cmd(args):
     try:
-        res = subprocess.run(cmd, capture_output=True, text=True, shell=True)
+        res = subprocess.run(args, capture_output=True, text=True)
         return res
     except Exception as e:
-        return subprocess.CompletedProcess(cmd, 1, "", str(e))
+        return subprocess.CompletedProcess(args, 1, "", str(e))
 
 def parse_metadata(file_path):
     metadata = {
@@ -38,7 +48,8 @@ def parse_metadata(file_path):
         "expected_error": None,
         "expected_regs": {},
         "expected_stdout": [],
-        "skip": False
+        "skip": False,
+        "timeout": None,
     }
     with open(file_path, 'r') as f:
         for line in f:
@@ -62,27 +73,57 @@ def parse_metadata(file_path):
             match = re.search(r"CHECK_STDOUT:\s*(.*)", line)
             if match:
                 metadata["expected_stdout"].append(match.group(1).strip())
+
+            match = re.search(r"TIMEOUT:\s*(\d+)", line)
+            if match:
+                metadata["timeout"] = int(match.group(1))
                 
             if "SKIP" in line:
                 metadata["skip"] = True
     return metadata
 
-def test_file(file_path):
+def make_tmp_paths(file_path):
+    rel = os.path.relpath(file_path, TEST_DIR)
+    digest = hashlib.sha1(rel.encode("utf-8")).hexdigest()[:10]
+    stem = os.path.splitext(os.path.basename(file_path))[0]
+    base = f"{stem}_{digest}"
+    return (os.path.join(TMP_DIR, f"{base}.o"),
+            os.path.join(TMP_DIR, f"{base}.elf"))
+
+def read_tail(text, max_lines=25):
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    return "\n".join(lines[-max_lines:])
+
+def probe_timeout_state(elf_path):
+    if not os.path.exists(DBG_PATH):
+        return ""
+
+    script = f"load {elf_path}\nrun 200000\npc\nregs\nquit\n"
+    try:
+        res = subprocess.run([DBG_PATH], input=script, capture_output=True, text=True, timeout=15)
+    except Exception:
+        return ""
+
+    tail = read_tail(res.stdout, max_lines=20)
+    if not tail:
+        return ""
+    return f"\nTimeout probe (little-64-debug):\n{tail}"
+
+def test_file(file_path, default_timeout):
     rel_path = os.path.relpath(file_path, TEST_DIR)
     meta = parse_metadata(file_path)
     if meta["skip"]:
         return TestResult(rel_path, True, "Skipped")
 
-    base = os.path.basename(file_path).split('.')[0]
-    obj = os.path.join(TMP_DIR, f"{base}.o")
-    elf = os.path.join(TMP_DIR, f"{base}.elf")
+    obj, elf = make_tmp_paths(file_path)
     is_asm = file_path.endswith('.asm')
+    timeout = meta["timeout"] if meta["timeout"] is not None else default_timeout
 
     # 1. Assemble / Compile
     if is_asm:
-        res = run_cmd(f"{LLVM_MC} -triple=little64 -filetype=obj {file_path} -o {obj}")
+        res = run_cmd([LLVM_MC, "-triple=little64", "-filetype=obj", file_path, "-o", obj])
     else:
-        res = run_cmd(f"{CLANG} -target little64 -O1 -c {file_path} -o {obj}")
+        res = run_cmd([CLANG, "-target", "little64", "-O1", "-c", file_path, "-o", obj])
 
     if res.returncode != 0:
         if meta["should_fail"] and (not meta["expected_error"] or meta["expected_error"] in res.stderr + res.stdout):
@@ -90,7 +131,7 @@ def test_file(file_path):
         return TestResult(rel_path, False, f"Compilation failed:\n{res.stderr}\n{res.stdout}")
 
     # 2. Link
-    res = run_cmd(f"{LD_LLD} {obj} -o {elf}")
+    res = run_cmd([LD_LLD, obj, "-o", elf])
     if res.returncode != 0:
         if meta["should_fail"] and (not meta["expected_error"] or meta["expected_error"] in res.stderr + res.stdout):
             return TestResult(rel_path, True, "Failed as expected (linking)")
@@ -101,9 +142,10 @@ def test_file(file_path):
 
     # 3. Run
     try:
-        res = subprocess.run(f"{EMU_PATH} {elf}", capture_output=True, text=True, shell=True, timeout=5)
+        res = subprocess.run([EMU_PATH, elf], capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
-        return TestResult(rel_path, False, "Test execution timed out (5s)")
+        probe = probe_timeout_state(elf)
+        return TestResult(rel_path, False, f"Test execution timed out ({timeout}s){probe}")
 
     # Check Regs
     actual_regs = {}
@@ -125,19 +167,36 @@ def test_file(file_path):
 
     return TestResult(rel_path, True)
 
+def collect_test_files():
+    asm_files = glob.glob(os.path.join(TEST_DIR, "asm", "**", "*.asm"), recursive=True)
+    c_files = glob.glob(os.path.join(TEST_DIR, "c", "**", "*.c"), recursive=True)
+    return sorted(asm_files + c_files)
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Run Little-64 LLVM integration tests")
+    parser.add_argument("--timeout", type=int, default=5,
+                        help="Default per-test execution timeout in seconds (default: 5)")
+    parser.add_argument("--no-color", action="store_true",
+                        help="Disable ANSI color output")
+    parser.add_argument("--verbose", action="store_true",
+                        help="Print PASS details even on success")
+    return parser.parse_args()
+
 def main():
-    test_files = (glob.glob(os.path.join(TEST_DIR, "**/*.asm"), recursive=True) + 
-                  glob.glob(os.path.join(TEST_DIR, "**/*.c"), recursive=True))
+    args = parse_args()
+    use_color = (not args.no_color) and sys.stdout.isatty()
+    test_files = collect_test_files()
     
     results = []
     for f in sorted(test_files):
         print(f"Running {os.path.relpath(f, TEST_DIR)}...", end="", flush=True)
-        res = test_file(f)
+        res = test_file(f, default_timeout=args.timeout)
         results.append(res)
         if res.success:
-            print(" \033[92mPASS\033[0m" + (f" ({res.message})" if res.message else ""))
+            suffix = f" ({res.message})" if (res.message and args.verbose) else ""
+            print(" " + colorize("PASS", GREEN, use_color) + suffix)
         else:
-            print(" \033[91mFAIL\033[0m")
+            print(" " + colorize("FAIL", RED, use_color))
             print(f"  {res.message}")
 
     passed = sum(1 for r in results if r.success)
