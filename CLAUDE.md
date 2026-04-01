@@ -8,7 +8,7 @@ This file documents practical update paths and maintenance rules for common proj
 - Build directory: `builddir/`
 - Build graph is modularized:
   - `meson.build` (top-level orchestration)
-  - subsystem build files in `emulator/`, `disassembler/`, `linker/`, `project/`, `tests/`, `gui/`, `qt/`
+  - subsystem build files in `host/emulator/`, `host/disassembler/`, `host/linker/`, `host/project/`, `tests/`, `host/gui/`, `host/qt/`
 
 ## Instruction Change Guide
 
@@ -16,10 +16,10 @@ This file documents practical update paths and maintenance rules for common proj
 
 | File | Required change |
 |---|---|
-| `arch/opcodes_ls.def` | Add/update `LITTLE64_LS_OPCODE(...)` entry |
-| `emulator/cpu.cpp` | Update handling in both `_dispatchLSReg(...)` and `_dispatchLSPCRel(...)` |
-| `project/llvm_assembler.cpp` | Update only if assembly wrapper/tool invocation behavior changes |
-| `disassembler/disassembler.cpp` | Update only if text output differs from defaults |
+| `host/arch/opcodes_ls.def` | Add/update `LITTLE64_LS_OPCODE(...)` entry |
+| `host/emulator/cpu.cpp` | Update handling in both `_dispatchLSReg(...)` and `_dispatchLSPCRel(...)` |
+| `host/project/llvm_assembler.cpp` | Update only if assembly wrapper/tool invocation behavior changes |
+| `host/disassembler/disassembler.cpp` | Update only if text output differs from defaults |
 | `CPU_ARCH.md` | Update opcode and semantics reference |
 | `docs/assembly-syntax.md` | Update syntax and examples if affected |
 | tests | Add/update targeted instruction tests |
@@ -30,10 +30,10 @@ LS opcodes are shared between format 00 and 01. Behavior can differ by format an
 
 | File | Required change |
 |---|---|
-| `arch/opcodes_gp.def` | Add/update `LITTLE64_GP_OPCODE(...)` entry |
-| `emulator/cpu.cpp` | Update `_dispatchGP(...)` |
-| `project/llvm_assembler.cpp` | Usually unnecessary unless wrapper behavior/toolchain pathing changes |
-| `disassembler/disassembler.cpp` | Update if text output differs from defaults |
+| `host/arch/opcodes_gp.def` | Add/update `LITTLE64_GP_OPCODE(...)` entry |
+| `host/emulator/cpu.cpp` | Update `_dispatchGP(...)` |
+| `host/project/llvm_assembler.cpp` | Usually unnecessary unless wrapper behavior/toolchain pathing changes |
+| `host/disassembler/disassembler.cpp` | Update if text output differs from defaults |
 | `CPU_ARCH.md` | Update opcode and semantics reference |
 | `docs/assembly-syntax.md` | Update syntax and examples if affected |
 | tests | Add/update targeted instruction tests |
@@ -53,14 +53,14 @@ For compatibility updates:
 
 | File | Required change |
 |---|---|
-| `emulator/device.hpp` | Base lifecycle contract (`reset`, `tick`) |
-| `emulator/machine_config.hpp/.cpp` | Machine map registration path |
-| `emulator/cpu.cpp` | Runtime wiring if device behavior impacts load/reset/cycle |
-| `tools/new_device.py` | Scaffold hints/messages when integration path changes |
+| `host/emulator/device.hpp` | Base lifecycle contract (`reset`, `tick`) |
+| `host/emulator/machine_config.hpp/.cpp` | Machine map registration path |
+| `host/emulator/cpu.cpp` | Runtime wiring if device behavior impacts load/reset/cycle |
+| `host/tools/new_device.py` | Scaffold hints/messages when integration path changes |
 | `docs/device-framework.md` | Update extension workflow |
-| tests (`tests/test_devices.cpp`) | Add conformance coverage |
+| tests (`tests/host/test_devices.cpp`) | Add conformance coverage |
 
-Note: `tools/new_device.py` currently instructs contributors to add new device sources in `emulator/meson.build`.
+Note: `host/tools/new_device.py` currently instructs contributors to add new device sources in `host/emulator/meson.build`.
 
 ## Test Structure
 

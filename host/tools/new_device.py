@@ -86,7 +86,7 @@ void {class_name}::tick() {{
     print(f"Created {header_path.relative_to(root)}")
     print(f"Created {source_path.relative_to(root)}")
     print("Next steps:")
-    print(f"  1) Add {source_path.relative_to(root)} to core_emulator_src in emulator/meson.build")
+    print(f"  1) Add {source_path.relative_to(root)} to core_emulator_src in host/emulator/meson.build")
     print(f"  2) Register {class_name} in MachineConfig")
     print(f"  3) Add tests in tests/test_devices.cpp")
     return 0

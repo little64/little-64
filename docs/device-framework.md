@@ -4,11 +4,11 @@ This document describes how MMIO devices are modeled and integrated.
 
 ## Source of Truth
 
-- Base class: `emulator/device.hpp`
-- Machine composition: `emulator/machine_config.hpp/.cpp`
-- Runtime usage: `emulator/cpu.cpp`
-- Existing device implementation: `emulator/serial_device.hpp/.cpp`
-- Device tests: `tests/test_devices.cpp`
+- Base class: `host/emulator/device.hpp`
+- Machine composition: `host/emulator/machine_config.hpp/.cpp`
+- Runtime usage: `host/emulator/cpu.cpp`
+- Existing device implementation: `host/emulator/serial_device.hpp/.cpp`
+- Device tests: `tests/host/test_devices.cpp`
 
 ## Core Model
 
@@ -42,14 +42,14 @@ In `Little64CPU`:
 ### Step 1: scaffold
 
 ```bash
-python3 tools/new_device.py TimerDevice
+python3 host/tools/new_device.py TimerDevice
 ```
 
 ### Step 2: register source file
 
 Add generated source to:
 
-- `emulator/meson.build` (`core_emulator_src` list)
+- `host/emulator/meson.build` (`core_emulator_src` list)
 
 ### Step 3: register in machine composition
 
@@ -57,7 +57,7 @@ Wire the device in `MachineConfig` setup path.
 
 ### Step 4: test
 
-Add conformance tests to `tests/test_devices.cpp` (or a new dedicated device test file).
+Add conformance tests to `tests/host/test_devices.cpp` (or a new dedicated device test file).
 
 ## Test Command
 

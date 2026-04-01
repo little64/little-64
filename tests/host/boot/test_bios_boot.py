@@ -2,7 +2,7 @@
 import pathlib
 import subprocess
 
-ROOT = pathlib.Path(__file__).resolve().parents[2]
+ROOT = pathlib.Path(__file__).resolve().parents[3]
 BIN = ROOT / "compilers" / "bin"
 CLANG = BIN / "clang"
 LD = BIN / "ld.lld"
@@ -24,9 +24,9 @@ def main() -> int:
             "-O0",
             "-g",
             "-ffreestanding",
-            f"-I{ROOT / 'boot'}",
+            f"-I{ROOT / 'host' / 'boot'}",
             "-c",
-            str(ROOT / "c_boot" / "start.c"),
+            str(ROOT / "target" / "c_boot" / "start.c"),
             "-o",
             str(obj),
         ],
@@ -42,7 +42,7 @@ def main() -> int:
             "-o",
             str(elf),
             "-T",
-            str(ROOT / "c_boot" / "linker_bios.ld"),
+            str(ROOT / "target" / "c_boot" / "linker_bios.ld"),
         ],
         check=True,
         capture_output=True,

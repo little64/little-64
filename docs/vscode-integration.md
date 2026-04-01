@@ -46,7 +46,7 @@ ENABLE_LLDB=1 ./build.sh llvm
 ## Smoke Workflow (CLI)
 
 ```bash
-compilers/bin/llvm-mc -triple=little64 -filetype=obj asm/debug_smoke.asm -o builddir/debug-smoke.o
+compilers/bin/llvm-mc -triple=little64 -filetype=obj target/asm/debug_smoke.asm -o builddir/debug-smoke.o
 compilers/bin/ld.lld builddir/debug-smoke.o -o builddir/debug-smoke.elf
 ./builddir/little-64-debug 9000 builddir/debug-smoke.elf
 compilers/bin/lldb --batch -o "gdb-remote 127.0.0.1:9000" -o "process continue"
@@ -73,7 +73,7 @@ Keep launch/task wiring protocol-agnostic where practical so backend improvement
 When debug transport changes:
 
 - update supported packet list here,
-- update integration tests under `tests/debug/` when protocol behavior changes,
+- update integration tests under `tests/host/debug/` when protocol behavior changes,
 - run:
   - `meson test -C builddir debug-rsp-integration --print-errorlogs`
   - `meson test -C builddir debug-lldb-remote-smoke --print-errorlogs`

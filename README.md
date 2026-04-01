@@ -41,16 +41,15 @@ meson test -C builddir --print-errorlogs
 | `builddir/little-64-gui` | ImGui frontend |
 | `builddir/little-64-qt` | Qt frontend (if Qt detected/enabled) |
 
-Assembly to object code is performed through `compilers/bin/llvm-mc` (see `project/llvm_assembler.*`).
+Assembly to object code is performed through `compilers/bin/llvm-mc` (see `host/project/llvm_assembler.*`).
 
 ## Repository Layout
 
-- `arch/` — opcode definitions (`opcodes_ls.def`, `opcodes_gp.def`) and generated enums
-- `emulator/` — CPU, memory bus, devices, debug transport/server, headless runtime
-- `disassembler/`, `linker/` — custom tool libraries + CLI entrypoints
-- `project/` — project-file model and runner
-- `gui/`, `qt/` — frontends
-- `tests/` — unit + integration + toolchain + debug tests
+- `host/` — host-side runtime/tools/frontends (`host/emulator/`, `host/disassembler/`, `host/linker/`, `host/project/`, `host/gui/`, `host/qt/`, ...)
+- `target/` — target-side code/images (`target/asm/`, `target/c_boot/`)
+- `tests/host/` — host tool/runtime/integration tests
+- `tests/target/` — CPU/ISA-focused tests
+- `tests/support/` — shared test helpers
 - `docs/` — architecture and workflow documentation
 - `compilers/` — external compiler ports/toolchains
 
@@ -60,13 +59,13 @@ Meson files are modularized by subsystem:
 
 - top-level orchestration: `meson.build`
 - per-subsystem build files:
-  - `emulator/meson.build`
-  - `disassembler/meson.build`
-  - `linker/meson.build`
-  - `project/meson.build`
+  - `host/emulator/meson.build`
+  - `host/disassembler/meson.build`
+  - `host/linker/meson.build`
+  - `host/project/meson.build`
   - `tests/meson.build`
-  - `gui/meson.build`
-  - `qt/meson.build`
+  - `host/gui/meson.build`
+  - `host/qt/meson.build`
 
 ## Documentation Map
 

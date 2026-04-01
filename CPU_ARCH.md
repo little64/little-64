@@ -5,16 +5,16 @@ This document describes the CPU-visible architecture and points to source-of-tru
 ## Source of Truth
 
 - Opcode definitions:
-  - `arch/opcodes_ls.def`
-  - `arch/opcodes_gp.def`
+  - `host/arch/opcodes_ls.def`
+  - `host/arch/opcodes_gp.def`
 - Opcode enums/format helpers:
-  - `arch/opcodes.hpp`
+  - `host/arch/opcodes.hpp`
 - Runtime execution behavior:
-  - `emulator/cpu.cpp`
-  - `emulator/cpu.hpp`
+  - `host/emulator/cpu.cpp`
+  - `host/emulator/cpu.hpp`
 - Assembly/disassembly behavior:
-  - `project/llvm_assembler.cpp`
-  - `disassembler/disassembler.cpp`
+  - `host/project/llvm_assembler.cpp`
+  - `host/disassembler/disassembler.cpp`
 
 If this document conflicts with code, code is authoritative and this document must be updated in the same change.
 
@@ -67,7 +67,7 @@ All instructions are 16-bit words.
 
 ## LS Opcode Space (formats `00` and `01`)
 
-From `arch/opcodes_ls.def`:
+From `host/arch/opcodes_ls.def`:
 
 | Opcode | Mnemonic |
 |---|---|
@@ -95,7 +95,7 @@ Notes:
 
 ## GP Opcode Space (format `110`)
 
-From `arch/opcodes_gp.def`:
+From `host/arch/opcodes_gp.def`:
 
 | Opcode | Mnemonic | Encoding kind |
 |---|---|---|
@@ -136,8 +136,8 @@ Treat this as project ABI convention, not a formally versioned external ABI yet.
 
 When adding/changing an instruction:
 
-1. Update `arch/opcodes_*.def` if opcode metadata changes.
-2. Update emulator dispatch logic in `emulator/cpu.cpp`.
+1. Update `host/arch/opcodes_*.def` if opcode metadata changes.
+2. Update emulator dispatch logic in `host/emulator/cpu.cpp`.
 3. Update assembly wrapper/disassembler behavior if syntax/text changes.
 4. Add or update tests under `tests/`.
 5. Update `docs/assembly-syntax.md` and this file.
@@ -148,4 +148,4 @@ Before merging architecture changes:
 
 - run `meson compile -C builddir`,
 - run `meson test -C builddir --print-errorlogs`,
-- verify opcode docs still match `arch/opcodes_ls.def` and `arch/opcodes_gp.def`.
+- verify opcode docs still match `host/arch/opcodes_ls.def` and `host/arch/opcodes_gp.def`.

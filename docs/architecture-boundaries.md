@@ -6,14 +6,14 @@ This document defines module boundaries and allowed dependencies.
 
 ## Public runtime interface
 
-- `emulator/frontend_api.hpp`
+- `host/emulator/frontend_api.hpp`
   - `IEmulatorRuntime`
   - `RegisterSnapshot`
   - `MemoryRegionView`
 
 ## Facade implementation
 
-- `emulator/emulator_session.hpp/.cpp`
+- `host/emulator/emulator_session.hpp/.cpp`
 
 Frontend and tooling code should prefer `IEmulatorRuntime`/`EmulatorSession` over direct `Little64CPU` usage.
 
@@ -21,38 +21,38 @@ Frontend and tooling code should prefer `IEmulatorRuntime`/`EmulatorSession` ove
 
 ## Headless emulator
 
-- Entry: `emulator/main.cpp`
-- Shared helpers: `emulator/headless_runtime.hpp/.cpp`
+- Entry: `host/emulator/main.cpp`
+- Shared helpers: `host/emulator/headless_runtime.hpp/.cpp`
 
 ## Debug server
 
-- Entry: `emulator/debug_main.cpp`
-- Server/transport: `emulator/debug_server.*`, `emulator/debug_transport.*`
+- Entry: `host/emulator/debug_main.cpp`
+- Server/transport: `host/emulator/debug_server.*`, `host/emulator/debug_transport.*`
 
 ## Frontends
 
-- ImGui frontend: `gui/`
-- Qt frontend: `qt/`
-- Shared frontend helpers: `frontend/`
+- ImGui frontend: `host/gui/`
+- Qt frontend: `host/qt/`
+- Shared frontend helpers: `host/frontend/`
 
 ## Tooling Libraries and CLIs
 
-- LLVM assembly wrapper: `project/llvm_assembler.*`
-- Disassembler: `disassembler/`
-- Linker: `linker/`
-- Project runner: `project/`
+- LLVM assembly wrapper: `host/project/llvm_assembler.*`
+- Disassembler: `host/disassembler/`
+- Linker: `host/linker/`
+- Project runner: `host/project/`
 
 ## Build Boundaries (Meson)
 
 Top-level orchestration in `meson.build`, per-subsystem ownership in:
 
-- `emulator/meson.build`
-- `disassembler/meson.build`
-- `linker/meson.build`
-- `project/meson.build`
+- `host/emulator/meson.build`
+- `host/disassembler/meson.build`
+- `host/linker/meson.build`
+- `host/project/meson.build`
 - `tests/meson.build`
-- `gui/meson.build`
-- `qt/meson.build`
+- `host/gui/meson.build`
+- `host/qt/meson.build`
 
 ## Dependency Rules
 

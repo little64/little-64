@@ -1,5 +1,5 @@
 test_asm = executable('test-assembler',
-  ['test_assembler.cpp'],
+  ['host/test_assembler.cpp'],
   link_with : [project_lib, linker_lib],
   include_directories : [project_inc, linker_inc, arch_inc, test_inc, test_support_inc],
   install : false,
@@ -7,7 +7,7 @@ test_asm = executable('test-assembler',
 test('assembler', test_asm, suite : ['unit', 'assembler'])
 
 test_linker = executable('test-linker',
-  ['test_linker.cpp'],
+  ['host/test_linker.cpp'],
   link_with : [linker_lib, project_lib],
   include_directories : [project_inc, linker_inc, arch_inc, test_inc, test_support_inc],
   install : false,
@@ -16,12 +16,12 @@ test_linker = executable('test-linker',
 test('linker', test_linker, suite : ['unit', 'linker'])
 
 cpu_tests = {
-  'gp':          'test_cpu_gp.cpp',
-  'ldi':         'test_cpu_ldi.cpp',
-  'memory':      'test_cpu_memory.cpp',
-  'jumps':       'test_cpu_jumps.cpp',
-  'special':     'test_cpu_special.cpp',
-  'integration': 'test_cpu_integration.cpp',
+  'gp':          'target/test_cpu_gp.cpp',
+  'ldi':         'target/test_cpu_ldi.cpp',
+  'memory':      'target/test_cpu_memory.cpp',
+  'jumps':       'target/test_cpu_jumps.cpp',
+  'special':     'target/test_cpu_special.cpp',
+  'integration': 'target/test_cpu_integration.cpp',
 }
 
 foreach name, src : cpu_tests
@@ -40,7 +40,7 @@ foreach name, src : cpu_tests
 endforeach
 
 test_devices = executable('test-devices',
-  ['test_devices.cpp'],
+  ['host/test_devices.cpp'],
   link_with : [emulator_lib],
   include_directories : [
     emulator_inc,
@@ -52,7 +52,7 @@ test_devices = executable('test-devices',
 test('devices', test_devices, suite : ['unit', 'device'], timeout : 60)
 
 test_disasm = executable('test-disassembler',
-  ['test_disassembler.cpp'],
+  ['host/test_disassembler.cpp'],
   link_with : [disasm_lib],
   include_directories : [
     disassembler_inc,
@@ -65,7 +65,7 @@ test_disasm = executable('test-disassembler',
 test('disassembler', test_disasm, suite : ['unit', 'disassembler'], timeout : 60)
 
 test_memory_bus = executable('test-memory-bus',
-  ['test_memory_bus.cpp'],
+  ['host/test_memory_bus.cpp'],
   link_with : [emulator_lib],
   include_directories : [
     emulator_inc,
@@ -77,7 +77,7 @@ test_memory_bus = executable('test-memory-bus',
 test('memory-bus', test_memory_bus, suite : ['unit', 'memory'], timeout : 60)
 
 test_boot_frame = executable('test-boot-frame',
-  ['test_boot_frame.cpp'],
+  ['host/test_boot_frame.cpp'],
   link_with : [project_lib],
   include_directories : [
     root_inc,
@@ -101,7 +101,7 @@ little64_runner_test_env = little64_test_env + [
 
 test('project-runner',
   little64_run,
-  args : [meson.project_source_root() / 'tests/projects/hello/hello.l64proj'],
+  args : [meson.project_source_root() / 'tests/host/projects/hello/hello.l64proj'],
   env : little64_runner_test_env,
   suite : ['integration', 'project'],
 )
@@ -109,7 +109,7 @@ test('project-runner',
 test('boot-bios-run',
   python3,
   args : [
-    meson.project_source_root() / 'tests/boot/test_bios_boot.py',
+    meson.project_source_root() / 'tests/host/boot/test_bios_boot.py',
   ],
   suite : ['boot', 'integration'],
   timeout : 60,
@@ -119,7 +119,7 @@ llvm_report_path = meson.project_build_root() / 'meson-logs' / 'llvm-integration
 test('llvm-integration',
   python3,
   args : [
-    meson.project_source_root() / 'tests/llvm/scripts/run_tests.py',
+    meson.project_source_root() / 'tests/host/llvm/scripts/run_tests.py',
     '--no-color',
     '--report-json',
     llvm_report_path,
@@ -132,7 +132,7 @@ test('llvm-integration',
 test('debug-rsp-integration',
   python3,
   args : [
-    meson.project_source_root() / 'tests/debug/test_rsp_server.py',
+    meson.project_source_root() / 'tests/host/debug/test_rsp_server.py',
   ],
   suite : ['debug', 'integration'],
   timeout : 60,
@@ -141,7 +141,7 @@ test('debug-rsp-integration',
 test('debug-lldb-remote-smoke',
   python3,
   args : [
-    meson.project_source_root() / 'tests/debug/test_lldb_remote_smoke.py',
+    meson.project_source_root() / 'tests/host/debug/test_lldb_remote_smoke.py',
   ],
   suite : ['debug', 'integration', 'lldb'],
   timeout : 60,

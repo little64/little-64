@@ -5,7 +5,7 @@ import subprocess
 import tempfile
 import time
 
-ROOT = pathlib.Path(__file__).resolve().parents[2]
+ROOT = pathlib.Path(__file__).resolve().parents[3]
 BIN = ROOT / "compilers" / "bin"
 MC = BIN / "llvm-mc"
 LD = BIN / "ld.lld"

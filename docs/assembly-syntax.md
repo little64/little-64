@@ -5,8 +5,8 @@ This document defines the assembly workflow used by Little-64.
 ## Source of Truth
 
 - Primary assembler: `compilers/bin/llvm-mc -triple=little64`
-- Runtime loader expectations: `linker/linker.cpp`, `emulator/cpu.cpp`
-- Project assembly wrapper: `project/llvm_assembler.cpp`
+- Runtime loader expectations: `host/linker/linker.cpp`, `host/emulator/cpu.cpp`
+- Project assembly wrapper: `host/project/llvm_assembler.cpp`
 - ISA semantics: `../CPU_ARCH.md`
 
 If this document and `llvm-mc` behavior disagree, `llvm-mc` is authoritative.
@@ -50,7 +50,7 @@ That compatibility path is test-only and not a CLI contract.
 
 When assembly behavior changes:
 
-1. Update `project/llvm_assembler.*` if wrapper behavior changes.
+1. Update `host/project/llvm_assembler.*` if wrapper behavior changes.
 2. Update `tests/test_assembler.cpp` for assembly wrapper expectations.
 3. Update linker/CPU tests when syntax compatibility assumptions change.
 4. Re-run `meson test -C builddir --print-errorlogs`.

@@ -42,8 +42,8 @@ Current scope is runtime inspection and execution control:
 ## Architecture Notes
 
 - Runtime access via `EmulatorSession`/`IEmulatorRuntime`
-- Shared frontend logic lives under `frontend/`
-- Qt-specific composition and widgets remain under `qt/`
+- Shared frontend logic lives under `host/frontend/`
+- Qt-specific composition and widgets remain under `host/qt/`
 
 ## Non-goals
 

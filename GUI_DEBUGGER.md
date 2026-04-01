@@ -34,11 +34,11 @@ Current `little-64-gui` capabilities include:
 
 ## Shared Frontend Architecture
 
-- Runtime contract: `emulator/frontend_api.hpp`
-- Session facade: `emulator/emulator_session.hpp/.cpp`
-- Shared helpers: `frontend/`
-- ImGui-specific code: `gui/`
-- Qt-specific code: `qt/`
+- Runtime contract: `host/emulator/frontend_api.hpp`
+- Session facade: `host/emulator/emulator_session.hpp/.cpp`
+- Shared helpers: `host/frontend/`
+- ImGui-specific code: `host/gui/`
+- Qt-specific code: `host/qt/`
 
 ## Recommended Usage
 

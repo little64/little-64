@@ -9,12 +9,12 @@ import glob
 import hashlib
 
 # Paths
-ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.."))
+ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../.."))
 BIN_DIR = os.path.join(ROOT_DIR, "compilers/bin")
 EMU_PATH = os.path.join(ROOT_DIR, "builddir/little-64")
 DBG_PATH = os.path.join(ROOT_DIR, "builddir/little-64-debug")
-TEST_DIR = os.path.join(ROOT_DIR, "tests/llvm")
-TMP_DIR = os.path.join(ROOT_DIR, "tests/llvm/tmp")
+TEST_DIR = os.path.join(ROOT_DIR, "tests/host/llvm")
+TMP_DIR = os.path.join(ROOT_DIR, "tests/host/llvm/tmp")
 
 # Toolchain
 CLANG = os.path.join(BIN_DIR, "clang")
