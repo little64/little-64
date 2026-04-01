@@ -1,4 +1,4 @@
-#include "test_harness.hpp"
+#include "support/cpu_test_helpers.hpp"
 
 // GP ALU instructions: ADD, SUB, TEST, AND, OR, XOR,
 //                      SLL, SRL, SRA  (register shift amount),

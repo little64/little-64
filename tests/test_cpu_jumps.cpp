@@ -1,4 +1,4 @@
-#include "test_harness.hpp"
+#include "support/cpu_test_helpers.hpp"
 
 // Conditional and unconditional jumps.
 //

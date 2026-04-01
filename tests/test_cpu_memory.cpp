@@ -1,4 +1,4 @@
-#include "test_harness.hpp"
+#include "support/cpu_test_helpers.hpp"
 
 // Memory instructions: LOAD/STORE (64-bit), BYTE_LOAD/STORE, SHORT_LOAD/STORE,
 //                      WORD_LOAD/STORE, PUSH/POP, MOVE.

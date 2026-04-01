@@ -1,4 +1,4 @@
-#include "test_harness.hpp"
+#include "support/cpu_test_helpers.hpp"
 
 // Integration tests: multi-instruction programs run via loadProgram + cycle().
 // Tests exercise instruction interactions, call conventions, and data-in-memory patterns.

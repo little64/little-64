@@ -1,4 +1,4 @@
-#include "test_harness.hpp"
+#include "support/cpu_test_helpers.hpp"
 
 // Special instructions: LSR, SSR, IRET, STOP.
 // R0 always-zero invariant (must be tested through cycle(), not dispatchInstruction).
