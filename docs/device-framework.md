@@ -1,52 +1,81 @@
-# Device Framework (Phase 2)
+# Little-64 Device Framework
 
-Date: 2026-04-01
+This document describes how MMIO devices are modeled and integrated.
 
-This document describes the current device architecture after Phase 2 cleanup.
+## Source of Truth
 
-## Core Concepts
+- Base class: `emulator/device.hpp`
+- Machine composition: `emulator/machine_config.hpp/.cpp`
+- Runtime usage: `emulator/cpu.cpp`
+- Existing device implementation: `emulator/serial_device.hpp/.cpp`
+- Device tests: `tests/test_devices.cpp`
 
-- `Device` (`emulator/device.hpp`)
-  - Extends `MemoryRegion`.
-  - Adds lifecycle hooks:
-    - `reset()` for deterministic reinitialization,
-    - `tick()` for per-cycle progression.
-- `MachineConfig` (`emulator/machine_config.hpp/.cpp`)
-  - Declarative memory-map and device registration.
-  - Provides fluent helpers for common regions/devices.
-  - Materializes the map into `MemoryBus` with one `applyTo()` call.
+## Core Model
 
-## CPU Integration
+## `Device`
 
-- `Little64CPU::loadProgram()` and `loadProgramElf()` create machine layout through `MachineConfig`.
-- `Little64CPU::reset()` resets all registered devices.
-- `Little64CPU::cycle()` ticks all registered devices each instruction cycle.
+`Device` extends `MemoryRegion` and adds lifecycle hooks:
 
-## Existing Device: Serial
+- `reset()` — deterministic reset behavior
+- `tick()` — per-cycle progression
 
-- `SerialDevice` now derives from `Device`.
-- `SerialDevice::reset()` clears FIFOs and register state.
-- `SerialDevice::tick()` currently no-op (reserved for future timing behavior).
+## `MachineConfig`
 
-## Add a New Device
+`MachineConfig` is the declarative wiring layer for memory regions and devices.
 
-Use the scaffold helper:
+Typical flow:
+
+1. Add RAM/ROM/devices to config.
+2. Call `applyTo(bus, devices)`.
+3. Runtime uses resulting `MemoryBus` + device list.
+
+## Runtime Integration Points
+
+In `Little64CPU`:
+
+- program/image load builds map through `MachineConfig`,
+- `reset()` cascades to all devices,
+- `cycle()` ticks all devices.
+
+## Adding a New Device
+
+### Step 1: scaffold
 
 ```bash
 python3 tools/new_device.py TimerDevice
 ```
 
-Then:
+### Step 2: register source file
 
-1. Add generated source file to `core_emulator_src` in `meson.build`.
-2. Register the device in machine setup via `MachineConfig`.
-3. Add/update tests in `tests/test_devices.cpp` (or additional test files).
+Add generated source to:
 
-## Test Coverage
+- `emulator/meson.build` (`core_emulator_src` list)
 
-- Device conformance tests live in `tests/test_devices.cpp`.
-- Included in Meson as suite `device`:
+### Step 3: register in machine composition
+
+Wire the device in `MachineConfig` setup path.
+
+### Step 4: test
+
+Add conformance tests to `tests/test_devices.cpp` (or a new dedicated device test file).
+
+## Test Command
 
 ```bash
-meson test -C builddir --suite device
+meson test -C builddir --suite device --print-errorlogs
 ```
+
+## Design Guidance
+
+1. Keep register map and side effects local to the device class.
+2. Use `reset()` to return to power-on state.
+3. Use `tick()` only when time progression matters.
+4. Avoid scattered ad-hoc memory-map edits outside `MachineConfig`.
+
+## Update Checklist
+
+When changing device framework behavior:
+
+- update this file,
+- update `CLAUDE.md` device section if workflow changed,
+- run full tests (not only device suite) when map/lifecycle behavior changed.

@@ -1,36 +1,25 @@
-# Qt Frontend (Preview)
+# Qt Frontend
 
-This project now includes a parallel Qt-powered emulator/debugger frontend:
+Qt frontend target: `little-64-qt`
 
-- Binary: `little-64-qt`
-- UI stack: Qt Widgets
-- Runtime mode: in-process (`EmulatorSession` / `IEmulatorRuntime`)
-- Scope (current preview): inspect + control (registers, disassembly, memory, memory map, serial, run control)
+The Qt frontend is a debugger/inspection UI, not an IDE replacement.
 
-The existing ImGui frontend (`little-64-gui`) remains available and unchanged as the primary debugger path.
+## Build Control
 
-## Build
+Meson option: `qt_frontend`
 
-Qt frontend build is controlled by Meson option `qt_frontend`:
-
-- `auto` (default): build if Qt is detected
-- `enabled`: require Qt and fail configuration if missing
-- `disabled`: skip Qt frontend target
+- `auto` (default): build when Qt is found
+- `enabled`: require Qt and fail if missing
+- `disabled`: skip Qt target
 
 Examples:
 
 ```bash
-# default behavior (auto)
-meson setup builddir
+meson setup builddir -Dqt_frontend=auto
 meson compile -C builddir
 
-# force enable
-meson setup builddir -Dqt_frontend=enabled --reconfigure
-meson compile -C builddir
-
-# disable
-meson setup builddir -Dqt_frontend=disabled --reconfigure
-meson compile -C builddir
+meson setup --reconfigure builddir -Dqt_frontend=enabled
+meson setup --reconfigure builddir -Dqt_frontend=disabled
 ```
 
 Run:
@@ -39,29 +28,32 @@ Run:
 ./builddir/little-64-qt
 ```
 
-## Current Features
+## Scope
 
-- Open ELF image via `File -> Open ELF...`
-- Step execution, reset CPU, assert interrupt 63
-- Live-run with configurable instruction budget per timer tick
-- Register snapshot view (`R0..R15`, `PC`, `FLAGS`)
-- Disassembly window around current PC
-- Memory inspector with configurable base address
-- Memory region map
-- Serial output stream view
-- Dockable pane layout with reset action
+Current scope is runtime inspection and execution control:
+
+- load image,
+- run/step/reset controls,
+- register view,
+- disassembly view,
+- memory and region inspection,
+- serial output view.
 
 ## Architecture Notes
 
-- Frontend uses `EmulatorSession` from `emulator/emulator_session.hpp`
-- Disassembly rendering uses `Disassembler` from `disassembler/disassembler.hpp`
-- Shared run-control behavior is centralized in `frontend/debugger_execution.hpp` and reused by both `little-64-gui` and `little-64-qt`
-- Shared inspector/view-model builders are centralized in `frontend/debugger_views.hpp` (register/disassembly/memory/regions/serial)
-- The Qt app is intentionally isolated in `qt/` so that frontend logic can evolve independently from `gui/`
+- Runtime access via `EmulatorSession`/`IEmulatorRuntime`
+- Shared frontend logic lives under `frontend/`
+- Qt-specific composition and widgets remain under `qt/`
 
-## Next Steps
+## Non-goals
 
-1. Extract shared frontend services from ImGui panel code and use them from both frontends.
-2. Add breakpoint/watchpoint substrate in runtime/debug server.
-3. Add symbol-aware disassembly and richer navigation for OS development workflows.
-4. Add layout/profile persistence parity with the ImGui frontend.
+- Embedding full source editing/LSP/build orchestration into frontend.
+- Replacing VS Code or CLI workflows.
+
+## Update Checklist
+
+When Qt frontend behavior changes:
+
+- update feature list in this document,
+- update any task/launch examples in `docs/vscode-integration.md` if startup flow changes,
+- verify `qt_frontend=enabled` and `qt_frontend=disabled` paths both configure correctly.

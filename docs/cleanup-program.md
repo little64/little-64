@@ -1,69 +1,68 @@
-# Little-64 Cleanup Program (Execution Checklist)
+# Little-64 Cleanup Program
 
 Date: 2026-04-01
 
-This document translates cleanup goals into concrete, verifiable workstreams.
+This checklist turns cleanup goals into concrete execution items.
 
-## Workstream A — Build modularity
-
-### Goal
-
-Keep build behavior unchanged while making build ownership local to each subsystem.
-
-### Done
-
-- Split top-level `meson.build` into subsystem `meson.build` files.
-- Preserved existing target names and test suite tags.
-
-### Acceptance checks
-
-- `meson compile -C builddir` succeeds.
-- `meson test -C builddir` discovers and runs the same suites as before.
-
-## Workstream B — Test support boundaries
+## Workstream 1 — Build modularization
 
 ### Goal
 
-Separate generic test assertions from CPU-specific test helpers.
+Keep build behavior stable while making ownership local to each subsystem.
 
-### Done
+### Delivered
 
-- Introduced `tests/support/cpu_test_helpers.hpp`.
-- Updated CPU tests to include the new canonical helper path.
-- Retained `tests/test_harness.hpp` as compatibility shim.
+- top-level Meson orchestrator plus per-subsystem `meson.build` files.
+- compatibility build outputs preserved at root builddir paths.
 
-### Acceptance checks
+### Validation
 
-- All CPU test binaries compile and execute.
-- No duplicated helper logic remains outside support headers.
+- `meson compile -C builddir`
+- `meson test -C builddir --print-errorlogs`
 
-## Workstream C — Contributor navigation
+## Workstream 2 — Test support separation
 
 ### Goal
 
-Reduce onboarding friction and make ownership/discovery obvious.
+Separate generic test harness macros from CPU-specific helpers.
 
-### Done
+### Delivered
 
-- Added root `README.md` with quick-start, module map, and build-layout map.
-- Added `docs/README.md` as active docs index.
+- canonical CPU helper header: `tests/support/cpu_test_helpers.hpp`
+- compatibility shim retained: `tests/test_harness.hpp`
 
-### Acceptance checks
+### Validation
 
-- New contributor can find build/test/debug entrypoints in under 5 minutes.
-- A maintainer can locate build logic for any subsystem directly by directory.
+- all CPU test binaries compile and pass.
+
+## Workstream 3 — Documentation normalization
+
+### Goal
+
+Replace drift-prone docs with source-of-truth-centered docs and update checklists.
+
+### Delivered
+
+- full rewrite of project-authored documentation set,
+- consistent structure across architecture/syntax/workflow docs,
+- explicit maintenance contract in `CLAUDE.md` and docs index.
+
+### Validation
+
+- command examples match current CLI behavior,
+- docs cross-references remain valid,
+- full test suite remains green.
 
 ## Guardrails
 
-- Keep `compilers/` separation intact:
-  - `compilers/llvm/`
-  - `compilers/lily-cc/`
-- Avoid mixing third-party/toolchain reorganization with core project cleanup.
-- Prefer behavior-preserving refactors before feature-level changes.
+1. Preserve `compilers/llvm/` and `compilers/lily-cc/` separation.
+2. Prefer behavior-preserving refactors before semantic changes.
+3. Keep docs updates in the same change as behavior updates.
 
-## Next cleanup candidates (post-baseline)
+## Ongoing Enforcement
 
-1. Add CI job split by suite (`unit`, `integration`, `llvm`, `debug`).
-2. Add include-boundary check script for runtime/frontends layering.
-3. Break very large docs into “reference” and “how-to” pages.
-4. Add per-subsystem ownership metadata (CODEOWNERS or docs equivalent).
+For every architecture/tooling change:
+
+- update the relevant docs,
+- run full tests,
+- keep this checklist aligned with project practice.

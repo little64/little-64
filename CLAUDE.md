@@ -1,91 +1,111 @@
-# Little-64 — Claude Notes
+# Little-64 — Contributor Notes
 
-##
+This file documents practical update paths and maintenance rules for common project changes.
 
-This projet uses meson. The build folder is located in `builddir/`.
+## Build System
 
-## Changing instructions
+- Build system: Meson
+- Build directory: `builddir/`
+- Build graph is modularized:
+  - `meson.build` (top-level orchestration)
+  - subsystem build files in `emulator/`, `assembler/`, `disassembler/`, `linker/`, `project/`, `tests/`, `gui/`, `qt/`
 
-### LS instructions (Formats 00/01 — load/store/move/jump)
+## Instruction Change Guide
 
-| File | What to change |
+## LS instructions (formats 00 and 01)
+
+| File | Required change |
 |---|---|
-| `arch/opcodes_ls.def` | `LITTLE64_LS_OPCODE(enum_name, opcode_value, "mnemonic")` |
-| `emulator/cpu.cpp` | Add/update the `case LS::Opcode::*` in **both** `_dispatchLSReg` (Format 00) and `_dispatchLSPCRel` (Format 01) — the two formats share an opcode but can behave differently |
-| `assembler/assembler.cpp` | Only if the instruction needs non-standard syntax (e.g. bare registers instead of `[Rs1], Rd`) or a new mnemonic-classification helper |
-| `disassembler/disassembler.cpp` | Only if the disassembly text differs from the default `[Rs1+N], Rd` pattern |
-| `CPU_ARCH.md` | Update the OPCODE_LS table |
-| `docs/assembly-syntax.md` | Update if the syntax is affected |
-| `asm/test_program.asm` | Update any uses of the changed instruction |
+| `arch/opcodes_ls.def` | Add/update `LITTLE64_LS_OPCODE(...)` entry |
+| `emulator/cpu.cpp` | Update handling in both `_dispatchLSReg(...)` and `_dispatchLSPCRel(...)` |
+| `assembler/assembler.cpp` | Update only if syntax/parsing is non-standard |
+| `disassembler/disassembler.cpp` | Update only if text output differs from defaults |
+| `CPU_ARCH.md` | Update opcode and semantics reference |
+| `docs/assembly-syntax.md` | Update syntax and examples if affected |
+| tests | Add/update targeted instruction tests |
 
-### GP instructions (Format 11 — ALU)
+LS opcodes are shared between format 00 and 01. Behavior can differ by format and must be validated in both dispatch paths.
 
-| File | What to change |
+## GP instructions (format 11 ALU space)
+
+| File | Required change |
 |---|---|
-| `arch/opcodes_gp.def` | `LITTLE64_GP_OPCODE(enum_name, opcode_value, "mnemonic", num_regs)` where `num_regs` is 2 (Rs1+Rd), 1 (Rd only), or 0 (no registers) |
-| `emulator/cpu.cpp` | Add/update the `case GP::Opcode::*` in `_dispatchGP` only |
-| `assembler/assembler.cpp` | Rarely needed — the `num_regs` field in the `.def` drives operand parsing automatically |
-| `disassembler/disassembler.cpp` | Only if the disassembly text differs from the default pattern |
-| `CPU_ARCH.md` | Update the OPCODE_GP table |
-| `docs/assembly-syntax.md` | Update if the syntax is affected |
-| `asm/test_program.asm` | Update any uses of the changed instruction |
+| `arch/opcodes_gp.def` | Add/update `LITTLE64_GP_OPCODE(...)` entry |
+| `emulator/cpu.cpp` | Update `_dispatchGP(...)` |
+| `assembler/assembler.cpp` | Usually unnecessary (encoding metadata drives parsing) |
+| `disassembler/disassembler.cpp` | Update if text output differs from defaults |
+| `CPU_ARCH.md` | Update opcode and semantics reference |
+| `docs/assembly-syntax.md` | Update syntax and examples if affected |
+| tests | Add/update targeted instruction tests |
 
-`gui/panels/assembler_panel.cpp` never needs updating — the keyword list is built automatically from `Assembler::getAllMnemonics()`.
+## Pseudo-instructions
 
-## Adding pseudo-instructions
+Pseudo-instructions are defined in `assembler/assembler.cpp` (`pseudo_table`).
 
-Pseudo-instructions expand to one or more real instructions at assembly time. They live in the `pseudo_table` in `assembler/assembler.cpp` — adding a new one requires no changes anywhere else (syntax highlighting and documentation aside).
+For a new pseudo-instruction:
 
-| File | What to change |
+1. add pseudo expansion in `pseudo_table`,
+2. set correct synthetic instruction addresses (`base + 2 * index`),
+3. update `docs/assembly-syntax.md` with expansion and usage,
+4. add tests covering assembly + execution semantics.
+
+## Device Framework Changes
+
+| File | Required change |
 |---|---|
-| `assembler/assembler.cpp` | Add an entry to `pseudo_table` (mnemonic → arity + expander lambda) |
-| `docs/assembly-syntax.md` | Document the expansion and intended usage |
+| `emulator/device.hpp` | Base lifecycle contract (`reset`, `tick`) |
+| `emulator/machine_config.hpp/.cpp` | Machine map registration path |
+| `emulator/cpu.cpp` | Runtime wiring if device behavior impacts load/reset/cycle |
+| `tools/new_device.py` | Scaffold hints/messages when integration path changes |
+| `docs/device-framework.md` | Update extension workflow |
+| tests (`tests/test_devices.cpp`) | Add conformance coverage |
 
-The expander lambda receives the source operand tokens, the base address of the first emitted instruction, and the source line number. It returns a `std::vector<ParsedInstruction>` in emission order; each instruction's `.address` field must be set to `base_addr + 2*index`. Use `makeRegToken()` and `makeImmToken()` to build synthetic operand tokens.
+Note: `tools/new_device.py` currently instructs contributors to add new device sources in `emulator/meson.build`.
 
-Pseudo-instructions are detected in `pass1()` before `parseInstruction()` is called, so they are fully transparent to the encoder and disassembler.
+## Test Structure
 
-## LS instruction specifics
+- Generic test macros: `tests/support/test_harness.hpp`
+- CPU-specific helpers: `tests/support/cpu_test_helpers.hpp`
+- Backward-compat include shim: `tests/test_harness.hpp`
 
-LS opcodes are shared between Format 00 (register) and Format 01 (PC-relative). Their behaviour can differ between the two — check both `_dispatchLSReg` and `_dispatchLSPCRel` in `emulator/cpu.cpp`.
+When adding CPU tests, prefer including `tests/support/cpu_test_helpers.hpp` directly.
 
-In Format 00, the instruction encoding is:
-```
-[OPCODE_LS 4b] [OFFSET 2b] [Rs1 4b] [Rd 4b]
-```
-In Format 01, only `Rd` is available (no `Rs1`); the other bits are the signed PC-relative offset.
+## Documentation Update Contract
 
-## Testing & Verification
+When behavior changes, update docs in the same change:
 
-### Building the Toolchain
+1. `CPU_ARCH.md` for ISA/semantic changes.
+2. `docs/assembly-syntax.md` for assembler syntax/directive changes.
+3. `docs/architecture-boundaries.md` for layering/API changes.
+4. `docs/device-framework.md` for machine/device model changes.
+5. `README.md` and `docs/README.md` when command paths or reading order changes.
+6. this `CLAUDE.md` when contributor workflow instructions change.
+
+## Verification Commands
+
 ```bash
-# Rebuild the emulator
+# Reconfigure + build
+meson setup --reconfigure builddir
 meson compile -C builddir
 
-# Rebuild the LLVM toolchain (clang, lld, etc.)
-bash compilers/build.sh llvm
+# Full test suite
+meson test -C builddir --print-errorlogs
 ```
 
-The built LLVM toolchain binaries are located in `compilers/bin`. The target triple is `little64` or `little64-unknown-unknown`, depending on what you need.
+For ISA bring-up via LLVM tools:
 
-### Running Assembly Tests
-The recommended workflow for testing architectural changes is to write a small assembly program and run it through the full LLVM pipeline:
+```bash
+compilers/bin/llvm-mc -triple=little64 -filetype=obj test.asm -o test.o
+compilers/bin/ld.lld test.o -o test.elf
+compilers/bin/llvm-objdump -d --triple=little64 test.elf
+./builddir/little-64 test.elf
+```
 
-1. **Write assembly:** Create a `.asm` file (e.g., `test.asm`). Use `.global _start` to define the entry point.
-2. **Assemble:** `compilers/bin/llvm-mc -triple=little64 -filetype=obj test.asm -o test.o`
-3. **Link:** `compilers/bin/ld.lld test.o -o test.elf`
-4. **Disassemble (optional):** `compilers/bin/llvm-objdump -d --triple=little64 test.elf`
-5. **Run:** `builddir/little-64 test.elf`
+## RSP Debug Server Quick Check
 
-The `STOP` instruction in the emulator will trigger a full register state dump to `stderr` upon execution, which is useful for verifying program results.
-
-### Running C Tests
-1. **Write C code:** Create a `.c` file (e.g., `test.c`). Define `void _start(void)` as the entry point (use `__attribute__((naked))` for custom startup).
-2. **Compile:** `compilers/bin/clang -target little64 -O0 -c test.c -o test.o`
-3. **Link:** `compilers/bin/ld.lld test.o -o test.elf --entry=_start`
-4. **Verify:** Always disassemble before running to ensure `STOP` or expected instructions are present:
-   `compilers/bin/llvm-objdump -d --triple=little64 test.elf`
-5. **Run:** Use `timeout` to prevent hangs if the program doesn't hit a `STOP` instruction:
-   `timeout 5s builddir/little-64 test.elf`
-
-Inline assembly for `STOP`: `__asm__ volatile ("STOP");`
+```bash
+meson compile -C builddir little-64-debug
+./builddir/little-64-debug 9000 [optional-image.elf]
+meson test -C builddir debug-rsp-integration --print-errorlogs
+meson test -C builddir debug-lldb-remote-smoke --print-errorlogs
+```

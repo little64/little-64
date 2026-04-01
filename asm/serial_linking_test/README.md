@@ -1,31 +1,41 @@
 # serial_linking_test
 
-This example demonstrates splitting `serial_boot.asm` into two modules and linking them.
+This example demonstrates splitting a small serial-output program across multiple modules and linking them.
 
 ## Files
 
-- `part1.asm` — entry point plus `hello_world` string, extern `serial_print`.
-- `part2.asm` — `serial_print` implementation and `_serial_base` constant.
+- `part1.asm` — entry point, string data, external call site
+- `part2.asm` — `serial_print` implementation and serial base usage
 
-## Build + Link
+## Build and Link
 
-```sh
-cd /home/alexander/projects/little-64
+From project root:
 
-# Assemble each module to ELF objects
+```bash
 ./builddir/little-64-asm --elf -o asm/serial_linking_test/part1.o asm/serial_linking_test/part1.asm
 ./builddir/little-64-asm --elf -o asm/serial_linking_test/part2.o asm/serial_linking_test/part2.asm
 
-# Link them to flat binary
 ./builddir/little-64-linker -o asm/serial_linking_test/serial_boot_linked.bin \
-  asm/serial_linking_test/part1.o asm/serial_linking_test/part2.o
-
-# Run in emulator
-./builddir/little-64 ./asm/serial_linking_test/serial_boot_linked.bin
+  asm/serial_linking_test/part1.o \
+  asm/serial_linking_test/part2.o
 ```
 
-## Notes
+Run:
 
-- `part1.asm` declares `serial_print` with `.extern`, then uses `JAL @serial_print`.
-- `part2.asm` exports `serial_print` via `.global serial_print`.
-- Linking resolves `PCREL6` JAL relocation and ABS64 `_serial_base` reference.
+```bash
+./builddir/little-64 asm/serial_linking_test/serial_boot_linked.bin
+```
+
+## What It Validates
+
+- symbol export/import (`.global` / `.extern`)
+- relocation resolution across object modules
+- linked binary execution in emulator
+
+## Update Checklist
+
+If this example or linker behavior changes:
+
+- update this README,
+- verify commands run successfully end-to-end,
+- update related docs if CLI contracts changed.

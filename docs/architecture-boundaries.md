@@ -1,74 +1,81 @@
-# Little-64 Architecture Boundaries (Phase 1)
+# Little-64 Architecture Boundaries
 
-Date: 2026-04-01
+This document defines module boundaries and allowed dependencies.
 
-This document records the current module boundaries after Phase 1 cleanup.
+## Runtime Boundary
 
-## Runtime API Boundary
+## Public runtime interface
 
-- Public frontend contract: `emulator/frontend_api.hpp`
+- `emulator/frontend_api.hpp`
   - `IEmulatorRuntime`
   - `RegisterSnapshot`
   - `MemoryRegionView`
-- Concrete implementation: `emulator/emulator_session.hpp/.cpp`
 
-Frontends should depend on `IEmulatorRuntime`/`EmulatorSession`, not directly on `Little64CPU` internals.
+## Facade implementation
 
-## Frontend Composition
+- `emulator/emulator_session.hpp/.cpp`
 
-- GUI composition root: `gui/app.hpp/.cpp`
-- Shared app state remains in `AppState`.
-- Panels depend on narrow contexts (`gui/panels/panel_contexts.hpp`) rather than the full app state.
+Frontend and tooling code should prefer `IEmulatorRuntime`/`EmulatorSession` over direct `Little64CPU` usage.
 
-This keeps panel-level dependencies explicit and reduces cross-coupling.
+## Execution Paths
 
-## Headless Entrypoints
+## Headless emulator
 
-- Emulator CLI: `emulator/main.cpp`
-  - uses shared loader/run helpers in `emulator/headless_runtime.hpp/.cpp`
-- Debug CLI: `emulator/debug_main.cpp`
-  - uses modular debug core (`emulator/debug_server.hpp/.cpp`)
-  - transport abstraction via `emulator/debug_transport.hpp`
+- Entry: `emulator/main.cpp`
+- Shared helpers: `emulator/headless_runtime.hpp/.cpp`
 
-Both paths converge on the same runtime API boundary.
+## Debug server
 
-## Tooling Boundaries
+- Entry: `emulator/debug_main.cpp`
+- Server/transport: `emulator/debug_server.*`, `emulator/debug_transport.*`
 
-- Project runner: `project/runner_main.cpp`
-  - now drives execution through `EmulatorSession`
-  - no direct `Little64CPU` dependency in this entrypoint
+## Frontends
 
-## Build-Level Boundaries (Meson)
+- ImGui frontend: `gui/`
+- Qt frontend: `qt/`
+- Shared frontend helpers: `frontend/`
 
-- Core module source groups in `meson.build`:
-  - `core_emulator_src`
-  - `core_assembler_src`
-  - `core_linker_src`
-  - `core_disassembler_src`
-  - `core_project_src`
-- UI source group:
-  - `ui_gui_src`
+## Tooling Libraries and CLIs
 
-This keeps top-level responsibilities explicit without requiring immediate on-disk directory moves.
+- Assembler: `assembler/`
+- Disassembler: `disassembler/`
+- Linker: `linker/`
+- Project runner: `project/`
 
-## Device Configuration Boundary (Phase 2)
+## Build Boundaries (Meson)
 
-- Device base type: `emulator/device.hpp`
-  - lifecycle: `reset()`, `tick()`
-- Declarative machine wiring: `emulator/machine_config.hpp/.cpp`
-  - registration helpers for RAM/ROM/SERIAL and custom regions
-  - single `applyTo()` path populates `MemoryBus` and device list
-- CPU integration:
-  - `loadProgram()` / `loadProgramElf()` construct maps through `MachineConfig`
-  - `reset()` propagates to all devices
-  - `cycle()` calls `tick()` on all devices
+Top-level orchestration in `meson.build`, per-subsystem ownership in:
 
-Adding a new MMIO device now requires:
-1) implementing a `Device` subclass,
-2) registering it in `MachineConfig`,
-3) adding device-focused tests.
+- `emulator/meson.build`
+- `assembler/meson.build`
+- `disassembler/meson.build`
+- `linker/meson.build`
+- `project/meson.build`
+- `tests/meson.build`
+- `gui/meson.build`
+- `qt/meson.build`
 
-## Remaining Work Outside Phase 1
+## Dependency Rules
 
-- MMU/page-fault and trap plumbing — Phase 3.
-- Unified unit test framework replacement (`tests/test_harness.hpp`) — Phase 4.
+1. Frontends should not depend on raw CPU internals when runtime API methods exist.
+2. Tool CLIs should use subsystem library APIs instead of duplicating logic.
+3. Device registration/wiring must flow through `MachineConfig`.
+4. Tests may reach internal APIs when needed but should prefer public surfaces first.
+
+## Compatibility Rule
+
+Build outputs expected by scripts remain available at root builddir paths:
+
+- `builddir/little-64`
+- `builddir/little-64-debug`
+
+This is preserved for integration tests and task workflows.
+
+## Update Checklist
+
+When adding a new subsystem or crossing boundaries:
+
+- update this document,
+- update affected `meson.build` files,
+- update `docs/README.md` index,
+- run full tests to ensure no workflow regressions.

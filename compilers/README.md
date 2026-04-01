@@ -1,37 +1,63 @@
-# Compiler Ports for Little-64
+# Compiler Toolchains for Little-64
 
-This directory contains ports of various C compilers and language tools to the Little-64 custom ISA.
+This directory hosts compiler/toolchain ports used by Little-64.
 
-## Overview
+## Layout
 
-| Compiler | Language | Status | Backend | Notes |
-|----------|----------|--------|---------|-------|
-| LLVM | C/C++ | **Working** | — | Production compiler |
-| lily-cc | C | **In Progress** | [lily-cc/](lily-cc/) | Active development, working Little-64 backend |
-| Chibicc | C | Not started | — | Educational compiler (future comparison) |
-| TCC | C | Not started | — | Tiny C Compiler (future comparison) |
+- `llvm/` — LLVM-based toolchain and backend work
+- `lily-cc/` — Lily-CC port work
+- `bin/` — exported compiler/debugger binaries for project workflows
+- `build.sh` — build orchestrator that delegates to per-toolchain scripts
 
-## Building
+## Separation Policy
 
-Use the build orchestrator from this directory:
+LLVM and Lily-CC trees are intentionally independent.
+
+- Keep `llvm/` and `lily-cc/` separate.
+- Do not collapse their build scripts or source trees into a shared layout.
+- Shared output is allowed only through `bin/`.
+
+## Build Orchestrator
+
+From `compilers/`:
 
 ```bash
-./build.sh lily-cc        # build lily-cc
-./build.sh all            # build all compilers
-./build.sh clean lily-cc  # clean lily-cc artifacts
-./build.sh clean          # clean all
-ENABLE_LLDB=1 ./build.sh llvm  # Build LLVM toolchain with LLDB + LLDB-DAP
+./build.sh help
+./build.sh llvm
+./build.sh lily-cc
+./build.sh all
+./build.sh clean
+./build.sh clean llvm
 ```
 
-Compiled binaries are placed in `bin/`.
+Optional LLDB build for LLVM path:
 
-## Getting Started with a Compiler Port
+```bash
+ENABLE_LLDB=1 ./build.sh llvm
+```
 
-Each compiler gets a subdirectory with a `build.sh` that the orchestrator delegates to.
+## Expected Output
 
-## Adding a New Compiler
+Compiler and debugger binaries are exported to:
 
-1. Create `compilers/<compiler>/` directory
-2. Add `README.md` with setup instructions and rationale
-3. Add `build.sh` implementing the `[TARGET] [ACTION]` interface
-4. Update this `README.md` with a new row in the table
+- `compilers/bin/clang`
+- `compilers/bin/ld.lld`
+- `compilers/bin/llvm-mc`
+- `compilers/bin/lldb` (when LLDB is enabled)
+- `compilers/bin/lldb-dap` (when LLDB is enabled)
+
+## Adding a New Compiler Port
+
+1. Add `compilers/<name>/build.sh` with the same command contract used by `build.sh`.
+2. Add `compilers/<name>/README.md` describing status and usage.
+3. Ensure produced binaries are copied/symlinked into `compilers/bin/` when appropriate.
+4. Update this file with a new section and command examples.
+
+## Update Checklist
+
+When changing any compiler build flow:
+
+- verify `./build.sh help` output remains accurate,
+- verify at least one real build command succeeds,
+- update command examples here,
+- update project-level docs if toolchain invocation changes.
