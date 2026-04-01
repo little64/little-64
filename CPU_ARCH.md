@@ -14,6 +14,8 @@ To find or modify instruction definitions, look at these files:
 | **Assembler support** | `assembler/assembler.cpp`, `assembler/encoder.cpp` | Mnemonic-to-encoding mapping, operand parsing, validation |
 | **Disassembler support** | `disassembler/disassembler.cpp` | Decoding and human-readable output |
 | **Test instructions** | `tests/test_cpu_*.cpp` | CPU behavior tests (organized by category: gp, ldi, memory, jumps, special, integration) |
+| **Device framework / memory map wiring** | `emulator/device.hpp`, `emulator/machine_config.hpp`, `emulator/machine_config.cpp` | Declarative registration of RAM/ROM/MMIO devices and lifecycle hooks |
+| **Device conformance tests** | `tests/test_devices.cpp` | MMIO read/write/reset behavior checks |
 | **Assembly examples** | `asm/test_program.asm` | Example assembly code |
 | **Documentation** | `docs/assembly-syntax.md` | Assembly language syntax guide |
 

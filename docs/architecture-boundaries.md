@@ -51,8 +51,24 @@ Both paths converge on the same runtime API boundary.
 
 This keeps top-level responsibilities explicit without requiring immediate on-disk directory moves.
 
+## Device Configuration Boundary (Phase 2)
+
+- Device base type: `emulator/device.hpp`
+  - lifecycle: `reset()`, `tick()`
+- Declarative machine wiring: `emulator/machine_config.hpp/.cpp`
+  - registration helpers for RAM/ROM/SERIAL and custom regions
+  - single `applyTo()` path populates `MemoryBus` and device list
+- CPU integration:
+  - `loadProgram()` / `loadProgramElf()` construct maps through `MachineConfig`
+  - `reset()` propagates to all devices
+  - `cycle()` calls `tick()` on all devices
+
+Adding a new MMIO device now requires:
+1) implementing a `Device` subclass,
+2) registering it in `MachineConfig`,
+3) adding device-focused tests.
+
 ## Remaining Work Outside Phase 1
 
-- Device registration/model simplification (`MachineConfig` / registry) — Phase 2.
 - MMU/page-fault and trap plumbing — Phase 3.
 - Unified unit test framework replacement (`tests/test_harness.hpp`) — Phase 4.

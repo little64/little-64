@@ -1,7 +1,21 @@
 #include "serial_device.hpp"
 
 SerialDevice::SerialDevice(uint64_t base, std::string_view name)
-    : MemoryRegion(base, 8), _name(name) {}
+    : Device(base, 8), _name(name) {}
+
+void SerialDevice::reset() {
+    _tx_buffer.clear();
+    _rx_buffer.clear();
+    _ier = 0x00;
+    _lcr = 0x00;
+    _mcr = 0x00;
+    _scr = 0x00;
+    _dll = 0x00;
+    _dlm = 0x00;
+}
+
+void SerialDevice::tick() {
+}
 
 uint8_t SerialDevice::read8(uint64_t addr) {
     bool dlab = (_lcr & 0x80) != 0;

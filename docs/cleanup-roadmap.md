@@ -5,7 +5,7 @@ Date: 2026-04-01
 ## Status Snapshot
 
 - Phase 1: ✅ Completed
-- Phase 2: ⏳ Not started
+- Phase 2: ✅ Completed
 - Phase 3: 🟡 In progress (headless debug skeleton in place)
 - Phase 4: 🟡 In progress (LLVM tests integrated into Meson)
 
@@ -21,7 +21,7 @@ Date: 2026-04-01
 - CPU unit tests exist but still use local macros (`tests/test_harness.hpp`) and custom per-binary summaries.
 - LLVM integration tests are now integrated into Meson (`llvm-integration` suite) via `tests/llvm/scripts/run_tests.py`.
 - GUI debugger is useful for ISA-level bring-up but not yet suited for OS-level, multi-process, paging-heavy debugging workflows.
-- Device model is region-based (`MemoryRegion` + `MemoryBus`), but adding a device still requires manual wiring in emulator code/build files.
+- Device model now uses `Device` + `MachineConfig` for declarative registration, lifecycle hooks, and centralized memory-map wiring.
 
 ---
 
@@ -103,6 +103,8 @@ Status: ✅ Completed (2026-04-01)
 
 ## Phase 2 — Device Framework Simplification (1–2 weeks)
 
+Status: ✅ Completed (2026-04-01)
+
 ### Objectives
 
 - Make adding a new MMIO/peripheral device a small, repeatable task.
@@ -126,6 +128,29 @@ Status: ✅ Completed (2026-04-01)
 
 - New device can be added by implementing one class + one registry entry + tests.
 - No manual memory map edits scattered across unrelated files.
+
+### Delivered
+
+1. `Device` abstraction
+   - Added `emulator/device.hpp` (`Device : MemoryRegion`) with lifecycle hooks: `reset()` and `tick()`.
+2. Declarative machine/device config
+   - Added `emulator/machine_config.hpp/.cpp` with fluent registration helpers:
+     - `addRam(...)`,
+     - `addPreloadedRam(...)`,
+     - `addRom(...)`,
+     - `addSerial(...)`,
+     - `applyTo(bus, devices)`.
+3. CPU wiring migrated to config path
+   - `Little64CPU::loadProgram()` and `loadProgramElf()` now build memory maps through `MachineConfig`.
+   - `Little64CPU::reset()` now resets all registered devices.
+   - `Little64CPU::cycle()` now ticks all registered devices.
+4. Serial device lifecycle conformance
+   - `SerialDevice` now derives from `Device` and implements `reset()` (state + FIFO clear) and `tick()`.
+5. New-device scaffold helper
+   - Added `tools/new_device.py` to generate `Device` skeleton header/source files.
+6. Device-focused tests
+   - Added `tests/test_devices.cpp`.
+   - Added Meson suite entry `test('devices', ...)`.
 
 ---
 
@@ -229,6 +254,7 @@ Status: 🟡 Started
    - stdio adapter: `StdioDebugTransport`,
    - entrypoint wiring: `emulator/debug_main.cpp`.
    - Integrated LLVM tests into Meson (`llvm-integration`) and centralized required test environment in `meson.build`.
+   - Added declarative `MachineConfig` + `Device` lifecycle framework and migrated CPU program-loading paths to use it.
 
 This makes the future debug-server entrypoint straightforward: a new transport layer can drive the same `IEmulatorRuntime` + headless loader/loop without duplicating emulator startup logic.
 

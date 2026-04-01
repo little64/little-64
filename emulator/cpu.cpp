@@ -1,4 +1,5 @@
 #include "cpu.hpp"
+#include "machine_config.hpp"
 #include "opcodes.hpp"
 #include "ram_region.hpp"
 #include <memory>
@@ -12,6 +13,16 @@
 #endif
 
 Little64CPU::Little64CPU() {
+}
+
+void Little64CPU::reset() {
+    registers = {};
+    isRunning = true;
+    for (Device* device : _devices) {
+        if (device) {
+            device->reset();
+        }
+    }
 }
 
 void Little64CPU::cycle() {
@@ -39,6 +50,12 @@ void Little64CPU::cycle() {
                 _raiseInterrupt(i);
                 break;
             }
+        }
+    }
+
+    for (Device* device : _devices) {
+        if (device) {
+            device->tick();
         }
     }
 }
@@ -397,9 +414,10 @@ bool Little64CPU::loadProgramElf(const std::vector<uint8_t>& elf_bytes, uint64_t
     constexpr uint64_t SERIAL_BASE = 0xFFFFFFFFFFFF0000ULL;
     uint64_t total_ram = alloc_size + RAM_EXTRA;
 
-    _bus.clearRegions();
-    _bus.addRegion(std::make_unique<RamRegion>(base_addr, std::move(ram_bytes), total_ram, "MEM"));
-    _bus.addRegion(std::make_unique<SerialDevice>(SERIAL_BASE, "SERIAL"));
+     MachineConfig cfg;
+     cfg.addPreloadedRam(base_addr, std::move(ram_bytes), total_ram, "MEM")
+         .addSerial(SERIAL_BASE, "SERIAL");
+     cfg.applyTo(_bus, _devices);
 
     registers = {};
     registers.regs[13] = base_addr + total_ram - 8;
@@ -430,9 +448,10 @@ void Little64CPU::loadProgram(const std::vector<uint16_t>& words, uint64_t base,
     constexpr uint64_t SERIAL_BASE = 0xFFFFFFFFFFFF0000ULL;
     uint64_t total_size = prog_size + RAM_SIZE;
 
-    _bus.clearRegions();
-    _bus.addRegion(std::make_unique<RamRegion>(base, std::move(bytes), total_size, "MEM"));
-    _bus.addRegion(std::make_unique<SerialDevice>(SERIAL_BASE, "SERIAL"));
+     MachineConfig cfg;
+     cfg.addPreloadedRam(base, std::move(bytes), total_size, "MEM")
+         .addSerial(SERIAL_BASE, "SERIAL");
+     cfg.applyTo(_bus, _devices);
 
     // Reset CPU state.
     registers = {};
@@ -444,8 +463,8 @@ void Little64CPU::loadProgram(const std::vector<uint16_t>& words, uint64_t base,
 }
 
 SerialDevice* Little64CPU::getSerial() {
-    for (auto& r : _bus.regions()) {
-        if (auto* s = dynamic_cast<SerialDevice*>(r.get()))
+    for (Device* d : _devices) {
+        if (auto* s = dynamic_cast<SerialDevice*>(d))
             return s;
     }
     return nullptr;

@@ -10,6 +10,7 @@ core_emulator_src = [
   'emulator/debug_transport.cpp',
   'emulator/emulator_session.cpp',
   'emulator/headless_runtime.cpp',
+  'emulator/machine_config.cpp',
   'emulator/memory_region.cpp',
   'emulator/memory_bus.cpp',
   'emulator/ram_region.cpp',
@@ -140,6 +141,17 @@ foreach name, src : cpu_tests
     )
     test('cpu-' + name, t, suite : ['cpu', name], timeout : 60)
 endforeach
+
+test_devices = executable('test-devices',
+  ['tests/test_devices.cpp'],
+  link_with : [emulator_lib],
+  include_directories : [
+    include_directories('emulator'),
+    test_inc,
+  ],
+  install : false,
+)
+test('devices', test_devices, suite : ['device'], timeout : 60)
 
 # --- Project library and runner ---
 project_lib = static_library('little-64-project-lib',

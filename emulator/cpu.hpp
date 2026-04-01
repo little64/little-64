@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <vector>
+#include "device.hpp"
 #include "memory_bus.hpp"
 #include "serial_device.hpp"
 
@@ -263,11 +264,8 @@ public:
     // Returns true if loading succeeded, false on error.
     bool loadProgramElf(const std::vector<uint8_t>& elf_bytes, uint64_t base = 0);
 
-    // Resets basic CPU state. Does not modify memory or devices.
-    void reset() {
-        registers = {};
-        isRunning = true;
-    }
+    // Resets CPU and all configured devices.
+    void reset();
 
     // Memory bus access for GUI panels and external tooling
     MemoryBus&       getMemoryBus()       { return _bus; }
@@ -309,4 +307,5 @@ private:
     void     _writeMemory64(uint64_t addr, uint64_t v) { _bus.write64(addr, v); }
 
     MemoryBus _bus;
+    std::vector<Device*> _devices;
 };

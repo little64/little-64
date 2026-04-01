@@ -1,6 +1,6 @@
 #pragma once
 
-#include "memory_region.hpp"
+#include "device.hpp"
 #include <deque>
 #include <string>
 
@@ -18,12 +18,15 @@
 //   +5          LSR (bit0=DR, bit5=THRE always 1, bit6=TEMT always 1)
 //   +6          MSR (0xB0: CTS/DSR/DCD asserted)
 //   +7          SCR (scratch register, r/w)
-class SerialDevice : public MemoryRegion {
+class SerialDevice : public Device {
 public:
     explicit SerialDevice(uint64_t base, std::string_view name = "SERIAL");
 
     uint8_t read8(uint64_t addr) override;
     void    write8(uint64_t addr, uint8_t val) override;
+
+    void reset() override;
+    void tick() override;
 
     std::string_view name() const override { return _name; }
 
