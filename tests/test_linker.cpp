@@ -1,20 +1,9 @@
 #include "linker.hpp"
 #include "assembler.hpp"
+#include "support/test_harness.hpp"
 #include <cstdio>
 #include <string>
 #include <vector>
-
-#define CHECK_EQ(actual, expected, msg) \
-    do { \
-        auto _a = (actual); \
-        auto _e = (expected); \
-        if (_a == _e) { \
-            ; \
-        } else { \
-            std::fprintf(stderr, "FAIL [%s:%d] %s (expected %d, got %d)\n", __FILE__, __LINE__, (msg), (int)_e, (int)_a); \
-            return 1; \
-        } \
-    } while (0)
 
 int main() {
     Assembler asmbl;
@@ -26,7 +15,8 @@ int main() {
     auto linked = Linker::linkObjects({obj1, obj2}, &err);
     if (!linked) {
         std::fprintf(stderr, "Link failed: %s\n", err.message.c_str());
-        return 1;
+        CHECK_TRUE(false, "Linking first object set should succeed");
+        return print_summary();
     }
 
     // Check that linked output is non-empty and begins with a jump by comparing first instruction
@@ -55,7 +45,8 @@ int main() {
         auto linked2 = Linker::linkObjects({o1, o2}, &err2);
         if (!linked2) {
             std::fprintf(stderr, "Link failed: %s\n", err2.message.c_str());
-            return 1;
+            CHECK_TRUE(false, "Linking second object set should succeed");
+            return print_summary();
         }
         CHECK_EQ((*linked2)[0], (uint16_t)0xDF00, "handler = STOP");
         // JUMP.Z now uses PCREL10 encoding: bits[9:0] = 10-bit offset, no Rd field.
@@ -66,5 +57,5 @@ int main() {
         CHECK_EQ((*linked2)[2], (uint16_t)0xDF00, "zz_local = STOP");
     }
 
-    return 0;
+    return print_summary();
 }

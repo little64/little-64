@@ -89,10 +89,10 @@ executable('little-64-asm',
 test_asm = executable('test-assembler',
   ['tests/test_assembler.cpp'],
   link_with : asm_lib,
-  include_directories : [include_directories('assembler'), arch_inc],
+  include_directories : [include_directories('assembler'), arch_inc, include_directories('tests'), include_directories('tests/support')],
   install : false,
 )
-test('assembler', test_asm, suite : 'assembler')
+test('assembler', test_asm, suite : ['unit', 'assembler'])
 
 linker_lib = static_library('little-64-linker-lib',
   core_linker_src,
@@ -110,14 +110,15 @@ executable('little-64-linker',
 test_linker = executable('test-linker',
   ['tests/test_linker.cpp'],
   link_with : [linker_lib, asm_lib],
-  include_directories : [include_directories('linker'), include_directories('assembler'), arch_inc],
+  include_directories : [include_directories('linker'), include_directories('assembler'), arch_inc, include_directories('tests'), include_directories('tests/support')],
   install : false,
 )
 
-test('linker', test_linker, suite : 'linker')
+test('linker', test_linker, suite : ['unit', 'linker'])
 
 # --- CPU execution test suite ---
 test_inc = include_directories('tests')
+test_support_inc = include_directories('tests/support')
 
 cpu_tests = {
     'gp':          'tests/test_cpu_gp.cpp',
@@ -139,7 +140,7 @@ foreach name, src : cpu_tests
         ],
         install : false,
     )
-    test('cpu-' + name, t, suite : ['cpu', name], timeout : 60)
+    test('cpu-' + name, t, suite : ['unit', 'isa', 'cpu', name], timeout : 60)
 endforeach
 
 test_devices = executable('test-devices',
@@ -148,10 +149,11 @@ test_devices = executable('test-devices',
   include_directories : [
     include_directories('emulator'),
     test_inc,
+    test_support_inc,
   ],
   install : false,
 )
-test('devices', test_devices, suite : ['device'], timeout : 60)
+test('devices', test_devices, suite : ['unit', 'device'], timeout : 60)
 
 # --- Project library and runner ---
 project_lib = static_library('little-64-project-lib',
@@ -186,17 +188,21 @@ test('project-runner',
   little64_run,
   args : [meson.project_source_root() / 'tests/projects/hello/hello.l64proj'],
   env : little64_runner_test_env,
+  suite : ['integration', 'project'],
 )
 
 python3 = import('python').find_installation('python3')
+llvm_report_path = meson.project_build_root() / 'meson-logs' / 'llvm-integration-report.json'
 test('llvm-integration',
   python3,
   args : [
     meson.project_source_root() / 'tests/llvm/scripts/run_tests.py',
     '--no-color',
+    '--report-json',
+    llvm_report_path,
   ],
   env : little64_test_env,
-  suite : ['llvm', 'integration'],
+  suite : ['llvm', 'integration', 'toolchain'],
   timeout : 120,
 )
 
@@ -206,6 +212,31 @@ disasm_lib = static_library('little-64-disasm-lib',
   include_directories : [include_directories('disassembler'), arch_inc],
   install : true,
 )
+
+test_disasm = executable('test-disassembler',
+  ['tests/test_disassembler.cpp'],
+  link_with : [disasm_lib],
+  include_directories : [
+    include_directories('disassembler'),
+    arch_inc,
+    test_inc,
+    test_support_inc,
+  ],
+  install : false,
+)
+test('disassembler', test_disasm, suite : ['unit', 'disassembler'], timeout : 60)
+
+test_memory_bus = executable('test-memory-bus',
+  ['tests/test_memory_bus.cpp'],
+  link_with : [emulator_lib],
+  include_directories : [
+    include_directories('emulator'),
+    test_inc,
+    test_support_inc,
+  ],
+  install : false,
+)
+test('memory-bus', test_memory_bus, suite : ['unit', 'memory'], timeout : 60)
 
 # CLI tool that links the library
 executable('little-64-disasm',

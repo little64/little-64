@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import json
 import os
 import subprocess
 import re
@@ -34,6 +35,34 @@ class TestResult:
         self.name = name
         self.success = success
         self.message = message
+
+
+def write_json_report(path, results, passed, total):
+    if not path:
+        return
+
+    report = {
+        "summary": {
+            "passed": passed,
+            "failed": total - passed,
+            "total": total,
+        },
+        "results": [
+            {
+                "name": r.name,
+                "success": r.success,
+                "message": r.message,
+            }
+            for r in results
+        ],
+    }
+
+    report_dir = os.path.dirname(path)
+    if report_dir:
+        os.makedirs(report_dir, exist_ok=True)
+
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(report, f, indent=2)
 
 def run_cmd(args):
     try:
@@ -180,6 +209,8 @@ def parse_args():
                         help="Disable ANSI color output")
     parser.add_argument("--verbose", action="store_true",
                         help="Print PASS details even on success")
+    parser.add_argument("--report-json", type=str,
+                        help="Write machine-readable JSON report to this path")
     return parser.parse_args()
 
 def main():
@@ -201,6 +232,7 @@ def main():
 
     passed = sum(1 for r in results if r.success)
     total = len(results)
+    write_json_report(args.report_json, results, passed, total)
     print(f"\nSummary: {passed}/{total} tests passed")
     if passed < total:
         sys.exit(1)

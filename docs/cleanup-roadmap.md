@@ -6,8 +6,8 @@ Date: 2026-04-01
 
 - Phase 1: ✅ Completed
 - Phase 2: ✅ Completed
-- Phase 3: 🟡 In progress (headless debug skeleton in place)
-- Phase 4: 🟡 In progress (LLVM tests integrated into Meson)
+- Phase 3: ⏸️ Deferred (MMU/paging-focused work intentionally postponed)
+- Phase 4: ✅ Completed
 
 ## Goals
 
@@ -156,7 +156,7 @@ Status: ✅ Completed (2026-04-01)
 
 ## Phase 3 — Paging/UNIX Bring-up Infrastructure (2–4 weeks)
 
-Status: 🟡 Started
+Status: ⏸️ Deferred
 
 ### Objectives
 
@@ -191,7 +191,7 @@ Status: 🟡 Started
 
 ## Phase 4 — Unified Testing & Clean Output (1–2 weeks)
 
-Status: 🟡 Started
+Status: ✅ Completed (2026-04-01)
 
 ### Objectives
 
@@ -225,10 +225,22 @@ Status: 🟡 Started
   - each device,
   - linker/project runner paths.
 
-### Progress so far
+### Delivered
 
-- LLVM integration tests are wired into Meson as `llvm-integration`.
-- Test runner output is cleaner and timeout diagnostics are improved.
+1. Meson as single test entrypoint for all current categories
+   - Added/retained suites for `unit`, `integration`, `isa`, `device`, `memory`, `toolchain`, `llvm`, `project`, `assembler`, `linker`, `disassembler`.
+2. Unified local harness support
+   - Added `tests/support/test_harness.hpp`.
+   - Migrated non-CPU ad-hoc tests (`test_assembler.cpp`, `test_linker.cpp`, `test_devices.cpp`) to the shared support macros/summary path.
+3. Missing focused subsystem tests added
+   - Added `tests/test_disassembler.cpp`.
+   - Added `tests/test_memory_bus.cpp`.
+4. Machine-readable integration artifact
+   - Extended `tests/llvm/scripts/run_tests.py` with `--report-json` output.
+   - Meson `llvm-integration` now writes JSON report to `builddir/meson-logs/llvm-integration-report.json`.
+5. Clean output behavior preserved
+   - Human-readable concise pass/fail remains default.
+   - Verbose per-test detail remains opt-in.
 
 ---
 

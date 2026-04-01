@@ -2,24 +2,10 @@
 #include "machine_config.hpp"
 #include "serial_device.hpp"
 #include "cpu.hpp"
+#include "support/test_harness.hpp"
 
 #include <cstdio>
 #include <vector>
-
-static int _pass = 0;
-static int _fail = 0;
-
-#define CHECK_EQ(actual, expected, msg)                                         \
-    do {                                                                        \
-        auto _a = (actual);                                                     \
-        auto _e = (expected);                                                   \
-        if (_a == _e) {                                                         \
-            _pass++;                                                            \
-        } else {                                                                \
-            std::fprintf(stderr, "FAIL [%s:%d] %s\n", __FILE__, __LINE__, (msg)); \
-            _fail++;                                                            \
-        }                                                                       \
-    } while (0)
 
 static void test_machine_config_registration() {
     MemoryBus bus;
@@ -83,7 +69,5 @@ int main() {
     test_machine_config_registration();
     test_serial_register_behavior_and_reset();
     test_cpu_reset_resets_devices();
-
-    std::printf("\n=== Results: %d passed, %d failed ===\n", _pass, _fail);
-    return _fail == 0 ? 0 : 1;
+    return print_summary();
 }

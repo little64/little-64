@@ -6,47 +6,12 @@
 // Group J (.ascii/.asciiz) is added after the lexer/assembler rework.
 
 #include "assembler.hpp"
+#include "support/test_harness.hpp"
 #include <algorithm>
 #include <cstdio>
 #include <stdexcept>
 #include <string>
 #include <vector>
-
-// ---------------------------------------------------------------------------
-// Minimal test harness
-// ---------------------------------------------------------------------------
-
-static int _pass = 0, _fail = 0;
-
-#define CHECK_EQ(actual, expected, msg)                                        \
-    do {                                                                       \
-        auto _a = (actual);                                                    \
-        auto _e = (expected);                                                  \
-        if (_a == _e) {                                                        \
-            _pass++;                                                           \
-        } else {                                                               \
-            std::fprintf(stderr, "FAIL [%s:%d] %s\n"                          \
-                                 "  expected: 0x%04X\n"                        \
-                                 "  actual  : 0x%04X\n",                       \
-                         __FILE__, __LINE__, (msg),                            \
-                         static_cast<unsigned>(_e),                            \
-                         static_cast<unsigned>(_a));                           \
-            _fail++;                                                           \
-        }                                                                      \
-    } while (0)
-
-#define CHECK_THROWS(expr, msg)                                                \
-    do {                                                                       \
-        bool _threw = false;                                                   \
-        try { (expr); } catch (...) { _threw = true; }                         \
-        if (_threw) {                                                          \
-            _pass++;                                                           \
-        } else {                                                               \
-            std::fprintf(stderr, "FAIL [%s:%d] expected exception: %s\n",     \
-                         __FILE__, __LINE__, (msg));                           \
-            _fail++;                                                           \
-        }                                                                      \
-    } while (0)
 
 static std::vector<uint16_t> assemble(const std::string& src) {
     Assembler a;
@@ -286,7 +251,7 @@ static void test_elf_relocations() {
     int rela_index = -1;
     int symtab_index = -1;
     uint64_t rela_offset = 0, rela_size = 0;
-    uint64_t symtab_offset = 0, symtab_size = 0;
+    uint64_t symtab_offset = 0;
     uint64_t strtab_offset = 0;
 
     for (int i = 0; i < e_shnum; i++) {
@@ -300,7 +265,7 @@ static void test_elf_relocations() {
         std::string name(name_ptr);
 
         if (name == ".rela.text") { rela_index = i; rela_offset = off; rela_size = size; }
-        if (name == ".symtab") { symtab_index = i; symtab_offset = off; symtab_size = size; }
+        if (name == ".symtab") { symtab_index = i; symtab_offset = off; }
         if (name == ".strtab") { strtab_offset = off; }
     }
 
@@ -324,13 +289,7 @@ static void test_elf_relocations() {
     uint64_t sym_entry = symtab_offset + (sym_idx * 24);
     uint32_t sym_name_off = read_u32(elf, sym_entry);
     std::string sym_name(reinterpret_cast<const char*>(&elf[strtab_offset + sym_name_off]));
-    if (sym_name == "target") {
-        _pass++;
-    } else {
-        std::fprintf(stderr, "FAIL [%s:%d] Relocation target symbol expected 'target', got '%s'\n",
-                     __FILE__, __LINE__, sym_name.c_str());
-        _fail++;
-    }
+    CHECK_EQ(sym_name == "target", true, "Relocation target symbol name is target");
 }
 
 static void test_elf_global_extern_and_long_reloc() {
@@ -406,7 +365,7 @@ static void test_elf_extern_jal_reloc() {
     std::string shstr(reinterpret_cast<const char*>(&elf[shstr_offset]), (size_t)shstr_size);
 
     uint64_t rela_offset = 0, rela_size = 0, strtab_offset = 0;
-    uint64_t symtab_offset = 0, symtab_size = 0;
+    uint64_t symtab_offset = 0;
     for (int i = 0; i < e_shnum; i++) {
         uint64_t sh_base = e_shoff + (uint64_t)i * e_shentsize;
         uint32_t name_off = read_u32(elf, sh_base);
@@ -415,7 +374,7 @@ static void test_elf_extern_jal_reloc() {
         uint64_t off = read_u64(elf, sh_base + 0x18);
         uint64_t size = read_u64(elf, sh_base + 0x20);
         if (name == ".rela.text") { rela_offset = off; rela_size = size; }
-        if (name == ".symtab") { symtab_offset = off; symtab_size = size; }
+        if (name == ".symtab") { symtab_offset = off; }
         if (name == ".strtab") { strtab_offset = off; }
     }
 
@@ -434,12 +393,7 @@ static void test_elf_extern_jal_reloc() {
     uint32_t name_off = read_u32(elf, sym_entry_off);
     const char* sym_name_c = reinterpret_cast<const char*>(&elf[strtab_offset + name_off]);
     std::string sym_name(sym_name_c);
-    if (sym_name != "ext_fn") {
-        std::fprintf(stderr, "FAIL [%s:%d] Relocated symbol name expected '%s', got '%s'\n",
-                     __FILE__, __LINE__, "ext_fn", sym_name.c_str());
-        _fail++;
-        return;
-    }
+    CHECK_EQ(sym_name == "ext_fn", true, "Relocated symbol name is ext_fn");
 }
 
 // ---------------------------------------------------------------------------
@@ -787,6 +741,5 @@ int main() {
     std::printf("K: IMM4_RD encoding (immediate shifts)\n");
     test_imm4_rd_encoding();
 
-    std::printf("\n=== Results: %d passed, %d failed ===\n", _pass, _fail);
-    return _fail != 0 ? 1 : 0;
+    return print_summary();
 }
