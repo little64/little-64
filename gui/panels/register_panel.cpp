@@ -1,4 +1,5 @@
 #include "register_panel.hpp"
+#include "../../frontend/debugger_views.hpp"
 #include <imgui.h>
 #include <iomanip>
 #include <sstream>
@@ -9,33 +10,24 @@ RegisterPanel::RegisterPanel(RegisterPanelContext& state)
 void RegisterPanel::render() {
     if (ImGui::Begin("Registers")) {
         const RegisterSnapshot regs = state.emulator.registers();
+        const auto rows = buildRegisterRows(regs, state.emulator.pc());
 
         if (ImGui::BeginTable("regs_table", 2, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
             ImGui::TableSetupColumn("Register", ImGuiTableColumnFlags_WidthFixed, 80.0f);
             ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch);
             ImGui::TableHeadersRow();
 
-            // Display R0-R15
             for (int i = 0; i < 16; ++i) {
                 ImGui::TableNextRow();
                 ImGui::TableSetColumnIndex(0);
 
-                // R0 is shown in gray (it's hardwired to zero)
-                if (i == 0) {
+                if (rows[i].muted) {
                     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7f, 0.7f, 0.7f, 1.0f));
                 }
 
-                std::string name;
-                switch(i) {
-                    case 13: name = "SP"; break;
-                    case 14: name = "LR"; break;
-                    case 15: name = "PC"; break;
-                    default: name = "R" + std::to_string(i);
-                }
+                ImGui::Text("%s", rows[i].name.c_str());
 
-                ImGui::Text("%s", name.c_str());
-
-                if (i == 0) {
+                if (rows[i].muted) {
                     ImGui::PopStyleColor();
                 }
 
@@ -44,7 +36,19 @@ void RegisterPanel::render() {
                 // Format as hex
                 std::ostringstream oss;
                 oss << "0x" << std::hex << std::setfill('0') << std::setw(16)
-                    << regs.gpr[i];
+                    << rows[i].value;
+                ImGui::Text("%s", oss.str().c_str());
+            }
+
+            for (int i = 16; i < 18; ++i) {
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(0);
+                ImGui::Text("%s", rows[i].name.c_str());
+                ImGui::TableSetColumnIndex(1);
+
+                std::ostringstream oss;
+                oss << "0x" << std::hex << std::setfill('0') << std::setw(16)
+                    << rows[i].value;
                 ImGui::Text("%s", oss.str().c_str());
             }
 
@@ -55,32 +59,18 @@ void RegisterPanel::render() {
             ImGui::Text("— Special —");
             ImGui::PopStyleColor();
 
-            struct SREntry { const char* name; uint64_t value; const char* note; };
-            SREntry sr_entries[] = {
-                { "cpu_ctrl",  regs.cpu_control,          nullptr },
-                { "int_table", regs.interrupt_table_base, nullptr },
-                { "int_mask",  regs.interrupt_mask,       nullptr },
-                { "int_state", regs.interrupt_states,     nullptr },
-                { "int_epc",   regs.interrupt_epc,        nullptr },
-                { "int_eflg",  regs.interrupt_eflags,     nullptr },
-                { "int_excp",  regs.interrupt_except,     nullptr },
-                { "int_dat0",  regs.interrupt_data[0],    nullptr },
-                { "int_dat1",  regs.interrupt_data[1],    nullptr },
-                { "int_dat2",  regs.interrupt_data[2],    nullptr },
-                { "int_dat3",  regs.interrupt_data[3],    nullptr },
-            };
-
-            for (const auto& e : sr_entries) {
+            for (size_t i = 18; i < rows.size(); ++i) {
+                const auto& e = rows[i];
                 ImGui::TableNextRow();
                 ImGui::TableSetColumnIndex(0);
-                ImGui::Text("%s", e.name);
+                ImGui::Text("%s", e.name.c_str());
                 ImGui::TableSetColumnIndex(1);
 
                 std::ostringstream oss;
                 oss << "0x" << std::hex << std::setfill('0') << std::setw(16) << e.value;
 
                 // Decode cpu_control bits inline
-                if (e.name == std::string("cpu_ctrl")) {
+                if (e.name == "cpu_ctrl") {
                     bool ie    = e.value & 1;
                     bool in_i  = (e.value >> 1) & 1;
                     uint8_t cn = (e.value >> 2) & 0x3F;

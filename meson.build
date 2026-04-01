@@ -50,6 +50,11 @@ ui_gui_src = [
   'gui/vendor/TextEditor.cpp',
 ]
 
+ui_qt_src = [
+  'qt/main.cpp',
+  'qt/main_window.cpp',
+]
+
 # --- Emulator (static library) ---
 emulator_lib = static_library('little-64-cpu',
   core_emulator_src,
@@ -206,6 +211,24 @@ test('llvm-integration',
   timeout : 120,
 )
 
+test('debug-rsp-integration',
+  python3,
+  args : [
+    meson.project_source_root() / 'tests/debug/test_rsp_server.py',
+  ],
+  suite : ['debug', 'integration'],
+  timeout : 60,
+)
+
+test('debug-lldb-remote-smoke',
+  python3,
+  args : [
+    meson.project_source_root() / 'tests/debug/test_lldb_remote_smoke.py',
+  ],
+  suite : ['debug', 'integration', 'lldb'],
+  timeout : 60,
+)
+
 # --- Disassembler (static library for embedding) ---
 disasm_lib = static_library('little-64-disasm-lib',
   core_disassembler_src,
@@ -275,3 +298,32 @@ executable('little-64-gui',
   dependencies : [sdl2_dep, gl_dep, imgui_dep, nfd_dep],
   install : true,
 )
+
+qt_frontend_opt = get_option('qt_frontend')
+qt_dep = dependency('qt6', modules : ['Core', 'Gui', 'Widgets'], required : false)
+if not qt_dep.found()
+  qt_dep = dependency('qt5', modules : ['Core', 'Gui', 'Widgets'], required : false)
+endif
+
+if qt_frontend_opt.enabled() and not qt_dep.found()
+  error('qt_frontend is enabled but neither Qt6 nor Qt5 Widgets dependencies were found')
+endif
+
+if qt_dep.found()
+  executable('little-64-qt',
+    ui_qt_src,
+    link_with : [emulator_lib, disasm_lib],
+    include_directories : [
+      include_directories('qt'),
+      include_directories('emulator'),
+      include_directories('disassembler'),
+      arch_inc,
+    ],
+    dependencies : [qt_dep],
+    install : true,
+  )
+elif qt_frontend_opt.enabled()
+  error('qt_frontend is enabled but Qt was not detected')
+else
+  message('Qt frontend disabled: Qt dependencies not found (or qt_frontend=disabled)')
+endif

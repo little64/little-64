@@ -20,6 +20,7 @@ Use the build orchestrator from this directory:
 ./build.sh all            # build all compilers
 ./build.sh clean lily-cc  # clean lily-cc artifacts
 ./build.sh clean          # clean all
+ENABLE_LLDB=1 ./build.sh llvm  # Build LLVM toolchain with LLDB + LLDB-DAP
 ```
 
 Compiled binaries are placed in `bin/`.

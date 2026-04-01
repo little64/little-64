@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "../../emulator/emulator_session.hpp"
+#include "../../emulator/frontend_api.hpp"
 #include "../../disassembler/disassembler.hpp"
 
 struct ImFont;
@@ -19,7 +20,13 @@ struct AssemblerPanelContext {
 };
 
 struct ControlPanelContext {
-    EmulatorSession& emulator;
+    IEmulatorRuntime& emulator;
+    float& ui_scale;
+    bool& ui_scale_dirty;
+    bool& reset_layout_requested;
+    bool& save_project_layout_requested;
+    bool& load_project_layout_requested;
+    const std::string& project_path;
 };
 
 struct DisassemblyPanelContext {

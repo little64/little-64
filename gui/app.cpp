@@ -6,6 +6,7 @@
 #include "panels/memory_panel.hpp"
 #include "panels/serial_output_panel.hpp"
 #include "panels/memmap_panel.hpp"
+#include "../frontend/debugger_views.hpp"
 
 #include <SDL2/SDL.h>
 #include <GL/gl.h>
@@ -15,15 +16,48 @@
 #include <nfd.h>
 #include <iostream>
 #include <fstream>
-#include <sys/stat.h>
 #include <cmath>
 #include <cstring>
+#include <filesystem>
+#include <array>
+#include <cstdlib>
+#include <algorithm>
+
+namespace {
+
+constexpr std::array<float, 7> kEditorFontSizes = {10.0f, 12.0f, 14.0f, 16.0f, 18.0f, 20.0f, 24.0f};
+
+const char* findSystemMonoFont() {
+    static const std::array<const char*, 8> candidates = {
+        "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+        "/usr/share/fonts/truetype/DejaVuSansMono.ttf",
+        "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
+        "/usr/share/fonts/truetype/liberation2/LiberationMono-Regular.ttf",
+        "/usr/share/fonts/liberation-mono/LiberationMono-Regular.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSansMono-Regular.ttf",
+        "/usr/share/fonts/TTF/JetBrainsMono-Regular.ttf",
+        "/usr/share/fonts/truetype/ubuntu/UbuntuMono-R.ttf",
+    };
+
+    for (const char* path : candidates) {
+        if (std::filesystem::exists(path)) {
+            return path;
+        }
+    }
+    return nullptr;
+}
+
+}
 
 App::App()
     : assembler_ctx{state.emulator, state.disassembly, state.assemble_error,
                     state.current_file, state.project_path,
                     state.editor_fonts, state.editor_font_idx}
-    , control_ctx{state.emulator}
+    , control_ctx{state.emulator, state.ui_scale, state.ui_scale_dirty,
+                  state.reset_layout_requested,
+                  state.save_project_layout_requested,
+                  state.load_project_layout_requested,
+                  state.project_path}
     , disassembly_ctx{state.emulator, state.disassembly}
     , register_ctx{state.emulator}
     , memory_ctx{state.emulator}
@@ -35,6 +69,8 @@ App::~App() {
 }
 
 bool App::init() {
+    ensureConfigDir();
+
     // Initialize NFD
     NFD_Init();
 
@@ -56,7 +92,7 @@ bool App::init() {
         SDL_WINDOWPOS_CENTERED,
         SDL_WINDOWPOS_CENTERED,
         1400, 900,
-        SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_SHOWN
+        SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_SHOWN | SDL_WINDOW_ALLOW_HIGHDPI
     );
     if (!window) {
         std::cerr << "Failed to create SDL window: " << SDL_GetError() << std::endl;
@@ -81,22 +117,12 @@ bool App::init() {
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    static std::string s_ini_path = imguiIniPath();
+    io.IniFilename = s_ini_path.c_str();
+    force_default_layout_once = !std::filesystem::exists(s_ini_path);
 
-    ImGui::StyleColorsDark();
-
-    // Load multiple sizes of the monospace TTF for the resizable editor.
-    // Index 3 (16px) is the default and is also used as the global UI font.
-    static const float kEditorFontSizes[] = {10.0f, 12.0f, 14.0f, 16.0f, 18.0f, 20.0f, 24.0f};
-    const char* font_path = "/usr/share/fonts/truetype/DejaVuSansMono.ttf";
-    for (float sz : kEditorFontSizes) {
-        ImFont* f = io.Fonts->AddFontFromFileTTF(font_path, sz);
-        state.editor_fonts.push_back(f);
-    }
-    // Use the 16px entry as the global UI font; fall back to built-in default if TTF is missing.
-    if (state.editor_fonts[3])
-        io.FontDefault = state.editor_fonts[3];
-    else
-        io.Fonts->AddFontDefault();
+    applyUIScale();
+    rebuildFonts();
 
     // Setup ImGui SDL2 backend
     ImGui_ImplSDL2_InitForOpenGL(window, gl_ctx);
@@ -137,23 +163,68 @@ void App::run() {
                         running = false;
                     }
                     break;
+                case SDL_DISPLAYEVENT:
+                case SDL_WINDOWEVENT:
+                    state.ui_scale_dirty = true;
+                    break;
                 default:
                     break;
             }
         }
 
         try {
+            if (state.ui_scale_dirty) {
+                applyUIScale();
+                rebuildFonts();
+                state.ui_scale_dirty = false;
+            }
+
             // Start ImGui frame
             ImGui_ImplOpenGL3_NewFrame();
             ImGui_ImplSDL2_NewFrame();
             ImGui::NewFrame();
 
+            int win_w = 0, win_h = 0;
+            int fb_w = 0, fb_h = 0;
+            SDL_GetWindowSize(window, &win_w, &win_h);
+            SDL_GL_GetDrawableSize(window, &fb_w, &fb_h);
+            if (win_w > 0 && win_h > 0) {
+                io.DisplayFramebufferScale = ImVec2(
+                    static_cast<float>(fb_w) / static_cast<float>(win_w),
+                    static_cast<float>(fb_h) / static_cast<float>(win_h));
+            }
+
+            if (state.reset_layout_requested) {
+                force_default_layout_once = true;
+                state.reset_layout_requested = false;
+            }
+
+            if (state.save_project_layout_requested) {
+                const std::string path = projectLayoutPath();
+                if (!path.empty()) {
+                    std::filesystem::create_directories(std::filesystem::path(path).parent_path());
+                    ImGui::SaveIniSettingsToDisk(path.c_str());
+                }
+                state.save_project_layout_requested = false;
+            }
+
+            if (state.load_project_layout_requested) {
+                const std::string path = projectLayoutPath();
+                if (!path.empty() && std::filesystem::exists(path)) {
+                    ImGui::LoadIniSettingsFromDisk(path.c_str());
+                    force_default_layout_once = false;
+                }
+                state.load_project_layout_requested = false;
+            }
+
             updateSerialOutput();
 
-            // Fixed layout: tile all panels to fill the window
+            const ImGuiCond layout_cond = force_default_layout_once ? ImGuiCond_Always : ImGuiCond_FirstUseEver;
+            force_default_layout_once = false;
+
             float W = io.DisplaySize.x;
             float H = io.DisplaySize.y;
-            const float ctrl_h  = 90.0f;
+            const float ctrl_h  = 90.0f * state.ui_scale;
             float left_w  = std::round(W * 0.55f);
             float right_w = W - left_w;
             float main_h  = H - ctrl_h;
@@ -164,39 +235,39 @@ void App::run() {
             float serial_h  = std::round(main_h * 0.16f);
             float memmap_h  = main_h - reg_h - disasm_h - serial_h;
 
-            ImGui::SetNextWindowPos({0,      0},                                  ImGuiCond_Always);
-            ImGui::SetNextWindowSize({W,      ctrl_h},                             ImGuiCond_Always);
+            ImGui::SetNextWindowPos({0,      0},                                  layout_cond);
+            ImGui::SetNextWindowSize({W,      ctrl_h},                             layout_cond);
             if (control_panel) control_panel->render();
 
-            ImGui::SetNextWindowPos({0,      ctrl_h},                              ImGuiCond_Always);
-            ImGui::SetNextWindowSize({left_w, asm_h},                              ImGuiCond_Always);
+            ImGui::SetNextWindowPos({0,      ctrl_h},                              layout_cond);
+            ImGui::SetNextWindowSize({left_w, asm_h},                              layout_cond);
             if (assembler_panel) assembler_panel->render();
 
-            ImGui::SetNextWindowPos({0,      ctrl_h + asm_h},                     ImGuiCond_Always);
-            ImGui::SetNextWindowSize({left_w, mem_h},                              ImGuiCond_Always);
+            ImGui::SetNextWindowPos({0,      ctrl_h + asm_h},                     layout_cond);
+            ImGui::SetNextWindowSize({left_w, mem_h},                              layout_cond);
             if (memory_panel) memory_panel->render();
 
-            ImGui::SetNextWindowPos({left_w, ctrl_h},                              ImGuiCond_Always);
-            ImGui::SetNextWindowSize({right_w, reg_h},                             ImGuiCond_Always);
+            ImGui::SetNextWindowPos({left_w, ctrl_h},                              layout_cond);
+            ImGui::SetNextWindowSize({right_w, reg_h},                             layout_cond);
             if (register_panel) register_panel->render();
 
-            ImGui::SetNextWindowPos({left_w, ctrl_h + reg_h},                     ImGuiCond_Always);
-            ImGui::SetNextWindowSize({right_w, disasm_h},                          ImGuiCond_Always);
+            ImGui::SetNextWindowPos({left_w, ctrl_h + reg_h},                     layout_cond);
+            ImGui::SetNextWindowSize({right_w, disasm_h},                          layout_cond);
             if (disassembly_panel) disassembly_panel->render();
 
-            ImGui::SetNextWindowPos({left_w, ctrl_h + reg_h + disasm_h},          ImGuiCond_Always);
-            ImGui::SetNextWindowSize({right_w, serial_h},                          ImGuiCond_Always);
+            ImGui::SetNextWindowPos({left_w, ctrl_h + reg_h + disasm_h},          layout_cond);
+            ImGui::SetNextWindowSize({right_w, serial_h},                          layout_cond);
             if (serial_output_panel) serial_output_panel->render();
 
-            ImGui::SetNextWindowPos({left_w, ctrl_h + reg_h + disasm_h + serial_h}, ImGuiCond_Always);
-            ImGui::SetNextWindowSize({right_w, memmap_h},                          ImGuiCond_Always);
+            ImGui::SetNextWindowPos({left_w, ctrl_h + reg_h + disasm_h + serial_h}, layout_cond);
+            ImGui::SetNextWindowSize({right_w, memmap_h},                          layout_cond);
             if (memmap_panel) memmap_panel->render();
 
             // Rendering
             ImGui::Render();
 
             // Clear and render
-            glViewport(0, 0, (int)io.DisplaySize.x, (int)io.DisplaySize.y);
+            glViewport(0, 0, fb_w, fb_h);
             glClearColor(0.10f, 0.10f, 0.10f, 1.00f);
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
@@ -211,6 +282,9 @@ void App::run() {
 }
 
 void App::shutdown() {
+    if (shutdown_done) return;
+    shutdown_done = true;
+
     // Save last edited file
     saveLastFile();
 
@@ -223,9 +297,11 @@ void App::shutdown() {
     memmap_panel.reset();
 
     // Cleanup ImGui
-    ImGui_ImplOpenGL3_Shutdown();
-    ImGui_ImplSDL2_Shutdown();
-    ImGui::DestroyContext();
+    if (ImGui::GetCurrentContext()) {
+        ImGui_ImplOpenGL3_Shutdown();
+        ImGui_ImplSDL2_Shutdown();
+        ImGui::DestroyContext();
+    }
 
     // Cleanup SDL2
     if (gl_ctx) {
@@ -236,16 +312,69 @@ void App::shutdown() {
         SDL_DestroyWindow(window);
         window = nullptr;
     }
-    SDL_Quit();
+    if (SDL_WasInit(SDL_INIT_VIDEO)) {
+        SDL_Quit();
+    }
 
     // Cleanup NFD
     NFD_Quit();
 }
 
 void App::updateSerialOutput() {
-    std::string buf = state.emulator.drainSerialTx();
-    if (!buf.empty()) {
-        state.serial_output += buf;
+    drainSerialToBuffer(state.emulator, state.serial_output);
+}
+
+std::string App::configDir() const {
+    const char* home = std::getenv("HOME");
+    if (!home) return ".";
+    return std::string(home) + "/.config/little-64";
+}
+
+std::string App::imguiIniPath() const {
+    return configDir() + "/imgui.ini";
+}
+
+std::string App::projectLayoutPath() const {
+    if (state.project_path.empty()) return {};
+    std::filesystem::path p(state.project_path);
+    return (p.parent_path() / ".little64" / "imgui.ini").string();
+}
+
+void App::ensureConfigDir() {
+    std::filesystem::create_directories(configDir());
+}
+
+void App::applyUIScale() {
+    state.ui_scale = std::clamp(state.ui_scale, 0.75f, 2.5f);
+    ImGui::StyleColorsDark();
+    ImGui::GetStyle().ScaleAllSizes(state.ui_scale);
+    ImGui::GetIO().FontGlobalScale = state.ui_scale;
+}
+
+void App::rebuildFonts() {
+    ImGuiIO& io = ImGui::GetIO();
+    io.Fonts->Clear();
+    state.editor_fonts.clear();
+
+    const char* font_path = findSystemMonoFont();
+    if (font_path) {
+        for (float sz : kEditorFontSizes) {
+            ImFont* f = io.Fonts->AddFontFromFileTTF(font_path, sz);
+            state.editor_fonts.push_back(f);
+        }
+    } else {
+        for (size_t i = 0; i < kEditorFontSizes.size(); ++i)
+            state.editor_fonts.push_back(nullptr);
+    }
+
+    if (state.editor_font_idx < 0 || state.editor_font_idx >= (int)state.editor_fonts.size()) {
+        state.editor_font_idx = 3;
+    }
+
+    if (!state.editor_fonts.empty() && state.editor_fonts[3]) {
+        io.FontDefault = state.editor_fonts[3];
+    } else {
+        io.FontDefault = io.Fonts->AddFontDefault();
     }
 }
 
@@ -254,7 +383,7 @@ void App::loadLastFile() {
     const char* home = std::getenv("HOME");
     if (!home) return;
 
-    std::string config_path = std::string(home) + "/.config/little-64/last_file";
+    std::string config_path = configDir() + "/last_file";
     std::ifstream config_file(config_path);
     if (!config_file.is_open()) return;
 
@@ -279,10 +408,8 @@ void App::saveLastFile() {
     const char* home = std::getenv("HOME");
     if (!home) return;
 
-    std::string config_dir = std::string(home) + "/.config/little-64";
-    std::string config_path = config_dir + "/last_file";
-
-    mkdir(config_dir.c_str(), 0755);
+    std::string config_path = configDir() + "/last_file";
+    ensureConfigDir();
 
     std::ofstream config_file(config_path);
     if (config_file.is_open())

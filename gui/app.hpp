@@ -25,6 +25,12 @@ struct AppState {
 
     std::vector<ImFont*> editor_fonts;  // one entry per size in kEditorFontSizes
     int editor_font_idx = 3;            // index of the currently active editor font (default 16px)
+
+    float ui_scale = 1.0f;
+    bool ui_scale_dirty = false;
+    bool reset_layout_requested = false;
+    bool save_project_layout_requested = false;
+    bool load_project_layout_requested = false;
 };
 
 // Forward declarations of panels
@@ -46,6 +52,13 @@ public:
     void shutdown();    // cleanup
 
 private:
+    void ensureConfigDir();
+    std::string configDir() const;
+    std::string imguiIniPath() const;
+    std::string projectLayoutPath() const;
+    void applyUIScale();
+    void rebuildFonts();
+
     void loadLastFile();      // read ~/.config/little-64/last_file into state
     void saveLastFile();      // write state.current_file to config
     void updateSerialOutput(); // drain serial TX buffer into state.serial_output
@@ -70,4 +83,6 @@ private:
     SDL_Window*   window  = nullptr;
     SDL_GLContext gl_ctx  = nullptr;
     bool          running = false;
+    bool          force_default_layout_once = false;
+    bool          shutdown_done = false;
 };

@@ -1,4 +1,5 @@
 #include "disassembly_panel.hpp"
+#include "../../frontend/debugger_views.hpp"
 #include <imgui.h>
 
 DisassemblyPanel::DisassemblyPanel(DisassemblyPanelContext& state)
@@ -7,6 +8,7 @@ DisassemblyPanel::DisassemblyPanel(DisassemblyPanelContext& state)
 void DisassemblyPanel::render() {
     if (ImGui::Begin("Disassembly")) {
         const uint64_t pc = state.emulator.pc();
+        const auto rows = buildDisassemblyRowsFromCache(state.disassembly, pc);
         if (ImGui::BeginTable("disasm_table", 3,
                               ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY)) {
             ImGui::TableSetupColumn("Address", ImGuiTableColumnFlags_WidthFixed, 80.0f);
@@ -14,18 +16,18 @@ void DisassemblyPanel::render() {
             ImGui::TableSetupColumn("Instruction", ImGuiTableColumnFlags_WidthStretch);
             ImGui::TableHeadersRow();
 
-            for (const auto& instr : state.disassembly) {
+            for (const auto& instr : rows) {
                 ImGui::TableNextRow();
 
                 // Highlight row if PC matches this instruction's address
-                if (instr.address == pc) {
+                if (instr.is_pc) {
                     ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0,
                                           ImGui::GetColorU32(ImVec4(0.3f, 0.7f, 1.0f, 0.3f)));
                 }
 
                 // Address column
                 ImGui::TableSetColumnIndex(0);
-                ImGui::Text("0x%04X", instr.address);
+                ImGui::Text("0x%04llX", (unsigned long long)instr.address);
 
                 // Hex column
                 ImGui::TableSetColumnIndex(1);

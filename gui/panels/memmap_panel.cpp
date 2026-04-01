@@ -1,4 +1,5 @@
 #include "memmap_panel.hpp"
+#include "../../frontend/debugger_views.hpp"
 #include <imgui.h>
 
 MemoryMapPanel::MemoryMapPanel(MemoryMapPanelContext& state)
@@ -6,9 +7,9 @@ MemoryMapPanel::MemoryMapPanel(MemoryMapPanelContext& state)
 
 void MemoryMapPanel::render() {
     if (ImGui::Begin("Memory Map")) {
-        const auto regions = state.emulator.memoryRegions();
+        const auto rows = buildRegionRows(state.emulator.memoryRegions());
 
-        if (regions.empty()) {
+        if (rows.empty()) {
             ImGui::TextDisabled("No memory regions loaded.");
         } else {
             ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
@@ -21,17 +22,14 @@ void MemoryMapPanel::render() {
                 ImGui::TableSetupColumn("Type",  ImGuiTableColumnFlags_WidthFixed, 50.0f);
                 ImGui::TableHeadersRow();
 
-                for (const auto& r : regions) {
+                for (const auto& r : rows) {
                     // Determine type and row color
                     std::string_view name = r.name;
-                    const char* type_str = "MMIO";
                     ImVec4 color = ImVec4(1.0f, 0.85f, 0.2f, 1.0f);  // yellow for MMIO
 
-                    if (name == "ROM") {
-                        type_str = "ROM";
+                    if (r.type == "ROM") {
                         color = ImVec4(0.4f, 0.6f, 1.0f, 1.0f);  // blue
-                    } else if (name == "RAM") {
-                        type_str = "RAM";
+                    } else if (r.type == "RAM") {
                         color = ImVec4(0.4f, 1.0f, 0.5f, 1.0f);  // green
                     }
 
@@ -55,10 +53,10 @@ void MemoryMapPanel::render() {
                         ImGui::Text("%llu B", (unsigned long long)sz);
 
                     ImGui::TableNextColumn();
-                    ImGui::Text("0x%016llX", (unsigned long long)(r.base + r.size - 1));
+                    ImGui::Text("0x%016llX", (unsigned long long)r.end_inclusive);
 
                     ImGui::TableNextColumn();
-                    ImGui::TextUnformatted(type_str);
+                    ImGui::TextUnformatted(r.type.c_str());
 
                     ImGui::PopStyleColor();
                 }

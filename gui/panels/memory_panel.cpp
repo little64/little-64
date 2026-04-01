@@ -1,4 +1,5 @@
 #include "memory_panel.hpp"
+#include "../../frontend/debugger_views.hpp"
 #include <imgui.h>
 #include <cctype>
 #include <cstdio>
@@ -55,40 +56,30 @@ void MemoryPanel::render() {
         clipper.Begin(ROWS);
 
         while (clipper.Step()) {
-            for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; ++row) {
-                uint64_t row_addr = page_base + static_cast<uint64_t>(row) * 16;
+            const uint64_t start = page_base + static_cast<uint64_t>(clipper.DisplayStart) * 16;
+            const int visible_rows = clipper.DisplayEnd - clipper.DisplayStart;
+            const auto rows = buildMemoryRows(state.emulator, start, visible_rows, 16, pc);
 
-                char buf[256];
-                int  offset = 0;
+            for (const auto& row : rows) {
+                std::string line;
+                line.reserve(96);
+                char prefix[32];
+                std::snprintf(prefix, sizeof(prefix), "0x%016llX: ", (unsigned long long)row.address);
+                line += prefix;
 
-                // Address
-                offset += snprintf(buf + offset, sizeof(buf) - offset,
-                                   "0x%016llX: ", (unsigned long long)row_addr);
-
-                // Hex bytes with gap at byte 8
-                uint8_t bytes[16];
                 for (int i = 0; i < 16; ++i) {
-                    bytes[i] = state.emulator.memoryRead8(row_addr + i);
-                    if (i == 8) offset += snprintf(buf + offset, sizeof(buf) - offset, "  ");
-                    offset += snprintf(buf + offset, sizeof(buf) - offset, "%02X ", bytes[i]);
+                    if (i == 8) line += " ";
+                    line += row.hex_bytes.substr(static_cast<size_t>(i * 3), 3);
                 }
+                line += "| ";
+                line += row.ascii;
 
-                offset += snprintf(buf + offset, sizeof(buf) - offset, "| ");
-
-                // ASCII
-                for (int i = 0; i < 16; ++i) {
-                    buf[offset++] = std::isprint(bytes[i]) ? (char)bytes[i] : '.';
-                }
-                buf[offset] = '\0';
-
-                // Highlight the row containing the PC
-                bool is_pc_row = (pc >= row_addr && pc < row_addr + 16);
-                if (is_pc_row)
+                if (row.contains_pc)
                     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 0.8f, 1.0f, 1.0f));
 
-                ImGui::TextUnformatted(buf);
+                ImGui::TextUnformatted(line.c_str());
 
-                if (is_pc_row)
+                if (row.contains_pc)
                     ImGui::PopStyleColor();
             }
         }

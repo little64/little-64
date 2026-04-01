@@ -2,6 +2,9 @@
 
 A modular ImGui-based integrated development environment for the Little-64 CPU architecture.
 
+> Note: A parallel Qt frontend preview is now available (`little-64-qt`).
+> The ImGui frontend documented here remains supported and available.
+
 ## Features
 
 - **Assembler Panel**: Write and assemble Little-64 assembly code with inline error reporting
@@ -65,6 +68,11 @@ ninja -C builddir
    - Non-printable ASCII shown as `.`
    - Virtual scrolling (only renders visible rows for 64KB efficiency)
 
+5. **UI scaling and layout controls** in the **Control** panel
+   - `UI Scale (%)` scales the full debugger UI for HiDPI/large displays
+   - `Reset Layout` reapplies the default multi-panel workspace geometry
+   - `Save Project Layout` / `Load Project Layout` store and restore layout per project
+
 ## Example Workflow
 
 ```asm
@@ -125,7 +133,7 @@ The GUI reuses the existing command-line tools as static libraries:
 ## Limitations
 
 - **Memory model is temporary**: 64KB flat array; will be replaced with a proper MMU later
-- **No docking yet**: ImGui windows are independent; can be resized and moved but not docked together
+- **No docking yet**: ImGui in this build is non-docking; windows are independently movable/resizable
 - **Keyboard shortcuts**: Escape to quit, Ctrl+O (open), Ctrl+S (save)
 
 ## Future Enhancements
@@ -172,6 +180,8 @@ The memory panel uses virtual scrolling (ImGuiListClipper) to only render visibl
 
 - **File dialogs**: Uses `nativefiledialog-extended` from WrapDB (GTK3 on Linux, native portals)
 - **Session config**: Last-opened file path stored in `$HOME/.config/little-64/last_file`
+- **ImGui layout config**: Global GUI layout/settings stored in `$HOME/.config/little-64/imgui.ini`
+- **Project layout profile**: Optional project layout stored in `<project-dir>/.little64/imgui.ini`
 - **Unsaved changes**: Tracked by comparing current buffer with last-saved content; shown as `*` in title
 - **Auto-reload**: On startup, the previous session file is automatically loaded (if it still exists on disk)
 

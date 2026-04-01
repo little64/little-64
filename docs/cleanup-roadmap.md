@@ -8,6 +8,8 @@ Date: 2026-04-01
 - Phase 2: ✅ Completed
 - Phase 3: ⏸️ Deferred (MMU/paging-focused work intentionally postponed)
 - Phase 4: ✅ Completed
+- Qt Frontend Track: 🟡 Started (preview target compiles and runs)
+- VS Code Integration Track: 🟡 Planned
 
 ## Goals
 
@@ -30,6 +32,7 @@ Date: 2026-04-01
 ### Recommendation
 
 Do **not** turn `little-64-gui` into a full IDE.
+Do **not** target IDE-grade parity in `little-64-qt` either.
 
 Keep the GUI focused on:
 - machine state visualization,
@@ -38,6 +41,21 @@ Keep the GUI focused on:
 - device trace views.
 
 For editing/build/orchestration, use external tools (VS Code/CLI) and a debug protocol bridge.
+
+### Frontend strategy update
+
+The project now follows a **dual-frontend** approach:
+
+- Keep `little-64-gui` (ImGui) available as the current daily debugger/emulator UI.
+- Build a new Qt-powered frontend (`little-64-qt`) in parallel for long-term OS-development-grade workflows.
+
+Both frontends are expected to converge on shared runtime/controller services over `IEmulatorRuntime`.
+
+### Product boundary (locked)
+
+- `little-64-gui` and `little-64-qt` are debugger/inspection frontends.
+- VS Code is the primary source editor/build orchestrator.
+- New frontend work must prioritize machine-state observability and debug transport, not editor features.
 
 ### Why
 
@@ -53,6 +71,52 @@ For editing/build/orchestration, use external tools (VS Code/CLI) and a debug pr
 - **UI options**:
   - CLI/headless emulator for CI and batch debugging.
   - GUI as optional frontend over same debug/runtime APIs.
+
+---
+
+## VS Code Integration Track (Linux-first)
+
+Status: 🟡 Planned
+
+Reference: `docs/vscode-integration.md`
+
+### Goal
+
+Enable a first-class VS Code workflow for BIOS/OS bring-up while keeping emulator GUIs focused on runtime introspection.
+
+### Scope
+
+1. VS Code drives edit/build/test/run/debug loops.
+2. Emulator provides protocol-grade debugging and deterministic execution surfaces.
+3. Qt/ImGui remain optional visual frontends, not source IDE replacements.
+
+### Protocol strategy (recommended)
+
+1. Implement **GDB Remote Serial Protocol subset** in emulator for early integration with existing VS Code C/C++ debugging flows.
+2. Defer custom DAP adapter until RSP path proves insufficient.
+3. Keep debug server transport-abstracted so RSP and future DAP can share backend execution services.
+
+### Minimum RSP capability baseline
+
+1. Session and stop state: `qSupported`, `?`, stop replies.
+2. Execution control: `c`, `s`, interrupt (`0x03`).
+3. Registers: `g` (and optionally `p`/`P`).
+4. Memory: `m` (and optionally `M`/`X`).
+5. Breakpoints: `Z0` / `z0` with emulator-side virtual breakpoint handling.
+
+### Milestones
+
+1. M0: Add deterministic headless run profile and stable CLI/debug-server startup contract.
+2. M1: Implement minimal RSP subset and smoke-test with CLI gdb.
+3. M2: Add VS Code `launch.json` + tasks templates for little-64 targets.
+4. M3: Add symbol-aware disassembly mapping and breakpoint source correlation.
+5. M4: Extend to watchpoints/traps/page-fault visibility for paging-era OS debugging.
+
+### Acceptance criteria
+
+1. A BIOS/OS test binary can be built and launched from VS Code tasks.
+2. VS Code can step, continue, inspect registers/memory, and hit breakpoints through emulator debug transport.
+3. Workflow is scriptable in CI/headless mode without GUI dependency.
 
 ---
 
@@ -255,6 +319,9 @@ Status: ✅ Completed (2026-04-01)
    - fast unit suites,
    - LLVM integration suite.
 
+6. Add and iterate a parallel Qt frontend target without disrupting ImGui flows.
+7. Add VS Code integration baseline (tasks/launch templates + debug server protocol milestones).
+
 ### Implemented in this branch
 
 - Introduced `emulator/frontend_api.hpp` with `IEmulatorRuntime` as the stable frontend contract.
@@ -269,6 +336,37 @@ Status: ✅ Completed (2026-04-01)
    - Added declarative `MachineConfig` + `Device` lifecycle framework and migrated CPU program-loading paths to use it.
 
 This makes the future debug-server entrypoint straightforward: a new transport layer can drive the same `IEmulatorRuntime` + headless loader/loop without duplicating emulator startup logic.
+
+---
+
+## Qt Frontend Track (Linux-first, in-process runtime)
+
+Status: 🟡 Started
+
+### Goals
+
+1. Provide a scalable desktop debugger UI suitable for OS-development workflows.
+2. Keep the current ImGui debugger functional while Qt matures.
+3. Reuse emulator/runtime boundaries and migrate shared logic out of frontend-specific code.
+
+### Current delivery
+
+1. Optional Qt target in Meson (`little-64-qt`) with `qt_frontend` feature option (`auto|enabled|disabled`).
+2. Initial Qt Widgets shell with dockable panes.
+3. In-process runtime integration through `EmulatorSession`.
+4. Preview inspector set: control/run, registers, disassembly, memory, region map, serial output.
+5. Shared cross-frontend inspector view-model layer added (`frontend/debugger_views.hpp`) and adopted by Qt + key ImGui panels.
+
+### Next milestones
+
+1. Extract frontend-agnostic debugger services from ImGui panel logic.
+2. Add symbol-aware disassembly and navigation.
+3. Add breakpoint/watchpoint-capable debug substrate.
+4. Add profile/layout persistence and workflow parity for OS bring-up.
+
+### Non-goals
+
+1. Re-implementing source editing, code navigation, or LSP features inside emulator GUIs.
 
 ---
 
