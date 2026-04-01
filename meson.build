@@ -35,6 +35,7 @@ core_disassembler_src = [
 core_project_src = [
   'project/project.cpp',
   'project/compiler.cpp',
+  'project/boot_frame_builder.cpp',
 ]
 
 ui_gui_src = [
@@ -163,7 +164,7 @@ test('devices', test_devices, suite : ['unit', 'device'], timeout : 60)
 # --- Project library and runner ---
 project_lib = static_library('little-64-project-lib',
   core_project_src,
-  include_directories : [include_directories('project')],
+  include_directories : [include_directories('project'), include_directories('boot')],
   install : false,
 )
 
@@ -172,6 +173,7 @@ little64_run = executable('little-64-run',
   link_with : [project_lib, asm_lib, linker_lib, emulator_lib],
   include_directories : [
     include_directories('project'),
+    include_directories('boot'),
     include_directories('assembler'),
     include_directories('linker'),
     include_directories('emulator'),
@@ -183,6 +185,8 @@ little64_run = executable('little-64-run',
 little64_test_env = [
   'LITTLE64_LD=' + meson.project_source_root() + '/compilers/bin/ld.lld',
 ]
+
+python3 = import('python').find_installation('python3')
 
 little64_runner_test_env = little64_test_env + [
   'LITTLE64_LOAD_ELF=0',
@@ -196,7 +200,28 @@ test('project-runner',
   suite : ['integration', 'project'],
 )
 
-python3 = import('python').find_installation('python3')
+test_boot_frame = executable('test-boot-frame',
+  ['tests/test_boot_frame.cpp'],
+  link_with : [project_lib],
+  include_directories : [
+    include_directories('project'),
+    include_directories('boot'),
+    test_inc,
+    test_support_inc,
+  ],
+  install : false,
+)
+test('boot-frame', test_boot_frame, suite : ['unit', 'boot'], timeout : 60)
+
+test('boot-bios-run',
+  python3,
+  args : [
+    meson.project_source_root() / 'tests/boot/test_bios_boot.py',
+  ],
+  suite : ['boot', 'integration'],
+  timeout : 60,
+)
+
 llvm_report_path = meson.project_build_root() / 'meson-logs' / 'llvm-integration-report.json'
 test('llvm-integration',
   python3,

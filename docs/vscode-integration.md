@@ -285,6 +285,58 @@ Automated coverage:
 1. Embedding full code editor and project management in Qt/ImGui frontends.
 2. Duplicating LSP/navigation/refactor capabilities already in VS Code.
 
+## BIOS + Kernel Bring-up Workflow
+
+Current practical target is BIOS-first bring-up (physical mode), while preserving a stable handoff contract for future higher-half kernel boot.
+
+### Shared boot contract (implemented)
+
+1. ABI header: `boot/boot_abi.h`
+2. BIOS-side frame helpers: `boot/boot_frame_builder.h`
+3. C++ helper wrapper for host/build tooling/tests: `project/boot_frame_builder.hpp`
+
+Boot frame includes:
+
+1. Mode flags (physical vs virtual).
+2. Physical memory bounds.
+3. Kernel physical and virtual placement fields.
+4. Page-table-root handoff field.
+5. Memory map entries (fixed-capacity ABI array).
+
+### Linker personalities (implemented)
+
+1. BIOS linker script (physical at `0x0`):
+   - `c_boot/linker_bios.ld`
+2. Kernel higher-half linker script template:
+   - `c_boot/linker_kernel_higher_half.ld`
+
+### Recommended development cadence
+
+1. Implement and debug BIOS code under physical mode first.
+2. Populate and validate `Little64BootInfoFrame` in BIOS now, even before kernel handoff executes.
+3. Keep kernel image linked to higher-half addresses from day one using the higher-half linker script.
+4. Add paging/handoff execution later, but keep ABI unchanged unless version bump is required.
+
+### Quick BIOS loop (minimal friction)
+
+Use this one-command path for physical-mode BIOS iteration:
+
+1. `bash c_boot/build_and_run_bios.sh`
+
+This command compiles `c_boot/start.c`, links with `c_boot/linker_bios.ld`, and runs the image in the emulator.
+
+Expected serial markers:
+
+1. `BIOS READY`
+2. `BOOT MODE: PHYS`
+
+### Tests and verification
+
+1. Boot frame ABI and builder tests:
+   - `tests/test_boot_frame.cpp`
+2. Run:
+   - `meson test -C builddir boot-frame --print-errorlogs`
+
 ## Dependencies in Current Codebase
 
 - Runtime API: `emulator/frontend_api.hpp`
