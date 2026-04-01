@@ -57,18 +57,27 @@ static void test_stack_round_trip() {
     auto cpu = run_program(
         "LDI #0x00, R13\n"
         "LDI.S1 #0x20, R13\n"    // SP = 0x2000
+        "LDI #8, R12\n"
         "LDI #0x11, R1\n"
         "LDI #0x22, R2\n"
         "LDI #0x33, R3\n"
         "LDI #0x44, R4\n"
-        "PUSH R1, R13\n"
-        "PUSH R2, R13\n"
-        "PUSH R3, R13\n"
-        "PUSH R4, R13\n"
-        "POP R8, R13\n"           // R8 = 0x44 (LIFO)
-        "POP R7, R13\n"           // R7 = 0x33
-        "POP R6, R13\n"           // R6 = 0x22
-        "POP R5, R13\n"           // R5 = 0x11
+        "SUB R12, R13\n"
+        "STORE [R13], R1\n"
+        "SUB R12, R13\n"
+        "STORE [R13], R2\n"
+        "SUB R12, R13\n"
+        "STORE [R13], R3\n"
+        "SUB R12, R13\n"
+        "STORE [R13], R4\n"
+        "LOAD [R13], R8\n"        // R8 = 0x44 (LIFO)
+        "ADD R12, R13\n"
+        "LOAD [R13], R7\n"        // R7 = 0x33
+        "ADD R12, R13\n"
+        "LOAD [R13], R6\n"        // R6 = 0x22
+        "ADD R12, R13\n"
+        "LOAD [R13], R5\n"        // R5 = 0x11
+        "ADD R12, R13\n"
         "STOP\n"
     );
     CHECK_EQ(cpu.registers.regs[5], 0x11ULL, "stack LIFO: R5 = 0x11");
@@ -84,12 +93,13 @@ static void test_stack_round_trip() {
 static void test_jal_leaf_call() {
     auto cpu = run_program(
         "LDI #10, R1\n"
-        "JAL @add_one\n"     // R14 = return address; jumps to add_one
+        "MOVE R15+2, R14\n"  // save return address in LR (next instruction after JUMP)
+        "JUMP @add_one\n"
         "STOP\n"
         "add_one:\n"
         "LDI #1, R2\n"
         "ADD R2, R1\n"       // R1++
-        "RET\n"              // MOVE R14, R15 — return to caller
+        "MOVE R14, R15\n"     // return to caller
     );
     CHECK_EQ(cpu.registers.regs[1], 11ULL, "JAL: leaf add_one incremented R1");
 }
@@ -104,19 +114,26 @@ static void test_call_nested() {
         "LDI #0, R1\n"
         "LDI #0x00, R13\n"
         "LDI.S1 #0x20, R13\n"    // SP = 0x2000
-        "CALL @outer\n"
+        "LDI #8, R12\n"
+        "MOVE R15+2, R14\n"
+        "JUMP @outer\n"
         "STOP\n"
 
         "outer:\n"
-        "CALL @inner\n"           // saves R14 on stack; jumps to inner
+        "SUB R12, R13\n"
+        "STORE [R13], R14\n"
+        "MOVE R15+2, R14\n"
+        "JUMP @inner\n"
+        "LOAD [R13], R14\n"
+        "ADD R12, R13\n"
         "LDI #10, R2\n"
         "ADD R2, R1\n"            // R1 += 10
-        "RET\n"
+        "MOVE R14, R15\n"
 
         "inner:\n"
         "LDI #1, R2\n"
         "ADD R2, R1\n"            // R1 += 1
-        "RET\n"
+        "MOVE R14, R15\n"
     );
     CHECK_EQ(cpu.registers.regs[1], 11ULL, "CALL/RET nested: R1 = 0 + 1 + 10 = 11");
 }

@@ -1,18 +1,28 @@
 #include "linker.hpp"
-#include "assembler.hpp"
+#include "llvm_assembler.hpp"
 #include "support/test_harness.hpp"
 #include <cstdio>
 #include <string>
 #include <vector>
 
 int main() {
-    Assembler asmbl;
+    std::string asm_error;
+    auto obj1 = LLVMAssembler::assembleSourceText(".global start\nstart: STOP\n", "linker_obj1.asm", asm_error);
+    CHECK_TRUE(static_cast<bool>(obj1), "llvm assembler produced object 1");
+    if (!obj1) {
+        std::fprintf(stderr, "Assembly failed for object 1: %s\n", asm_error.c_str());
+        return print_summary();
+    }
 
-    auto obj1 = asmbl.assembleElf(".global start\nstart: STOP\n");
-    auto obj2 = asmbl.assembleElf(".extern start\nJAL @start\n");
+    auto obj2 = LLVMAssembler::assembleSourceText(".extern start\nMOVE R15, R14\nJUMP @start\n", "linker_obj2.asm", asm_error);
+    CHECK_TRUE(static_cast<bool>(obj2), "llvm assembler produced object 2");
+    if (!obj2) {
+        std::fprintf(stderr, "Assembly failed for object 2: %s\n", asm_error.c_str());
+        return print_summary();
+    }
 
     LinkError err;
-    auto linked = Linker::linkObjects({obj1, obj2}, &err);
+    auto linked = Linker::linkObjects({*obj1, *obj2}, &err);
     if (!linked) {
         std::fprintf(stderr, "Link failed: %s\n", err.message.c_str());
         CHECK_TRUE(false, "Linking first object set should succeed");
@@ -22,9 +32,9 @@ int main() {
     // Check that linked output is non-empty and begins with a jump by comparing first instruction
     CHECK_EQ(linked->size() > 0, true, "Linked output exists");
 
-    // first object is start: STOP (0xDF00), second object has JAL @start (two instr: MOVE + JUMP)
+    // first object is start: STOP (0xDF00), second object has explicit call sequence (MOVE + JUMP)
     CHECK_EQ((*linked)[0], (uint16_t)0xDF00, "First word is STOP from start");
-    // The JUMP part of JAL is the third word (index 2) in final output.
+    // The JUMP is the third word (index 2) in final output.
     // Resolves to target=0 from instruction at byte offset 4 => rel=-3 -> 0xFFFD.
     CHECK_EQ((*linked)[2], (uint16_t)0xFFFD, "Third word is JAL to start with resolved PCREL13");
 
@@ -39,10 +49,22 @@ int main() {
     // those bits, silently changing the opcode from JUMP.Z (11) to SHORT_STORE (8).
     // The correct mask is 0xFC0F, which preserves the full 4-bit opcode.
     {
-        auto o1 = asmbl.assembleElf(".global handler\nhandler: STOP\n");
-        auto o2 = asmbl.assembleElf(".extern handler\n.global start\nstart: JUMP.Z @handler\nzz_local: STOP\n");
+        auto o1 = LLVMAssembler::assembleSourceText(".global handler\nhandler: STOP\n", "linker_obj3.asm", asm_error);
+        CHECK_TRUE(static_cast<bool>(o1), "llvm assembler produced object 3");
+        if (!o1) {
+            std::fprintf(stderr, "Assembly failed for object 3: %s\n", asm_error.c_str());
+            return print_summary();
+        }
+
+        auto o2 = LLVMAssembler::assembleSourceText(".extern handler\n.global start\nstart: JUMP.Z @handler\nzz_local: STOP\n", "linker_obj4.asm", asm_error);
+        CHECK_TRUE(static_cast<bool>(o2), "llvm assembler produced object 4");
+        if (!o2) {
+            std::fprintf(stderr, "Assembly failed for object 4: %s\n", asm_error.c_str());
+            return print_summary();
+        }
+
         LinkError err2;
-        auto linked2 = Linker::linkObjects({o1, o2}, &err2);
+        auto linked2 = Linker::linkObjects({*o1, *o2}, &err2);
         if (!linked2) {
             std::fprintf(stderr, "Link failed: %s\n", err2.message.c_str());
             CHECK_TRUE(false, "Linking second object set should succeed");

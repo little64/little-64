@@ -12,9 +12,8 @@ This document describes the CPU-visible architecture and points to source-of-tru
 - Runtime execution behavior:
   - `emulator/cpu.cpp`
   - `emulator/cpu.hpp`
-- Assembler/disassembler behavior:
-  - `assembler/assembler.cpp`
-  - `assembler/encoder.cpp`
+- Assembly/disassembly behavior:
+  - `project/llvm_assembler.cpp`
   - `disassembler/disassembler.cpp`
 
 If this document conflicts with code, code is authoritative and this document must be updated in the same change.
@@ -139,7 +138,7 @@ When adding/changing an instruction:
 
 1. Update `arch/opcodes_*.def` if opcode metadata changes.
 2. Update emulator dispatch logic in `emulator/cpu.cpp`.
-3. Update assembler/disassembler behavior if syntax/text changes.
+3. Update assembly wrapper/disassembler behavior if syntax/text changes.
 4. Add or update tests under `tests/`.
 5. Update `docs/assembly-syntax.md` and this file.
 

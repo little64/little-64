@@ -1,6 +1,6 @@
 #include "project.hpp"
 #include "compiler.hpp"
-#include "assembler.hpp"
+#include "llvm_assembler.hpp"
 #include "linker.hpp"
 #include "emulator_session.hpp"
 #include <iostream>
@@ -44,8 +44,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // Assemble or compile each source as an ELF object
-    Assembler assembler;
+    // Assemble (via llvm-mc) or compile each source as an ELF object
     std::vector<std::vector<uint8_t>> objects;
     for (const auto& src_path : proj.sources) {
         std::string ext;
@@ -67,19 +66,13 @@ int main(int argc, char* argv[]) {
             continue;
         }
 
-        std::ifstream f(src_path);
-        if (!f.is_open()) {
-            std::cerr << "Cannot open source: " << src_path << "\n";
+        std::string asm_error;
+        auto assembled = LLVMAssembler::assembleSourceFile(src_path, asm_error);
+        if (!assembled) {
+            std::cerr << "Assembly error in " << src_path << ": " << asm_error << "\n";
             return 1;
         }
-        std::string content((std::istreambuf_iterator<char>(f)),
-                            std::istreambuf_iterator<char>());
-        try {
-            objects.push_back(assembler.assembleElf(content));
-        } catch (const std::exception& e) {
-            std::cerr << "Assembly error in " << src_path << ": " << e.what() << "\n";
-            return 1;
-        }
+        objects.push_back(std::move(*assembled));
     }
 
     // Link

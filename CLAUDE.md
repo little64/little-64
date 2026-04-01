@@ -8,7 +8,7 @@ This file documents practical update paths and maintenance rules for common proj
 - Build directory: `builddir/`
 - Build graph is modularized:
   - `meson.build` (top-level orchestration)
-  - subsystem build files in `emulator/`, `assembler/`, `disassembler/`, `linker/`, `project/`, `tests/`, `gui/`, `qt/`
+  - subsystem build files in `emulator/`, `disassembler/`, `linker/`, `project/`, `tests/`, `gui/`, `qt/`
 
 ## Instruction Change Guide
 
@@ -18,7 +18,7 @@ This file documents practical update paths and maintenance rules for common proj
 |---|---|
 | `arch/opcodes_ls.def` | Add/update `LITTLE64_LS_OPCODE(...)` entry |
 | `emulator/cpu.cpp` | Update handling in both `_dispatchLSReg(...)` and `_dispatchLSPCRel(...)` |
-| `assembler/assembler.cpp` | Update only if syntax/parsing is non-standard |
+| `project/llvm_assembler.cpp` | Update only if assembly wrapper/tool invocation behavior changes |
 | `disassembler/disassembler.cpp` | Update only if text output differs from defaults |
 | `CPU_ARCH.md` | Update opcode and semantics reference |
 | `docs/assembly-syntax.md` | Update syntax and examples if affected |
@@ -32,22 +32,22 @@ LS opcodes are shared between format 00 and 01. Behavior can differ by format an
 |---|---|
 | `arch/opcodes_gp.def` | Add/update `LITTLE64_GP_OPCODE(...)` entry |
 | `emulator/cpu.cpp` | Update `_dispatchGP(...)` |
-| `assembler/assembler.cpp` | Usually unnecessary (encoding metadata drives parsing) |
+| `project/llvm_assembler.cpp` | Usually unnecessary unless wrapper behavior/toolchain pathing changes |
 | `disassembler/disassembler.cpp` | Update if text output differs from defaults |
 | `CPU_ARCH.md` | Update opcode and semantics reference |
 | `docs/assembly-syntax.md` | Update syntax and examples if affected |
 | tests | Add/update targeted instruction tests |
 
-## Pseudo-instructions
+## Legacy syntax compatibility
 
-Pseudo-instructions are defined in `assembler/assembler.cpp` (`pseudo_table`).
+Legacy pseudo-forms used in older tests (`LDI64`, `CALL`, `JAL`, `RET`, textual `PUSH`/`POP`, `MOVE Rn+imm`) are currently rewritten for LLVM assembly in `tests/support/cpu_test_helpers.hpp`.
 
-For a new pseudo-instruction:
+For compatibility updates:
 
-1. add pseudo expansion in `pseudo_table`,
-2. set correct synthetic instruction addresses (`base + 2 * index`),
-3. update `docs/assembly-syntax.md` with expansion and usage,
-4. add tests covering assembly + execution semantics.
+1. adjust rewrite rules in `tests/support/cpu_test_helpers.hpp`,
+2. ensure generated instructions preserve original test semantics,
+3. update `docs/assembly-syntax.md` compatibility notes,
+4. run full test suite.
 
 ## Device Framework Changes
 

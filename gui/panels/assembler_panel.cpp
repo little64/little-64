@@ -1,6 +1,6 @@
 #include "assembler_panel.hpp"
-#include "assembler.hpp"
 #include "compiler.hpp"
+#include "llvm_assembler.hpp"
 #include "disassembler.hpp"
 #include "linker.hpp"
 #include "project.hpp"
@@ -11,6 +11,8 @@
 #include <unistd.h>
 #include <climits>
 #include <cstring>
+#include <regex>
+#include <vector>
 
 // ===========================================================================
 // Language definition and palette (unchanged from previous implementation)
@@ -25,8 +27,17 @@ static TextEditor::LanguageDefinition buildLanguageDef() {
     lang.mCaseSensitive = false;
     lang.mPreprocChar = 0;
 
-    for (const auto& mnemonic : Assembler::getAllMnemonics())
+    static const std::vector<std::string> mnemonics = {
+        "LDI", "LDI.S1", "LDI.S2", "LDI.S3",
+        "ADD", "SUB", "TEST", "AND", "OR", "XOR", "MUL", "DIV", "MOD", "STOP",
+        "LOAD", "STORE", "PUSH", "POP", "MOVE",
+        "BYTE_LOAD", "BYTE_STORE", "SHORT_LOAD", "SHORT_STORE", "WORD_LOAD", "WORD_STORE",
+        "JUMP", "JUMP.Z", "JUMP.C", "JUMP.S", "JUMP.GT", "JUMP.LT",
+        "CALL", "RET", "JAL", "LDI64"
+    };
+    for (const auto& mnemonic : mnemonics) {
         lang.mKeywords.insert(mnemonic);
+    }
 
     for (int i = 0; i <= 15; ++i) {
         std::string reg = "R" + std::to_string(i);
@@ -432,13 +443,28 @@ static std::optional<std::vector<uint8_t>> compileOrAssembleSource(
         return compiled;
     }
 
-    try {
-        Assembler assembler;
-        return assembler.assembleElf(source_text);
-    } catch (const std::exception& e) {
-        error = e.what();
-        return std::nullopt;
+    auto assembled = LLVMAssembler::assembleSourceText(source_text, source_path, error);
+    if (!assembled) return std::nullopt;
+    return assembled;
+}
+
+static std::optional<int> extractErrorLine(const std::string& error) {
+    auto pos = error.rfind("at line ");
+    if (pos != std::string::npos) {
+        try {
+            return std::stoi(error.substr(pos + 8));
+        } catch (...) {}
     }
+
+    std::smatch match;
+    static const std::regex llvm_style(R"(:(\d+):(\d+)?:?\s*error:)", std::regex::icase);
+    if (std::regex_search(error, match, llvm_style) && match.size() >= 2) {
+        try {
+            return std::stoi(match[1].str());
+        } catch (...) {}
+    }
+
+    return std::nullopt;
 }
 
 void AssemblerPanel::assembleActiveTab() {
@@ -450,13 +476,9 @@ void AssemblerPanel::assembleActiveTab() {
     auto output = compileOrAssembleSource(path, source, opt_level, state_.assemble_error);
     if (!output) {
         TextEditor::ErrorMarkers markers;
-        std::string msg = state_.assemble_error;
-        auto pos = msg.rfind("at line ");
-        if (pos != std::string::npos) {
-            try {
-                int line = std::stoi(msg.substr(pos + 8));
-                markers[line] = msg;
-            } catch (...) {}
+        auto line = extractErrorLine(state_.assemble_error);
+        if (line) {
+            markers[*line] = state_.assemble_error;
         }
         activeTab().editor->SetErrorMarkers(markers);
         return;
@@ -490,13 +512,9 @@ void AssemblerPanel::buildProject() {
         if (!obj) {
             state_.assemble_error = tabs_[i]->displayName() + ": " + state_.assemble_error;
             TextEditor::ErrorMarkers markers;
-            std::string msg = state_.assemble_error;
-            auto pos = msg.rfind("at line ");
-            if (pos != std::string::npos) {
-                try {
-                    int line = std::stoi(msg.substr(pos + 8));
-                    markers[line] = msg;
-                } catch (...) {}
+            auto line = extractErrorLine(state_.assemble_error);
+            if (line) {
+                markers[*line] = state_.assemble_error;
             }
             tabs_[i]->editor->SetErrorMarkers(markers);
             active_tab_        = i;

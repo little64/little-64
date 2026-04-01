@@ -12,8 +12,8 @@ This example demonstrates splitting a small serial-output program across multipl
 From project root:
 
 ```bash
-./builddir/little-64-asm --elf -o asm/serial_linking_test/part1.o asm/serial_linking_test/part1.asm
-./builddir/little-64-asm --elf -o asm/serial_linking_test/part2.o asm/serial_linking_test/part2.asm
+compilers/bin/llvm-mc -triple=little64 -filetype=obj asm/serial_linking_test/part1.asm -o asm/serial_linking_test/part1.o
+compilers/bin/llvm-mc -triple=little64 -filetype=obj asm/serial_linking_test/part2.asm -o asm/serial_linking_test/part2.o
 
 ./builddir/little-64-linker -o asm/serial_linking_test/serial_boot_linked.bin \
   asm/serial_linking_test/part1.o \

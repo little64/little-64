@@ -1,181 +1,56 @@
 # Little-64 Assembly Syntax
 
-This document defines the syntax accepted by `little-64-asm`.
+This document defines the assembly workflow used by Little-64.
 
 ## Source of Truth
 
-- Parser and pseudo-expansion logic: `assembler/assembler.cpp`
-- Encoding rules: `assembler/encoder.cpp`
+- Primary assembler: `compilers/bin/llvm-mc -triple=little64`
+- Runtime loader expectations: `linker/linker.cpp`, `emulator/cpu.cpp`
+- Project assembly wrapper: `project/llvm_assembler.cpp`
 - ISA semantics: `../CPU_ARCH.md`
 
-If this document and assembler behavior disagree, `assembler/assembler.cpp` is authoritative and this document must be updated.
+If this document and `llvm-mc` behavior disagree, `llvm-mc` is authoritative.
 
-## Lexical Rules
+## Standard Workflow
 
-## Comments
-
-- `;` begins a comment and runs to end of line.
-
-## Registers
-
-- Register names: `R0`..`R15` (case-insensitive)
-- Aliases:
-  - `SP` → `R13`
-  - `LR` → `R14`
-  - `PC` → `R15`
-
-## Number Literals
-
-Supported numeric forms:
-
-- decimal: `42`
-- hexadecimal: `0x2A`
-- binary: `0b101010`
-
-Immediates in instructions must use `#` (for example `#42`, `#0x10`).
-
-## Labels
-
-- Definition: `name:`
-- Valid chars: letters, digits, `_`, `.`
-- First char cannot be a digit
-
-## Instruction Line Form
-
-```asm
-[label:] MNEMONIC[.SUFFIX] [operand [, operand ...]]
-```
-
-## Operand Forms
-
-## Register
-
-```asm
-R1
-SP
-```
-
-## Immediate
-
-```asm
-#12
-#0xFF
-```
-
-## Register-indirect memory
-
-```asm
-[R2]
-[R2+2]
-[R2+4]
-[R2+6]
-```
-
-Offset for this form is limited to `0, 2, 4, 6` bytes.
-
-## Register-address expression (no dereference)
-
-Used by `MOVE` and register-form conditional jumps:
-
-```asm
-R2
-R2+2
-```
-
-## PC-relative address
-
-```asm
-@label
-@+3
-@-2
-```
-
-Offsets are in instruction units (2 bytes each), relative to the next instruction.
-
-## Core Instruction Families
-
-## `LDI` and `LDI.SN`
-
-```asm
-LDI    #0x12, R1
-LDI.S1 #0x34, R1
-LDI.S2 #0x56, R1
-LDI.S3 #0x78, R1
-```
-
-`LDI` loads an 8-bit literal into a selected byte lane (`S0`..`S3`).
-
-## GP ALU instructions
-
-Typical forms:
-
-```asm
-ADD R1, R2
-SLLI #4, R2
-IRET
-STOP
-```
-
-## LS register/PC-relative instructions
-
-```asm
-LOAD  [R3], R1
-STORE [R3+2], R1
-LOAD  @data, R1
-JUMP.Z @target
-JUMP @loop
-```
-
-## Pseudo-instructions
-
-Pseudo-instructions expand in `assembler/assembler.cpp` (`pseudo_table`).
-
-Common pseudo-instructions include:
-
-- `LDI64`
-- `CALL`
-- `JAL`
-- `RET`
-
-Always treat expansion behavior in assembler source as canonical.
-
-## Directives
-
-Common directives include:
-
-- `.org`
-- `.word`
-- `.byte`
-- `.global`
-- `.extern`
-
-Use assembler tests and examples in `asm/` for practical forms.
-
-## Minimal Example
-
-```asm
-.org 0x0000
-
-start:
-    LDI #1, R1
-    LDI #2, R2
-    ADD R1, R2
-    STOP
-```
-
-## Validation Workflow
+Assemble and link with LLVM tools:
 
 ```bash
-./builddir/little-64-asm --elf -o test.o test.asm
+compilers/bin/llvm-mc -triple=little64 -filetype=obj test.asm -o test.o
 compilers/bin/ld.lld test.o -o test.elf
 ./builddir/little-64 test.elf
 ```
 
-## Update Checklist
+For multi-object linking into flat binary words:
 
-When syntax changes:
+```bash
+./builddir/little-64-linker -o out.bin a.o b.o
+./builddir/little-64 out.bin
+```
 
-1. update parser/encoder implementation,
-2. update or add tests in `tests/test_assembler.cpp` (and related CPU tests when needed),
-3. update this file with exact accepted forms,
-4. verify examples still assemble and run.
+## Supported Core Forms
+
+The LLVM Little-64 backend supports the core ISA instruction forms used by runtime and linker tests:
+
+- `LDI`, `LDI.S1`, `LDI.S2`, `LDI.S3`
+- GP ops (`ADD`, `SUB`, `AND`, `OR`, `TEST`, `STOP`, etc.)
+- LS memory ops (`LOAD`, `STORE`, `BYTE_*`, `SHORT_*`, `WORD_*`)
+- Branch/jump forms (`JUMP`, `JUMP.Z`, `JUMP.C`, `JUMP.S`, `JUMP.GT`, `JUMP.LT`)
+- directives used by linker/object workflows (`.global`, `.extern`, `.byte`, `.short`, `.long`)
+
+## Legacy Compatibility Notes
+
+Historical custom-assembler pseudo/informal forms like `LDI64`, `CALL`, `JAL`, `RET`, `PUSH`/`POP` textual forms, and `MOVE Rn+imm` are not guaranteed as direct `llvm-mc` syntax.
+
+Current CPU tests keep legacy source readability through compatibility preprocessing in `tests/support/cpu_test_helpers.hpp`, which rewrites those forms into LLVM-compatible code before assembly.
+
+That compatibility path is test-only and not a CLI contract.
+
+## Validation Checklist
+
+When assembly behavior changes:
+
+1. Update `project/llvm_assembler.*` if wrapper behavior changes.
+2. Update `tests/test_assembler.cpp` for assembly wrapper expectations.
+3. Update linker/CPU tests when syntax compatibility assumptions change.
+4. Re-run `meson test -C builddir --print-errorlogs`.

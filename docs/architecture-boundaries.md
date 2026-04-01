@@ -37,7 +37,7 @@ Frontend and tooling code should prefer `IEmulatorRuntime`/`EmulatorSession` ove
 
 ## Tooling Libraries and CLIs
 
-- Assembler: `assembler/`
+- LLVM assembly wrapper: `project/llvm_assembler.*`
 - Disassembler: `disassembler/`
 - Linker: `linker/`
 - Project runner: `project/`
@@ -47,7 +47,6 @@ Frontend and tooling code should prefer `IEmulatorRuntime`/`EmulatorSession` ove
 Top-level orchestration in `meson.build`, per-subsystem ownership in:
 
 - `emulator/meson.build`
-- `assembler/meson.build`
 - `disassembler/meson.build`
 - `linker/meson.build`
 - `project/meson.build`

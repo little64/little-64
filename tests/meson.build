@@ -1,15 +1,15 @@
 test_asm = executable('test-assembler',
   ['test_assembler.cpp'],
-  link_with : asm_lib,
-  include_directories : [assembler_inc, arch_inc, test_inc, test_support_inc],
+  link_with : [project_lib, linker_lib],
+  include_directories : [project_inc, linker_inc, arch_inc, test_inc, test_support_inc],
   install : false,
 )
 test('assembler', test_asm, suite : ['unit', 'assembler'])
 
 test_linker = executable('test-linker',
   ['test_linker.cpp'],
-  link_with : [linker_lib, asm_lib],
-  include_directories : [linker_inc, assembler_inc, arch_inc, test_inc, test_support_inc],
+  link_with : [linker_lib, project_lib],
+  include_directories : [project_inc, linker_inc, arch_inc, test_inc, test_support_inc],
   install : false,
 )
 
@@ -26,10 +26,11 @@ cpu_tests = {
 
 foreach name, src : cpu_tests
   t = executable('test-cpu-' + name, src,
-    link_with : [emulator_lib, asm_lib],
+    link_with : [emulator_lib, linker_lib, project_lib],
     include_directories : [
       emulator_inc,
-      assembler_inc,
+      linker_inc,
+      project_inc,
       arch_inc,
       test_inc,
     ],

@@ -3,7 +3,7 @@
 Little-64 is a 64-bit ISA project with:
 
 - a C++ emulator/runtime,
-- an assembler/disassembler/linker toolchain,
+- an LLVM-based assembler + custom disassembler/linker toolchain,
 - project-runner workflows,
 - debug-server support (GDB RSP subset),
 - optional ImGui and Qt frontends.
@@ -35,18 +35,19 @@ meson test -C builddir --print-errorlogs
 |---|---|
 | `builddir/little-64` | Headless emulator runner |
 | `builddir/little-64-debug` | TCP debug server (RSP) |
-| `builddir/little-64-asm` | Assembler (`.asm` to `.bin`/`.o`) |
 | `builddir/little-64-disasm` | Disassembler (`.bin` to text) |
 | `builddir/little-64-linker` | Object linker |
 | `builddir/little-64-run` | `.l64proj` compile/link/run harness |
 | `builddir/little-64-gui` | ImGui frontend |
 | `builddir/little-64-qt` | Qt frontend (if Qt detected/enabled) |
 
+Assembly to object code is performed through `compilers/bin/llvm-mc` (see `project/llvm_assembler.*`).
+
 ## Repository Layout
 
 - `arch/` — opcode definitions (`opcodes_ls.def`, `opcodes_gp.def`) and generated enums
 - `emulator/` — CPU, memory bus, devices, debug transport/server, headless runtime
-- `assembler/`, `disassembler/`, `linker/` — tool libraries + CLI entrypoints
+- `disassembler/`, `linker/` — custom tool libraries + CLI entrypoints
 - `project/` — project-file model and runner
 - `gui/`, `qt/` — frontends
 - `tests/` — unit + integration + toolchain + debug tests
@@ -60,7 +61,6 @@ Meson files are modularized by subsystem:
 - top-level orchestration: `meson.build`
 - per-subsystem build files:
   - `emulator/meson.build`
-  - `assembler/meson.build`
   - `disassembler/meson.build`
   - `linker/meson.build`
   - `project/meson.build`
@@ -75,7 +75,7 @@ Start at `docs/README.md` for the full index.
 Key docs:
 
 - `CPU_ARCH.md` — ISA and execution architecture reference
-- `docs/assembly-syntax.md` — assembler language and directives
+- `docs/assembly-syntax.md` — LLVM-targeted assembly language notes and compatibility guidance
 - `docs/architecture-boundaries.md` — module/API boundaries
 - `docs/device-framework.md` — MMIO/device model and extension path
 - `docs/vscode-integration.md` — editor/debug workflow integration
@@ -92,6 +92,6 @@ Do not merge or restructure these trees as part of normal project cleanup.
 When behavior changes, update docs in the same change:
 
 1. Update architecture/runtime docs for behavior changes.
-2. Update syntax docs for parser/assembler changes.
+2. Update syntax docs for LLVM assembly behavior changes.
 3. Update `CLAUDE.md` when contributor workflows or touched-file rules change.
 4. Run `meson test -C builddir --print-errorlogs` before finalizing documentation that includes command examples.

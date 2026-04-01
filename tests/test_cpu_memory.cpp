@@ -160,14 +160,17 @@ static void test_push_pop() {
     // Stack pointer starts at 0x2000 (well inside RAM)
     const std::string sp_setup =
         "LDI #0x00, R13\n"
-        "LDI.S1 #0x20, R13\n";   // R13 = 0x2000
+        "LDI.S1 #0x20, R13\n"
+        "LDI #8, R12\n";   // R13 = 0x2000, R12 = stack stride
 
     // Push value, pop into different register
     auto cpu = run_program(
         sp_setup +
         "LDI #0xBB, R1\n"
-        "PUSH R1, R13\n"         // SP decrements by 8, stores R1
-        "POP  R2, R13\n"         // loads R2 from stack, SP increments by 8
+        "SUB R12, R13\n"
+        "STORE [R13], R1\n"      // SP decrements by 8, stores R1
+        "LOAD [R13], R2\n"
+        "ADD R12, R13\n"         // loads R2 from stack, SP increments by 8
         "STOP\n"
     );
     CHECK_EQ(cpu.registers.regs[2], 0xBBULL, "PUSH+POP: value preserved");
@@ -177,7 +180,8 @@ static void test_push_pop() {
     cpu = run_program(
         sp_setup +
         "LDI #1, R1\n"
-        "PUSH R1, R13\n"
+        "SUB R12, R13\n"
+        "STORE [R13], R1\n"
         "STOP\n"
     );
     CHECK_EQ(cpu.registers.regs[13], UINT64_C(0x2000 - 8), "PUSH: SP decremented by 8");
@@ -185,8 +189,10 @@ static void test_push_pop() {
     cpu = run_program(
         sp_setup +
         "LDI #1, R1\n"
-        "PUSH R1, R13\n"
-        "POP  R2, R13\n"
+        "SUB R12, R13\n"
+        "STORE [R13], R1\n"
+        "LOAD [R13], R2\n"
+        "ADD R12, R13\n"
         "STOP\n"
     );
     CHECK_EQ(cpu.registers.regs[13], UINT64_C(0x2000), "POP: SP incremented by 8");
@@ -196,10 +202,14 @@ static void test_push_pop() {
         sp_setup +
         "LDI #0xAA, R1\n"
         "LDI #0xBB, R2\n"
-        "PUSH R1, R13\n"       // stack: [AA]
-        "PUSH R2, R13\n"       // stack: [AA, BB]
-        "POP  R3, R13\n"       // R3 = BB (LIFO)
-        "POP  R4, R13\n"       // R4 = AA
+        "SUB R12, R13\n"
+        "STORE [R13], R1\n"    // stack: [AA]
+        "SUB R12, R13\n"
+        "STORE [R13], R2\n"    // stack: [AA, BB]
+        "LOAD [R13], R3\n"
+        "ADD R12, R13\n"       // R3 = BB (LIFO)
+        "LOAD [R13], R4\n"
+        "ADD R12, R13\n"       // R4 = AA
         "STOP\n"
     );
     CHECK_EQ(cpu.registers.regs[3], 0xBBULL, "PUSH/POP LIFO: first pop = BB");

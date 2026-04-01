@@ -20,7 +20,7 @@ This index is the entry point for project documentation.
 
 ## Authoring & Tooling
 
-- `assembly-syntax.md` — full assembler language reference
+- `assembly-syntax.md` — LLVM assembly workflow and compatibility notes
 - `vscode-integration.md` — VS Code + RSP workflow
 - `qt-frontend.md` — Qt frontend scope and status
 
@@ -34,7 +34,7 @@ This index is the entry point for project documentation.
 For every behavior change:
 
 - update at least one behavior doc (`CPU_ARCH.md`, `architecture-boundaries.md`, `device-framework.md`) if architecture/runtime semantics changed,
-- update `assembly-syntax.md` if parser/assembler syntax changed,
+- update `assembly-syntax.md` if LLVM assembly behavior or compatibility rules changed,
 - update command examples in docs if CLI behavior changed,
 - keep `CLAUDE.md` synchronized with practical contributor steps.
 
