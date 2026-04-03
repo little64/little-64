@@ -134,11 +134,28 @@ def main() -> int:
                 assert bp_clear == "OK", bp_clear
 
                 step_stop = send_cmd(sock, "s")
-                assert step_stop == "W00", step_stop
+                assert is_stop_reply(step_stop, "05"), step_stop
 
                 xml_chunk = send_cmd(sock, "qXfer:features:read:target.xml:0,40")
                 assert xml_chunk.startswith("m") or xml_chunk.startswith("l")
                 assert "<target" in xml_chunk or "<?xml" in xml_chunk
+
+                xml_full_parts = []
+                xml_offset = 0
+                while True:
+                    xml_part = send_cmd(sock, f"qXfer:features:read:target.xml:{xml_offset:x},400")
+                    assert xml_part.startswith("m") or xml_part.startswith("l"), xml_part
+                    xml_data = xml_part[1:]
+                    xml_full_parts.append(xml_data)
+                    xml_offset += len(xml_data)
+                    if xml_part.startswith("l"):
+                        break
+
+                xml_full = "".join(xml_full_parts)
+                assert 'generic="fp"' in xml_full, xml_full
+                assert 'generic="sp"' in xml_full, xml_full
+                assert 'generic="ra"' in xml_full, xml_full
+                assert 'generic="pc"' in xml_full, xml_full
 
                 send_cmd(sock, "k")
 

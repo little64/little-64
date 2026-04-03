@@ -1,8 +1,15 @@
 #pragma once
 
 #include <cstdint>
+#include <cstddef>
 #include <string>
 #include <string_view>
+
+enum class MemoryAccessType : uint8_t {
+    Read,
+    Write,
+    Execute,
+};
 
 class MemoryRegion {
 public:
@@ -19,6 +26,8 @@ public:
     virtual void     write32(uint64_t addr, uint32_t val);
     virtual uint64_t read64(uint64_t addr);
     virtual void     write64(uint64_t addr, uint64_t val);
+
+    virtual bool allows(uint64_t addr, size_t width, MemoryAccessType access) const;
 
     virtual std::string_view name() const = 0;
 

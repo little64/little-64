@@ -8,6 +8,13 @@ static volatile Little64BootInfoFrame g_boot_info;
 
 static const char banner[] = "BIOS READY\n";
 static const char mode_phys[] = "BOOT MODE: PHYS\n";
+static const char phase_init[] = "PHASE: INIT\n";
+static const char phase_diag[] = "PHASE: DIAG\n";
+static const char phase_done[] = "PHASE: DONE\n";
+static const char summary_prefix[] = "SUMMARY: ";
+static const char nl[] = "\n";
+
+static volatile unsigned long g_diag_accum = 0;
 
 static void serial_puts(const char* s) {
     while (*s) {
@@ -35,6 +42,80 @@ static void init_boot_info_physical(void) {
     g_boot_info.memory_regions[0].flags = 0;
 }
 
+static void serial_put_hex_digit(unsigned value) {
+    const unsigned nibble = value & 0xFU;
+    const unsigned char c = (unsigned char)(nibble < 10 ? ('0' + nibble) : ('A' + (nibble - 10)));
+    *SERIAL_BASE = c;
+}
+
+static void serial_put_hex_u64(unsigned long long value) {
+    for (int shift = 60; shift >= 0; shift -= 4) {
+        serial_put_hex_digit((unsigned)(value >> shift));
+    }
+}
+
+__attribute__((noinline))
+static unsigned long long checksum_text(const char* s) {
+    unsigned long long acc = 0x9E3779B97F4A7C15ULL;
+    while (*s) {
+        const unsigned long long ch = (unsigned long long)(unsigned char)(*s);
+        acc ^= ch;
+        acc += (acc << 6) + (acc >> 2) + 0x9E3779B97F4A7C15ULL;
+        ++s;
+    }
+    return acc;
+}
+
+__attribute__((noinline))
+static unsigned long long compute_boot_summary_value(unsigned long long seed) {
+    unsigned long long x = seed;
+    x ^= (unsigned long long)g_boot_info.memory_region_count;
+    x += g_boot_info.physical_memory_size;
+    x ^= (g_boot_info.boot_stack_physical_top >> 3);
+    return x;
+}
+
+__attribute__((noinline))
+static void emit_phase_line(const char* phase, const char* detail) {
+    serial_puts(phase);
+    serial_puts(detail);
+}
+
+__attribute__((noinline))
+static void emit_summary_line(unsigned long long value) {
+    serial_puts(summary_prefix);
+    serial_put_hex_u64(value);
+    serial_puts(nl);
+}
+
+__attribute__((noinline))
+static unsigned long long mix_debug_value(unsigned long long value, unsigned salt) {
+    unsigned long long x = value;
+    x ^= ((unsigned long long)salt << 32) | (unsigned long long)salt;
+    x = (x << 9) ^ (x >> 7) ^ 0xD1B54A32D192ED03ULL;
+    return x;
+}
+
+__attribute__((noinline))
+static void run_debug_fixture(void) {
+    unsigned long long value = 0x123456789ABCDEF0ULL;
+    value = compute_boot_summary_value(value);
+    value = mix_debug_value(value, 1);
+    value = mix_debug_value(value, 2);
+    value = mix_debug_value(value, 3);
+    g_diag_accum += (unsigned long)(value & 0xFFFFULL);
+    value ^= (unsigned long long)g_diag_accum;
+
+#ifdef LITTLE64_DEBUG_VERBOSE
+    emit_phase_line(phase_init, nl);
+    emit_phase_line(phase_diag, nl);
+    emit_summary_line(value);
+    emit_phase_line(phase_done, nl);
+#else
+    g_diag_accum ^= (unsigned long)(value & 0xFFFFFFFFULL);
+#endif
+}
+
 __attribute__((naked))
 void _start(void) {
     // Initialize stack pointer to 0x4000000 and jump to work().
@@ -53,6 +134,7 @@ void work(void) {
     init_boot_info_physical();
     serial_puts(banner);
     serial_puts(mode_phys);
+    run_debug_fixture();
 
 #ifdef LITTLE64_DEBUG_HOLD
     for (;;) {

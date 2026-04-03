@@ -51,8 +51,11 @@ Current index map (from `cpu.hpp`):
 | 3 | `interrupt_states` |
 | 4 | `interrupt_epc` |
 | 5 | `interrupt_eflags` |
-| 6 | `interrupt_except` |
-| 7..10 | `interrupt_data[0..3]` |
+| 6 | `trap_cause` |
+| 7 | `trap_fault_addr` |
+| 8 | `trap_access` |
+| 9 | `trap_pc` |
+| 10 | `trap_aux` |
 
 ## Instruction Encoding Overview
 
@@ -92,6 +95,7 @@ Notes:
 
 - LS opcodes are shared between format `00` and format `01`.
 - Behavior may differ by format and must be implemented/tested in both `_dispatchLSReg` and `_dispatchLSPCRel`.
+- JUMP instructions always use R15 as the target when doing PC-relative jumps. The 4 Rs1 bits are instead used to extend the PC-relative range by acting as the lower 4 bits, rather than a register index. 
 
 ## GP Opcode Space (format `110`)
 

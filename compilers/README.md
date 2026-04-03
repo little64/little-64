@@ -30,10 +30,10 @@ From `compilers/`:
 ./build.sh clean llvm
 ```
 
-Optional LLDB build for LLVM path:
+LLVM path always includes LLDB tools:
 
 ```bash
-ENABLE_LLDB=1 ./build.sh llvm
+./build.sh llvm
 ```
 
 ## Expected Output
@@ -43,8 +43,8 @@ Compiler and debugger binaries are exported to:
 - `compilers/bin/clang`
 - `compilers/bin/ld.lld`
 - `compilers/bin/llvm-mc`
-- `compilers/bin/lldb` (when LLDB is enabled)
-- `compilers/bin/lldb-dap` (when LLDB is enabled)
+- `compilers/bin/lldb`
+- `compilers/bin/lldb-dap`
 
 ## Adding a New Compiler Port
 

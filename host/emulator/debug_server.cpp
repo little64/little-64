@@ -29,7 +29,9 @@ bool parseRegisterInfoIndex(const std::string& payload, uint64_t& out_index) {
 } // namespace
 
 DebugServer::DebugServer(IEmulatorRuntime& runtime, IDebugTransport& transport)
-    : _runtime(runtime), _transport(transport) {}
+    : _runtime(runtime), _transport(transport) {
+    setLastStopReply("S05");
+}
 
 int DebugServer::run() {
     bool should_exit = false;
@@ -139,12 +141,12 @@ bool DebugServer::handlePacket(const std::string& payload, bool& should_exit) {
     }
 
     if (payload == "jThreadsInfo") {
-        _transport.writePacket(R"([{"tid":1,"name":"main"}])");
+        _transport.writePacket("");
         return true;
     }
 
     if (payload.starts_with("jThreadExtendedInfo")) {
-        _transport.writePacket(R"({"name":"main","reason":"none"})");
+        _transport.writePacket("");
         return true;
     }
 
@@ -171,12 +173,18 @@ bool DebugServer::handlePacket(const std::string& payload, bool& should_exit) {
             << ";encoding:uint;format:hex;set:General Purpose Registers;"
             << "gcc:" << reg_index << ";dwarf:" << reg_index << ";";
 
-        if (reg_index == 13) {
+        if (reg_index == 11) {
+            out << "alt-name:fp;";
+            out << "generic:fp;";
+        } else if (reg_index == 13) {
             out << "generic:sp;";
         } else if (reg_index == 14) {
+            out << "alt-name:ra;";
             out << "generic:ra;";
         } else if (reg_index == 15) {
             out << "generic:pc;";
+        } else if (reg_index == 16) {
+            out << "generic:flags;";
         }
 
         _transport.writePacket(out.str());
@@ -389,14 +397,26 @@ bool DebugServer::handleContinue(const std::string& payload) {
         }
     }
 
+    bool skip_breakpoint_check_once = false;
+    if (_resume_past_breakpoint_once && _runtime.pc() == _resume_breakpoint_pc) {
+        skip_breakpoint_check_once = true;
+    }
+    _resume_past_breakpoint_once = false;
+
     while (_runtime.isRunning()) {
-        if (_breakpoints.contains(_runtime.pc())) {
-            setLastStopReply("S05");
+        uint64_t matched_breakpoint = 0;
+        if (!skip_breakpoint_check_once && findMatchingBreakpoint(_runtime.pc(), matched_breakpoint)) {
+            setLastStopReplyWithReason("05", "swbreak");
             _transport.writePacket(_last_stop_reply);
             return true;
         }
+        skip_breakpoint_check_once = false;
 
         _runtime.cycle();
+
+        if (!emitSerialOutput()) {
+            return false;
+        }
 
         if (_transport.pollInterrupt()) {
             setLastStopReply("S02");
@@ -405,7 +425,12 @@ bool DebugServer::handleContinue(const std::string& payload) {
         }
     }
 
-    setLastStopReply("W00");
+    if (!emitSerialOutput()) {
+        return false;
+    }
+
+    // Program-level STOP should behave like a debugger stop, not process exit.
+    setLastStopReply("S05");
     _transport.writePacket(_last_stop_reply);
     return true;
 }
@@ -422,7 +447,12 @@ bool DebugServer::handleStep(const std::string& payload) {
     if (_runtime.isRunning()) {
         _runtime.cycle();
     }
-    setLastStopReply(_runtime.isRunning() ? "S05" : "W00");
+
+    if (!emitSerialOutput()) {
+        return false;
+    }
+
+    setLastStopReplyWithReason("05", "trace");
     _transport.writePacket(_last_stop_reply);
     return true;
 }
@@ -469,11 +499,48 @@ bool DebugServer::handleVCont(const std::string& payload) {
 }
 
 void DebugServer::setLastStopReply(const std::string& reply) {
+    _resume_past_breakpoint_once = false;
+
     if (reply.size() == 3 && reply[0] == 'S') {
-        _last_stop_reply = "T" + reply.substr(1) + "thread:1;threads:1;";
+        const RegisterSnapshot snapshot = _runtime.registers();
+        std::ostringstream out;
+        out << "T" << reply.substr(1) << "thread:1;threads:1;";
+
+        for (int reg = 0; reg < 16; ++reg) {
+            out << std::hex << reg << ":"
+                << encodeHexU64LE(snapshot.gpr[static_cast<size_t>(reg)]) << ";";
+        }
+        out << std::hex << 16 << ":" << encodeHexU64LE(snapshot.flags) << ";";
+
+        _last_stop_reply = out.str();
         return;
     }
     _last_stop_reply = reply;
+}
+
+void DebugServer::setLastStopReplyWithReason(const std::string& signal_hex, const std::string& reason_key) {
+    if (signal_hex.size() != 2) {
+        setLastStopReply("S05");
+        return;
+    }
+
+    _resume_past_breakpoint_once = false;
+    if (reason_key == "swbreak") {
+        _resume_past_breakpoint_once = true;
+        _resume_breakpoint_pc = _runtime.pc();
+    }
+
+    const RegisterSnapshot snapshot = _runtime.registers();
+    std::ostringstream out;
+    out << "T" << signal_hex << reason_key << ":;thread:1;threads:1;";
+
+    for (int reg = 0; reg < 16; ++reg) {
+        out << std::hex << reg << ":"
+            << encodeHexU64LE(snapshot.gpr[static_cast<size_t>(reg)]) << ";";
+    }
+    out << std::hex << 16 << ":" << encodeHexU64LE(snapshot.flags) << ";";
+
+    _last_stop_reply = out.str();
 }
 
 std::string DebugServer::registerPayload() const {
@@ -493,26 +560,35 @@ std::string DebugServer::targetXml() const {
 <target>
   <architecture>little64</architecture>
   <feature name="org.gnu.gdb.little64.core">
-    <reg name="r0" bitsize="64" regnum="0"/>
-    <reg name="r1" bitsize="64" regnum="1"/>
-    <reg name="r2" bitsize="64" regnum="2"/>
-    <reg name="r3" bitsize="64" regnum="3"/>
-    <reg name="r4" bitsize="64" regnum="4"/>
-    <reg name="r5" bitsize="64" regnum="5"/>
-    <reg name="r6" bitsize="64" regnum="6"/>
-    <reg name="r7" bitsize="64" regnum="7"/>
-    <reg name="r8" bitsize="64" regnum="8"/>
-    <reg name="r9" bitsize="64" regnum="9"/>
-    <reg name="r10" bitsize="64" regnum="10"/>
-    <reg name="r11" bitsize="64" regnum="11"/>
-    <reg name="r12" bitsize="64" regnum="12"/>
-    <reg name="sp" bitsize="64" regnum="13"/>
-    <reg name="lr" bitsize="64" regnum="14"/>
-    <reg name="pc" bitsize="64" regnum="15"/>
-    <reg name="flags" bitsize="64" regnum="16"/>
+        <reg name="r0" bitsize="64" regnum="0" dwarf_regnum="0" ehframe_regnum="0" generic="arg1"/>
+        <reg name="r1" bitsize="64" regnum="1" dwarf_regnum="1" ehframe_regnum="1" generic="arg2"/>
+        <reg name="r2" bitsize="64" regnum="2" dwarf_regnum="2" ehframe_regnum="2" generic="arg3"/>
+        <reg name="r3" bitsize="64" regnum="3" dwarf_regnum="3" ehframe_regnum="3" generic="arg4"/>
+        <reg name="r4" bitsize="64" regnum="4" dwarf_regnum="4" ehframe_regnum="4" generic="arg5"/>
+        <reg name="r5" bitsize="64" regnum="5" dwarf_regnum="5" ehframe_regnum="5" generic="arg6"/>
+        <reg name="r6" bitsize="64" regnum="6" dwarf_regnum="6" ehframe_regnum="6" generic="arg7"/>
+        <reg name="r7" bitsize="64" regnum="7" dwarf_regnum="7" ehframe_regnum="7" generic="arg8"/>
+        <reg name="r8" bitsize="64" regnum="8" dwarf_regnum="8" ehframe_regnum="8"/>
+        <reg name="r9" bitsize="64" regnum="9" dwarf_regnum="9" ehframe_regnum="9"/>
+        <reg name="r10" bitsize="64" regnum="10" dwarf_regnum="10" ehframe_regnum="10"/>
+        <reg name="r11" altname="fp" bitsize="64" regnum="11" dwarf_regnum="11" ehframe_regnum="11" generic="fp"/>
+        <reg name="r12" bitsize="64" regnum="12" dwarf_regnum="12" ehframe_regnum="12"/>
+        <reg name="sp" bitsize="64" regnum="13" dwarf_regnum="13" ehframe_regnum="13" generic="sp"/>
+        <reg name="lr" altname="ra" bitsize="64" regnum="14" dwarf_regnum="14" ehframe_regnum="14" generic="ra"/>
+        <reg name="pc" bitsize="64" regnum="15" dwarf_regnum="15" ehframe_regnum="15" generic="pc"/>
+        <reg name="flags" bitsize="64" regnum="16" dwarf_regnum="16" ehframe_regnum="16" generic="flags"/>
   </feature>
 </target>
 )";
+}
+
+bool DebugServer::findMatchingBreakpoint(uint64_t pc, uint64_t& matched_addr) const {
+    if (_breakpoints.contains(pc)) {
+        matched_addr = pc;
+        return true;
+    }
+
+    return false;
 }
 
 bool DebugServer::parseHexU64(const std::string& text, uint64_t& out) {
@@ -523,6 +599,34 @@ bool DebugServer::parseHexU64(const std::string& text, uint64_t& out) {
     const char* end = text.data() + text.size();
     auto [ptr, ec] = std::from_chars(begin, end, out, 16);
     return ec == std::errc() && ptr == end;
+}
+
+bool DebugServer::emitSerialOutput() {
+    const std::string output = _runtime.drainSerialTx();
+    if (output.empty()) {
+        return true;
+    }
+
+    constexpr size_t kChunkBytes = 256;
+    size_t offset = 0;
+    while (offset < output.size()) {
+        const size_t count = std::min(kChunkBytes, output.size() - offset);
+        std::string payload;
+        payload.reserve(1 + count * 2);
+        payload.push_back('O');
+        for (size_t i = 0; i < count; ++i) {
+            const auto c = static_cast<uint8_t>(output[offset + i]);
+            payload += encodeHexByte(c);
+        }
+
+        if (!_transport.writePacket(payload)) {
+            return false;
+        }
+
+        offset += count;
+    }
+
+    return true;
 }
 
 std::string DebugServer::encodeHexU64LE(uint64_t value) {

@@ -4,7 +4,7 @@ import subprocess
 import tempfile
 import time
 
-ROOT = pathlib.Path(__file__).resolve().parents[2]
+ROOT = pathlib.Path(__file__).resolve().parents[3]
 BIN = ROOT / "compilers" / "bin"
 MC = BIN / "llvm-mc"
 LD = BIN / "ld.lld"
@@ -79,8 +79,8 @@ def main() -> int:
 
             if "Process 1 stopped" not in out:
                 raise RuntimeError(f"missing attach stop marker in LLDB output\n{out}")
-            if "Process 1 exited with status = 0" not in out:
-                raise RuntimeError(f"missing clean exit marker in LLDB output\n{out}")
+            if "Process 1 exited with status = 0" in out:
+                raise RuntimeError(f"unexpected process exit marker in LLDB output\n{out}")
 
             return 0
         finally:

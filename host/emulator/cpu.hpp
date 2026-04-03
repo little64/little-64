@@ -6,7 +6,7 @@
 #include "memory_bus.hpp"
 #include "serial_device.hpp"
 
-class Little64CPU {
+class Little64CPU : public InterruptSink {
 public:
     Little64CPU();
     ~Little64CPU() = default;
@@ -74,18 +74,22 @@ public:
         // The CPU will set/clear bits automatically; setting bits from software causes an interrupt.
         uint64_t interrupt_states;
 
-        // On interrupt, the CPU will perform the following
-        //  -> Set the "in interrupt" bit and disable further interrupts
-        //  -> Copy current PC to interrupt_epc and current flags to interrupt_eflags
-        //  -> In case of a hardware exception, write exception information to interrupt_except
-        //  -> Jump to the handler address looked up from the interrupt table
-        //  The "interrupt_data{0, 1, 2, 3}" registers are available for the handler to store any additional context it needs (e.g. faulting address on a page fault).
-        //  They are not used by the hardware.
+        // Trap information register block.
+        // These are populated by the CPU when an exception is raised.
+        // They are intentionally typed fields to make paging/MMU integration predictable.
+        //   trap_cause      - architecture-defined exception code
+        //   trap_fault_addr - relevant faulting virtual address (if any)
+        //   trap_access     - 0=read, 1=write, 2=execute
+        //   trap_pc         - PC associated with the faulting operation
+        //   trap_aux        - reserved for future architecture-defined metadata
 
         uint64_t interrupt_epc;
         uint64_t interrupt_eflags;
-        uint64_t interrupt_except;
-        uint64_t interrupt_data[4];
+        uint64_t trap_cause;
+        uint64_t trap_fault_addr;
+        uint64_t trap_access;
+        uint64_t trap_pc;
+        uint64_t trap_aux;
 
         uint64_t getSpecialRegister(uint64_t index) const {
             switch (index) {
@@ -95,8 +99,11 @@ public:
                 case 3: return interrupt_states;
                 case 4: return interrupt_epc;
                 case 5: return interrupt_eflags;
-                case 6: return interrupt_except;
-                case 7 ... 10: return interrupt_data[index - 7];
+                case 6: return trap_cause;
+                case 7: return trap_fault_addr;
+                case 8: return trap_access;
+                case 9: return trap_pc;
+                case 10: return trap_aux;
                 default: return 0;
             }
         }
@@ -109,8 +116,11 @@ public:
                 case 3: interrupt_states = value; break;
                 case 4: interrupt_epc = value; break;
                 case 5: interrupt_eflags = value; break;
-                case 6: interrupt_except = value; break;
-                case 7 ... 10: interrupt_data[index - 7] = value; break;
+                case 6: trap_cause = value; break;
+                case 7: trap_fault_addr = value; break;
+                case 8: trap_access = value; break;
+                case 9: trap_pc = value; break;
+                case 10: trap_aux = value; break;
             }
         }
 
@@ -126,9 +136,11 @@ public:
             interrupt_states = 0;
             interrupt_epc = 0;
             interrupt_eflags = 0;
-            interrupt_except = 0;
-            for (int i = 0; i < 4; ++i)
-                interrupt_data[i] = 0;
+            trap_cause = 0;
+            trap_fault_addr = 0;
+            trap_access = 0;
+            trap_pc = 0;
+            trap_aux = 0;
         }
     };
 
@@ -276,9 +288,8 @@ public:
 
     // Assert a hardware interrupt line (sets the bit in interrupt_states).
     // The interrupt will be serviced on the next cycle if enabled and unmasked.
-    void assertInterrupt(uint64_t num) {
-        registers.interrupt_states |= (1ULL << num);
-    }
+    void assertInterrupt(uint64_t num) override;
+    void clearInterrupt(uint64_t num) override;
 
     // Public register state for GUI panels
     Registers registers;
@@ -297,14 +308,29 @@ private:
     bool _raiseInterrupt(uint64_t interrupt_number, bool exception = false,
                          uint64_t epc = UINT64_MAX);
 
-    uint8_t  _readMemory8 (uint64_t addr) const { return _bus.read8(addr);  }
-    void     _writeMemory8(uint64_t addr, uint8_t v)  { _bus.write8(addr, v);  }
-    uint16_t _readMemory16(uint64_t addr) const { return _bus.read16(addr); }
-    void     _writeMemory16(uint64_t addr, uint16_t v) { _bus.write16(addr, v); }
-    uint32_t _readMemory32(uint64_t addr) const { return _bus.read32(addr); }
-    void     _writeMemory32(uint64_t addr, uint32_t v) { _bus.write32(addr, v); }
-    uint64_t _readMemory64(uint64_t addr) const { return _bus.read64(addr); }
-    void     _writeMemory64(uint64_t addr, uint64_t v) { _bus.write64(addr, v); }
+    enum class CpuAccessType : uint8_t {
+        Read = 0,
+        Write = 1,
+        Execute = 2,
+    };
+
+    struct TranslationResult {
+        bool valid = true;
+        uint64_t physical = 0;
+        uint64_t trap_cause = 0;
+    };
+
+    TranslationResult _translateAddress(uint64_t virtual_addr, CpuAccessType access) const;
+    bool _mapAddress(uint64_t virtual_addr, CpuAccessType access, uint64_t operation_pc, uint64_t& physical_out);
+
+    uint8_t  _readMemory8 (uint64_t addr, uint64_t operation_pc, CpuAccessType access = CpuAccessType::Read);
+    void     _writeMemory8(uint64_t addr, uint8_t v, uint64_t operation_pc);
+    uint16_t _readMemory16(uint64_t addr, uint64_t operation_pc, CpuAccessType access = CpuAccessType::Read);
+    void     _writeMemory16(uint64_t addr, uint16_t v, uint64_t operation_pc);
+    uint32_t _readMemory32(uint64_t addr, uint64_t operation_pc, CpuAccessType access = CpuAccessType::Read);
+    void     _writeMemory32(uint64_t addr, uint32_t v, uint64_t operation_pc);
+    uint64_t _readMemory64(uint64_t addr, uint64_t operation_pc, CpuAccessType access = CpuAccessType::Read);
+    void     _writeMemory64(uint64_t addr, uint64_t v, uint64_t operation_pc);
 
     MemoryBus _bus;
     std::vector<Device*> _devices;

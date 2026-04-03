@@ -20,8 +20,11 @@ struct RegisterSnapshot {
     uint64_t interrupt_states = 0;
     uint64_t interrupt_epc = 0;
     uint64_t interrupt_eflags = 0;
-    uint64_t interrupt_except = 0;
-    uint64_t interrupt_data[4]{};
+    uint64_t trap_cause = 0;
+    uint64_t trap_fault_addr = 0;
+    uint64_t trap_access = 0;
+    uint64_t trap_pc = 0;
+    uint64_t trap_aux = 0;
 };
 
 class IEmulatorRuntime {

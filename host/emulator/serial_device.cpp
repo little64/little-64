@@ -1,7 +1,9 @@
 #include "serial_device.hpp"
 
-SerialDevice::SerialDevice(uint64_t base, std::string_view name)
-    : Device(base, 8), _name(name) {}
+SerialDevice::SerialDevice(uint64_t base, std::string_view name, uint64_t irq_line)
+    : Device(base, 8), _name(name) {
+    setInterruptLine(static_cast<int>(irq_line));
+}
 
 void SerialDevice::reset() {
     _tx_buffer.clear();
@@ -12,9 +14,25 @@ void SerialDevice::reset() {
     _scr = 0x00;
     _dll = 0x00;
     _dlm = 0x00;
+    clearInterruptLine();
 }
 
 void SerialDevice::tick() {
+}
+
+void SerialDevice::updateInterruptState() {
+    const bool rx_ready_irq_enabled = (_ier & 0x01) != 0;
+    const bool has_rx_data = !_rx_buffer.empty();
+    if (rx_ready_irq_enabled && has_rx_data) {
+        assertInterruptLine();
+    } else {
+        clearInterruptLine();
+    }
+}
+
+void SerialDevice::pushRxByte(uint8_t byte) {
+    _rx_buffer.push_back(byte);
+    updateInterruptState();
 }
 
 uint8_t SerialDevice::read8(uint64_t addr) {
@@ -25,6 +43,7 @@ uint8_t SerialDevice::read8(uint64_t addr) {
             if (!_rx_buffer.empty()) {
                 uint8_t byte = _rx_buffer.front();
                 _rx_buffer.pop_front();
+                updateInterruptState();
                 return byte;
             }
             return 0x00;
@@ -32,7 +51,10 @@ uint8_t SerialDevice::read8(uint64_t addr) {
             if (dlab) return _dlm;
             return _ier;
         case 2:
-            return 0x01;  // IIR: no interrupt pending
+            if (((_ier & 0x01) != 0) && !_rx_buffer.empty()) {
+                return 0x04;  // IIR: Received Data Available
+            }
+            return 0x01;      // IIR: no interrupt pending
         case 3:
             return _lcr;
         case 4:
@@ -62,6 +84,7 @@ void SerialDevice::write8(uint64_t addr, uint8_t val) {
         case 1:
             if (dlab) { _dlm = val; return; }
             _ier = val;
+            updateInterruptState();
             return;
         case 2:
             return;  // FCR: accepted, ignored

@@ -65,11 +65,11 @@ inline std::vector<DebugRegisterRow> buildRegisterRows(const RegisterSnapshot& r
     rows.push_back({"int_state", regs.interrupt_states, false});
     rows.push_back({"int_epc", regs.interrupt_epc, false});
     rows.push_back({"int_eflg", regs.interrupt_eflags, false});
-    rows.push_back({"int_excp", regs.interrupt_except, false});
-    rows.push_back({"int_dat0", regs.interrupt_data[0], false});
-    rows.push_back({"int_dat1", regs.interrupt_data[1], false});
-    rows.push_back({"int_dat2", regs.interrupt_data[2], false});
-    rows.push_back({"int_dat3", regs.interrupt_data[3], false});
+    rows.push_back({"trap_cau", regs.trap_cause, false});
+    rows.push_back({"trap_vadr", regs.trap_fault_addr, false});
+    rows.push_back({"trap_acc", regs.trap_access, false});
+    rows.push_back({"trap_pc", regs.trap_pc, false});
+    rows.push_back({"trap_aux", regs.trap_aux, false});
 
     return rows;
 }

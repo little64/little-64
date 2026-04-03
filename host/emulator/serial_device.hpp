@@ -20,7 +20,7 @@
 //   +7          SCR (scratch register, r/w)
 class SerialDevice : public Device {
 public:
-    explicit SerialDevice(uint64_t base, std::string_view name = "SERIAL");
+    explicit SerialDevice(uint64_t base, std::string_view name = "SERIAL", uint64_t irq_line = 4);
 
     uint8_t read8(uint64_t addr) override;
     void    write8(uint64_t addr, uint8_t val) override;
@@ -32,9 +32,11 @@ public:
 
     const std::string& txBuffer() const { return _tx_buffer; }
     void clearTxBuffer() { _tx_buffer.clear(); }
-    void pushRxByte(uint8_t byte) { _rx_buffer.push_back(byte); }
+    void pushRxByte(uint8_t byte);
 
 private:
+    void updateInterruptState();
+
     std::string         _name;
     std::string         _tx_buffer;
     std::deque<uint8_t> _rx_buffer;

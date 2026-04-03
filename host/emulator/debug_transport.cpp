@@ -276,7 +276,7 @@ bool TcpRspTransport::pollInterrupt() {
     }
 
     uint8_t byte = 0;
-    const ssize_t n = ::recv(_client_fd, &byte, 1, MSG_DONTWAIT);
+    const ssize_t n = ::recv(_client_fd, &byte, 1, MSG_DONTWAIT | MSG_PEEK);
     if (n == 0) {
         traceRsp("DISCONNECT eof");
         ::close(_client_fd);
@@ -287,7 +287,22 @@ bool TcpRspTransport::pollInterrupt() {
     if (n != 1) {
         return false;
     }
-    return byte == 0x03;
+
+    if (byte == 0x03) {
+        uint8_t consumed = 0;
+        if (::recv(_client_fd, &consumed, 1, MSG_DONTWAIT) != 1) {
+            return false;
+        }
+        traceRsp("RX-INT 0x03 (poll)");
+        return true;
+    }
+
+    if (byte == '+' || byte == '-') {
+        uint8_t consumed = 0;
+        (void)::recv(_client_fd, &consumed, 1, MSG_DONTWAIT);
+    }
+
+    return false;
 }
 
 void TcpRspTransport::setNoAckMode(bool enabled) {

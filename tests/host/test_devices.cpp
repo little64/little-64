@@ -64,10 +64,39 @@ static void test_cpu_reset_resets_devices() {
     CHECK_EQ(serial->txBuffer().empty(), true, "CPU reset propagates to devices");
 }
 
+static void test_serial_rx_interrupt_line() {
+    Little64CPU cpu;
+    cpu.loadProgram(std::vector<uint16_t>{0xDF00}); // STOP
+
+    constexpr uint64_t SERIAL_BASE = 0xFFFFFFFFFFFF0000ULL;
+    constexpr uint64_t SERIAL_IER = SERIAL_BASE + 1;
+    constexpr uint64_t SERIAL_RBR = SERIAL_BASE + 0;
+    constexpr uint64_t SERIAL_IIR = SERIAL_BASE + 2;
+    constexpr uint64_t SERIAL_IRQ_LINE = 4;
+
+    SerialDevice* serial = cpu.getSerial();
+    CHECK_EQ(serial != nullptr, true, "CPU configured serial device for IRQ test");
+    if (!serial) return;
+
+    cpu.getMemoryBus().write8(SERIAL_IER, 0x01);
+    serial->pushRxByte('Q');
+
+    CHECK_EQ((cpu.registers.interrupt_states >> SERIAL_IRQ_LINE) & 1ULL, 1ULL,
+             "Serial RX with IER enabled asserts IRQ line");
+    CHECK_EQ(cpu.getMemoryBus().read8(SERIAL_IIR), 0x04,
+             "IIR reports RX data available interrupt");
+
+    CHECK_EQ(cpu.getMemoryBus().read8(SERIAL_RBR), static_cast<uint8_t>('Q'),
+             "Reading RBR consumes RX byte");
+    CHECK_EQ((cpu.registers.interrupt_states >> SERIAL_IRQ_LINE) & 1ULL, 0ULL,
+             "Serial IRQ line clears when RX FIFO empties");
+}
+
 int main() {
     std::printf("=== Little-64 device framework tests ===\n");
     test_machine_config_registration();
     test_serial_register_behavior_and_reset();
     test_cpu_reset_resets_devices();
+    test_serial_rx_interrupt_line();
     return print_summary();
 }

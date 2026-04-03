@@ -28,6 +28,7 @@ This index is the entry point for project documentation.
 
 - `cleanup-roadmap.md` — active roadmap and deferred items
 - `cleanup-program.md` — execution checklist and acceptance criteria
+- `lldb-arch-roadmap.md` — phased plan for LLDB-native Little64 architecture support
 
 ## Documentation Contract
 

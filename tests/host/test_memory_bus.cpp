@@ -7,6 +7,19 @@
 #include <memory>
 #include <vector>
 
+class NoExecRamRegion : public RamRegion {
+public:
+    NoExecRamRegion(uint64_t base, uint64_t size, std::string_view name)
+        : RamRegion(base, size, name) {}
+
+    bool allows(uint64_t addr, size_t width, MemoryAccessType access) const override {
+        if (!RamRegion::allows(addr, width, access)) {
+            return false;
+        }
+        return access != MemoryAccessType::Execute;
+    }
+};
+
 static void test_unmapped_and_mapping_basics() {
     MemoryBus bus;
     CHECK_EQ(bus.read8(0x1234), 0xFF, "Unmapped reads return 0xFF");
@@ -44,11 +57,32 @@ static void test_rom_is_read_only() {
     CHECK_EQ(bus.read8(0x2000), 0xAA, "ROM writes are ignored");
 }
 
+static void test_execute_access_intent() {
+    MemoryBus bus;
+    bus.addRegion(std::make_unique<RamRegion>(0x3000, 0x10, "RAMX"));
+    bus.write16(0x3000, 0xBEEF);
+
+    CHECK_EQ(bus.read16(0x3000, MemoryAccessType::Execute), 0xBEEF,
+             "Execute access can fetch from executable region");
+}
+
+static void test_execute_permission_denied() {
+    MemoryBus bus;
+    bus.addRegion(std::make_unique<NoExecRamRegion>(0x4000, 0x10, "NOEXEC"));
+    bus.write16(0x4000, 0x1234);
+
+    CHECK_EQ(bus.read16(0x4000), 0x1234, "Normal read still works on no-exec region");
+    CHECK_EQ(bus.read16(0x4000, MemoryAccessType::Execute), 0xFFFF,
+             "Execute access denied falls back to unmapped-read value");
+}
+
 int main() {
     std::printf("=== Little-64 memory bus tests ===\n");
     test_unmapped_and_mapping_basics();
     test_overlap_rejected();
     test_cross_region_fallback();
     test_rom_is_read_only();
+    test_execute_access_intent();
+    test_execute_permission_denied();
     return print_summary();
 }

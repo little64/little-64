@@ -138,10 +138,37 @@ test('debug-rsp-integration',
   timeout : 60,
 )
 
+test('debug-bios-frame-sections',
+  python3,
+  args : [
+    meson.project_source_root() / 'tests/host/debug/test_bios_frame_sections.py',
+  ],
+  suite : ['debug', 'integration'],
+  timeout : 60,
+)
+
 test('debug-lldb-remote-smoke',
   python3,
   args : [
     meson.project_source_root() / 'tests/host/debug/test_lldb_remote_smoke.py',
+  ],
+  suite : ['debug', 'integration', 'lldb'],
+  timeout : 60,
+)
+
+test('debug-lldb-step-over-once',
+  python3,
+  args : [
+    meson.project_source_root() / 'tests/host/debug/test_lldb_step_over_once.py',
+  ],
+  suite : ['debug', 'integration', 'lldb'],
+  timeout : 60,
+)
+
+test('debug-lldb-arch-smoke',
+  python3,
+  args : [
+    meson.project_source_root() / 'tests/host/debug/test_lldb_arch_smoke.py',
   ],
   suite : ['debug', 'integration', 'lldb'],
   timeout : 60,

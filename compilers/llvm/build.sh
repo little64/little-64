@@ -3,8 +3,7 @@
 #
 # LLVM Build Script for Little-64
 #
-# Builds only the tools needed for C/C++ development and debugging:
-#   clang, llc, llvm-objdump, llvm-mc, lld (+ optional lldb/lldb-dap)
+# Builds a broad LLVM/LLDB toolchain for development, debugging, and testing.
 #
 # Usage:
 #   ./build.sh [TARGET] [ACTION]
@@ -18,9 +17,6 @@
 #   ./build.sh little64     # build LLVM tools (TARGET ignored)
 #   ./build.sh "" clean     # clean build artifacts
 #
-# Optional environment flags:
-#   ENABLE_LLDB=1           # build and copy lldb + lldb-dap
-#
 
 set -e
 
@@ -30,29 +26,159 @@ BUILD_DIR="$SCRIPT_DIR/build"
 BIN_OUTPUT_DIR="$SCRIPT_DIR/../bin"
 
 ACTION="${2:-build}"
-ENABLE_LLDB="${ENABLE_LLDB:-0}"
-LLVM_ENABLE_PROJECTS="clang;lld"
+LLVM_ENABLE_PROJECTS="clang;lld;lldb"
 
-# Tools needed for C/C++ work and debugging
-LLVM_TOOLS=(clang llc llvm-objdump llvm-mc lld llvm-readelf llvm-readobj)
-
-# Tools to copy
-COPY_TOOLS=(
+# Broad set of useful tool targets. Some may not exist on every platform/
+# configuration; unavailable targets are filtered out automatically.
+DESIRED_TOOL_TARGETS=(
+    FileCheck
     clang
-    llc
-    llvm-objdump
-    llvm-mc
-    lld
+    clang++
+    clang-cl
+    clang-cpp
+    clang-format
+    clang-tblgen
+    count
     ld.lld
+    ld64.lld
+    llc
+    lld
+    lld-link
+    lldb
+    lldb-argdumper
+    lldb-dap
+    lldb-server
+    lli
+    llvm-ar
+    llvm-as
+    llvm-bcanalyzer
+    llvm-cas
+    llvm-cat
+    llvm-config
+    llvm-cov
+    llvm-cxxfilt
+    llvm-cxxmap
+    llvm-debuginfo-analyzer
+    llvm-debuginfod
+    llvm-debuginfod-find
+    llvm-diff
+    llvm-dis
+    llvm-dwarfdump
+    llvm-link
+    llvm-lit
+    llvm-lto
+    llvm-mc
+    llvm-mca
+    llvm-ml
+    llvm-modextract
+    llvm-nm
+    llvm-objcopy
+    llvm-objdump
+    llvm-opt-report
+    llvm-profdata
+    llvm-profgen
+    llvm-ranlib
+    llvm-rc
     llvm-readelf
     llvm-readobj
+    llvm-readtapi
+    llvm-reduce
+    llvm-size
+    llvm-strings
+    llvm-strip
+    llvm-symbolizer
+    llvm-undname
+    llvm-windres
+    llvm-xray
+    not
+    obj2yaml
+    opt
+    sancov
+    sanstats
+    split-file
+    wasm-ld
+    yaml2obj
 )
 
-if [ "$ENABLE_LLDB" = "1" ]; then
-    LLVM_ENABLE_PROJECTS="clang;lld;lldb"
-    LLVM_TOOLS+=(lldb lldb-dap)
-    COPY_TOOLS+=(lldb lldb-dap)
-fi
+# Tool binaries exported into compilers/bin
+COPY_TOOLS=(
+    FileCheck
+    clang
+    clang++
+    clang-cl
+    clang-cpp
+    clang-format
+    count
+    ld.lld
+    ld64.lld
+    llc
+    lld
+    lld-link
+    lldb
+    lldb-argdumper
+    lldb-dap
+    lldb-server
+    lli
+    llvm-ar
+    llvm-as
+    llvm-bcanalyzer
+    llvm-cas
+    llvm-cat
+    llvm-config
+    llvm-cov
+    llvm-cxxfilt
+    llvm-cxxmap
+    llvm-debuginfo-analyzer
+    llvm-debuginfod
+    llvm-debuginfod-find
+    llvm-diff
+    llvm-dis
+    llvm-dwarfdump
+    llvm-link
+    llvm-lit
+    llvm-lto
+    llvm-objdump
+    llvm-mc
+    llvm-mca
+    llvm-ml
+    llvm-modextract
+    llvm-nm
+    llvm-objcopy
+    llvm-opt-report
+    llvm-profdata
+    llvm-profgen
+    llvm-ranlib
+    llvm-rc
+    llvm-readelf
+    llvm-readobj
+    llvm-readtapi
+    llvm-reduce
+    llvm-size
+    llvm-strings
+    llvm-strip
+    llvm-symbolizer
+    llvm-undname
+    llvm-windres
+    llvm-xray
+    not
+    obj2yaml
+    opt
+    sancov
+    sanstats
+    split-file
+    wasm-ld
+    yaml2obj
+)
+
+target_available() {
+    local target="$1"
+    for available in "${AVAILABLE_TARGETS[@]}"; do
+        if [ "$available" = "$target" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
 
 copy_binary() {
     local src="$1"
@@ -101,7 +227,7 @@ case "$ACTION" in
                 -DCLANG_INCLUDE_DOCS=OFF
         else
             echo "Using existing CMake configuration."
-            if [ "$ENABLE_LLDB" = "1" ] && ! grep -q 'LLVM_ENABLE_PROJECTS:STRING=.*lldb' "$BUILD_DIR/CMakeCache.txt"; then
+            if ! grep -q 'LLVM_ENABLE_PROJECTS:STRING=.*lldb' "$BUILD_DIR/CMakeCache.txt"; then
                 echo "Reconfiguring to enable LLDB project..."
                 cmake -S "$LLVM_SOURCE_DIR" -B "$BUILD_DIR" \
                     -DCMAKE_BUILD_TYPE=RelWithDebInfo \
@@ -116,8 +242,22 @@ case "$ACTION" in
             fi
         fi
 
-        echo "Building tools: ${LLVM_TOOLS[*]}"
-        cmake --build "$BUILD_DIR" --target "${LLVM_TOOLS[@]}" -- -j"$(nproc)"
+        mapfile -t AVAILABLE_TARGETS < <(ninja -C "$BUILD_DIR" -t targets all | awk -F: '{print $1}')
+
+        BUILD_TARGETS=()
+        for tool in "${DESIRED_TOOL_TARGETS[@]}"; do
+            if target_available "$tool"; then
+                BUILD_TARGETS+=("$tool")
+            fi
+        done
+
+        if [ "${#BUILD_TARGETS[@]}" -eq 0 ]; then
+            echo "Error: none of the requested tool targets are available."
+            exit 1
+        fi
+
+        echo "Building tools: ${BUILD_TARGETS[*]}"
+        cmake --build "$BUILD_DIR" --target "${BUILD_TARGETS[@]}" -- -j"$(nproc)"
 
         echo ""
         echo "Copying and stripping binaries to: $BIN_OUTPUT_DIR"
@@ -138,7 +278,7 @@ case "$ACTION" in
             echo "Removed: $BUILD_DIR"
         fi
 
-        for tool in "${LLVM_TOOLS[@]}"; do
+        for tool in "${COPY_TOOLS[@]}"; do
             bin="$BIN_OUTPUT_DIR/$tool"
             if [ -f "$bin" ]; then
                 rm "$bin"
@@ -153,12 +293,10 @@ case "$ACTION" in
         echo ""
         echo "TARGET: accepted for interface compatibility, ignored (always builds Little64)"
         echo "ACTION: 'build' (default) or 'clean'"
-        echo "ENV:    ENABLE_LLDB=1 to build lldb/lldb-dap"
         echo ""
         echo "Examples:"
         echo "  $0              # build LLVM tools"
         echo "  $0 little64     # build LLVM tools"
-        echo "  ENABLE_LLDB=1 $0 # build LLVM tools + lldb/lldb-dap"
         echo "  $0 \"\" clean     # clean build artifacts"
         exit 1
         ;;

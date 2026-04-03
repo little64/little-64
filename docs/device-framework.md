@@ -18,6 +18,7 @@ This document describes how MMIO devices are modeled and integrated.
 
 - `reset()` — deterministic reset behavior
 - `tick()` — per-cycle progression
+- optional interrupt-line wiring via `connectInterruptSink(...)` and `setInterruptLine(...)`
 
 ## `MachineConfig`
 
@@ -26,7 +27,7 @@ This document describes how MMIO devices are modeled and integrated.
 Typical flow:
 
 1. Add RAM/ROM/devices to config.
-2. Call `applyTo(bus, devices)`.
+2. Call `applyTo(bus, devices, interrupt_sink)`.
 3. Runtime uses resulting `MemoryBus` + device list.
 
 ## Runtime Integration Points
@@ -36,6 +37,7 @@ In `Little64CPU`:
 - program/image load builds map through `MachineConfig`,
 - `reset()` cascades to all devices,
 - `cycle()` ticks all devices.
+- configured devices can assert/clear CPU interrupt lines through `InterruptSink`.
 
 ## Adding a New Device
 

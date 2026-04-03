@@ -17,6 +17,7 @@ public:
     void     write32(uint64_t addr, uint32_t val) override;  // no-op
     uint64_t read64(uint64_t addr) override;
     void     write64(uint64_t addr, uint64_t val) override;  // no-op
+    bool     allows(uint64_t addr, size_t width, MemoryAccessType access) const override;
 
     std::string_view name() const override { return _name; }
 

@@ -54,7 +54,7 @@ For compatibility updates:
 | File | Required change |
 |---|---|
 | `host/emulator/device.hpp` | Base lifecycle contract (`reset`, `tick`) |
-| `host/emulator/machine_config.hpp/.cpp` | Machine map registration path |
+| `host/emulator/machine_config.hpp/.cpp` | Machine map registration path (including interrupt sink wiring) |
 | `host/emulator/cpu.cpp` | Runtime wiring if device behavior impacts load/reset/cycle |
 | `host/tools/new_device.py` | Scaffold hints/messages when integration path changes |
 | `docs/device-framework.md` | Update extension workflow |

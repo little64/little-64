@@ -1,5 +1,22 @@
 #include "memory_region.hpp"
 
+#include <limits>
+
+bool MemoryRegion::allows(uint64_t addr, size_t width, MemoryAccessType /*access*/) const {
+    if (width == 0) {
+        return false;
+    }
+    if (addr < _base) {
+        return false;
+    }
+    const uint64_t max_width = std::numeric_limits<uint64_t>::max() - addr;
+    if (width - 1 > max_width) {
+        return false;
+    }
+    const uint64_t end_addr = addr + static_cast<uint64_t>(width) - 1;
+    return end_addr < end();
+}
+
 uint16_t MemoryRegion::read16(uint64_t addr) {
     return static_cast<uint16_t>(read8(addr)) |
            (static_cast<uint16_t>(read8(addr + 1)) << 8);

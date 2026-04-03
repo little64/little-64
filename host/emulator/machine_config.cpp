@@ -31,22 +31,34 @@ MachineConfig& MachineConfig::addRom(uint64_t base, std::vector<uint8_t> data, s
     });
 }
 
+MachineConfig& MachineConfig::addDevice(DeviceFactory factory) {
+    _device_factories.push_back(std::move(factory));
+    return *this;
+}
+
 MachineConfig& MachineConfig::addSerial(uint64_t base, std::string_view name) {
     std::string region_name(name);
-    return addRegion([base, region_name]() {
+    return addDevice([base, region_name]() {
         return std::make_unique<SerialDevice>(base, region_name);
     });
 }
 
-void MachineConfig::applyTo(MemoryBus& bus, std::vector<Device*>& devices) const {
+void MachineConfig::applyTo(MemoryBus& bus, std::vector<Device*>& devices, InterruptSink* interrupt_sink) const {
     bus.clearRegions();
     devices.clear();
 
     for (const auto& factory : _region_factories) {
         std::unique_ptr<MemoryRegion> region = factory();
-        if (auto* dev = dynamic_cast<Device*>(region.get())) {
-            devices.push_back(dev);
+        bus.addRegion(std::move(region));
+    }
+
+    for (const auto& factory : _device_factories) {
+        std::unique_ptr<Device> device = factory();
+        if (interrupt_sink) {
+            device->connectInterruptSink(interrupt_sink);
         }
+        devices.push_back(device.get());
+        std::unique_ptr<MemoryRegion> region(std::move(device));
         bus.addRegion(std::move(region));
     }
 }

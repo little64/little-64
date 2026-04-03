@@ -171,6 +171,23 @@ static void test_iret() {
 }
 
 // ---------------------------------------------------------------------------
+// Execute translation fault (alignment) populates trap record
+// ---------------------------------------------------------------------------
+static void test_execute_alignment_fault_trap_record() {
+    Little64CPU cpu;
+    cpu.loadProgram(std::vector<uint16_t>{0xDF00}); // STOP
+
+    cpu.registers.regs[15] = 1; // force odd PC for execute fetch
+    cpu.cycle();
+
+    CHECK_FALSE(cpu.isRunning, "Execute alignment fault halts when exceptions cannot be handled");
+    CHECK_EQ(cpu.registers.trap_cause, 62ULL, "Trap cause records execute alignment exception");
+    CHECK_EQ(cpu.registers.trap_fault_addr, 1ULL, "Trap fault address stores offending virtual address");
+    CHECK_EQ(cpu.registers.trap_access, 2ULL, "Trap access stores execute access kind");
+    CHECK_EQ(cpu.registers.trap_pc, 1ULL, "Trap PC stores faulting PC");
+}
+
+// ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 int main() {
@@ -180,5 +197,6 @@ int main() {
     std::printf("LSR\n");               test_lsr();
     std::printf("SSR\n");               test_ssr();
     std::printf("IRET\n");              test_iret();
+    std::printf("Execute alignment trap\n"); test_execute_alignment_fault_trap_record();
     return print_summary();
 }

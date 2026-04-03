@@ -44,8 +44,11 @@ RegisterSnapshot EmulatorSession::registers() const {
     snapshot.interrupt_states = _cpu.registers.interrupt_states;
     snapshot.interrupt_epc = _cpu.registers.interrupt_epc;
     snapshot.interrupt_eflags = _cpu.registers.interrupt_eflags;
-    snapshot.interrupt_except = _cpu.registers.interrupt_except;
-    std::memcpy(snapshot.interrupt_data, _cpu.registers.interrupt_data, sizeof(snapshot.interrupt_data));
+    snapshot.trap_cause = _cpu.registers.trap_cause;
+    snapshot.trap_fault_addr = _cpu.registers.trap_fault_addr;
+    snapshot.trap_access = _cpu.registers.trap_access;
+    snapshot.trap_pc = _cpu.registers.trap_pc;
+    snapshot.trap_aux = _cpu.registers.trap_aux;
     return snapshot;
 }
 

@@ -35,3 +35,10 @@ uint64_t RomRegion::read64(uint64_t addr) {
 }
 
 void RomRegion::write64(uint64_t /*addr*/, uint64_t /*val*/) {}
+
+bool RomRegion::allows(uint64_t addr, size_t width, MemoryAccessType access) const {
+    if (!MemoryRegion::allows(addr, width, access)) {
+        return false;
+    }
+    return access != MemoryAccessType::Write;
+}
