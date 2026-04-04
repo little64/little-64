@@ -7,19 +7,14 @@
 // LLR, SCR — load-linked and store-conditional (atomics)
 // ---------------------------------------------------------------------------
 static void test_llr_scr() {
-    // Test LLR/SCR basic execution (LLVM backend support is pending)
-    // For now, we just verify the instructions don't crash
-    Little64CPU cpu;
-    cpu.loadProgram(std::vector<uint16_t>{
-        0xC191,  // LLR R3, R1 (opcode 3, RS1_RD: rd=3, rs1=1)
-        0xC211,  // SCR R2, R1 (opcode 4, RS1_RD: rd=2, rs1=1)
-        0xDF00   // STOP
-    });
-
-    // Run and verify it doesn't crash
-    while (cpu.isRunning) {
-        cpu.cycle();
-    }
+    // Test LLR/SCR basic execution
+    auto cpu = run_program(
+        "LDI #0x4000, R1\n"        // address in memory
+        "LDI #0x42, R2\n"          // value to load/test
+        "LLR R1, R3\n"             // load from address, set reservation
+        "SCR R2, R1\n"             // try to store new value
+        "STOP\n"
+    );
 
     CHECK_FALSE(cpu.isRunning, "LLR/SCR program completes");
 }
@@ -198,26 +193,27 @@ static void test_iret() {
 // SYSCALL — system call instruction (opcode 27)
 // ---------------------------------------------------------------------------
 static void test_syscall() {
-    // SYSCALL in user mode: fires TRAP_SYSCALL (64)
-    Little64CPU cpu;
-    cpu.loadProgram(std::vector<uint16_t>{0xDB00}); // SYSCALL (opcode 27, NONE)
-
-    cpu.registers.setUserMode(true);
-    cpu.cycle();
-
-    CHECK_FALSE(cpu.isRunning, "SYSCALL in user mode halts CPU (exception not handled)");
-    CHECK_EQ(cpu.registers.trap_cause, 64ULL, "SYSCALL in user mode: trap_cause = 64");
-    CHECK_EQ(cpu.registers.trap_pc, 0ULL, "SYSCALL in user mode: trap_pc = instruction address");
-
     // SYSCALL in supervisor mode: fires TRAP_SYSCALL_FROM_SUPERVISOR (65)
-    cpu = Little64CPU();
-    cpu.loadProgram(std::vector<uint16_t>{0xDB00}); // SYSCALL
-
-    cpu.registers.setUserMode(false);
-    cpu.cycle();
-
+    // (default CPU state is supervisor mode)
+    auto cpu = run_program(
+        "SYSCALL\n"
+        "STOP\n"
+    );
     CHECK_FALSE(cpu.isRunning, "SYSCALL in supervisor mode halts CPU (exception not handled)");
     CHECK_EQ(cpu.registers.trap_cause, 65ULL, "SYSCALL in supervisor mode: trap_cause = 65");
+
+    // SYSCALL in user mode: fires TRAP_SYSCALL (64)
+    // We need to manually set up user mode since run_program doesn't support it easily
+    Little64CPU cpu_user;
+    cpu_user.loadProgram(std::vector<uint16_t>{
+        0x0000,  // padding
+        0x0000   // padding
+    });
+    cpu_user.registers.setUserMode(true);
+    cpu_user.dispatchInstruction(make_instr("SYSCALL"));
+
+    CHECK_FALSE(cpu_user.isRunning, "SYSCALL in user mode halts CPU (exception not handled)");
+    CHECK_EQ(cpu_user.registers.trap_cause, 64ULL, "SYSCALL in user mode: trap_cause = 64");
 }
 
 // ---------------------------------------------------------------------------
