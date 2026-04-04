@@ -8,6 +8,12 @@ Little-64 is a 64-bit ISA project with:
 - debug-server support (GDB RSP subset),
 - optional ImGui and Qt frontends.
 
+## Cloning
+
+Clone the `llvm-project` submodule as well. There is a wired-up `lily-cc` submodule as well, but I haven't written any working backend for it yet, and to be honest, will be using LLVM mostly anyway.
+
+LLVM is required for the tests as well. Compile it with `bash compilers/build.sh llvm` first. This will take a while.
+
 ## Quick Start
 
 ### 1) Configure and build

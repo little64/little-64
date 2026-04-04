@@ -36,7 +36,7 @@ DESIRED_TOOL_TARGETS=(
     clang++
     clang-cl
     clang-cpp
-    clang-format
+    # clang-format
     clang-tblgen
     count
     ld.lld
@@ -107,7 +107,7 @@ COPY_TOOLS=(
     clang++
     clang-cl
     clang-cpp
-    clang-format
+    # clang-format
     count
     ld.lld
     ld64.lld
