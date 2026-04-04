@@ -94,3 +94,8 @@ When behavior changes, update docs in the same change:
 2. Update syntax docs for LLVM assembly behavior changes.
 3. Update `CLAUDE.md` when contributor workflows or touched-file rules change.
 4. Run `meson test -C builddir --print-errorlogs` before finalizing documentation that includes command examples.
+
+## Clanker warning
+
+LLMs were used when developing this, but mostly for the LLVM port.
+LLMs were used in other places as well, but the code was a lot more reviewed there than in the LLVM target.
