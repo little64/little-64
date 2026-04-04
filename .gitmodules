@@ -6,4 +6,4 @@
 	url = https://github.com/robotman2412/lily-cc.git
 [submodule "compilers/llvm/llvm-project"]
 	path = compilers/llvm/llvm-project
-	url = ./compilers/llvm/llvm-project
+	url = https://github.com/little64/llvm-port.git
