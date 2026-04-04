@@ -41,3 +41,15 @@ custom_target('compat-little-64-debug-root',
   command : [ln_prog, '-sf', '@INPUT@', '@OUTPUT@'],
   build_by_default : true,
 )
+
+docs_src = meson.project_source_root() / 'docs/sphinx'
+docs_out = meson.project_source_root() / 'docs/_build/html'
+sphinx_build = find_program(
+  '.venv-docs/bin/sphinx-build',
+  '.venv/bin/sphinx-build',
+  'sphinx-build',
+)
+
+run_target('docs',
+  command : [sphinx_build, '-n', '-W', '-b', 'html', docs_src, docs_out],
+)

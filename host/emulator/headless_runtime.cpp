@@ -144,7 +144,10 @@ bool loadRelocatableElf(IEmulatorRuntime& runtime, const std::vector<uint8_t>& b
 
 } // namespace
 
-bool loadRuntimeImageFromPath(IEmulatorRuntime& runtime, const std::string& path, std::string& error) {
+bool loadRuntimeImageFromPath(IEmulatorRuntime& runtime,
+                              const std::string& path,
+                              std::string& error,
+                              const HeadlessLoadOptions& options) {
     std::ifstream file(path, std::ios::binary);
     if (!file.is_open()) {
         error = "Error: cannot open '" + path + "'";
@@ -169,7 +172,13 @@ bool loadRuntimeImageFromPath(IEmulatorRuntime& runtime, const std::string& path
 
     uint16_t e_type = read_u16(bytes, 0x10);
     if (e_type == 2 || e_type == 3) {
-        if (!runtime.loadProgramElf(bytes)) {
+        const bool use_direct = (options.boot_mode == HeadlessBootMode::Direct);
+        const bool loaded = use_direct
+            ? runtime.loadProgramElfDirectPaged(bytes,
+                                               options.direct_kernel_physical_base,
+                                               options.direct_map_virtual_base)
+            : runtime.loadProgramElf(bytes);
+        if (!loaded) {
             error = "Error: failed to load ELF executable";
             return false;
         }

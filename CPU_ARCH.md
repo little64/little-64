@@ -56,6 +56,11 @@ Current index map (from `cpu.hpp`):
 | 8 | `trap_access` |
 | 9 | `trap_pc` |
 | 10 | `trap_aux` |
+| 11 | `page_table_root_physical` |
+| 12 | `boot_info_frame_physical` |
+| 13 | `boot_source_page_size` |
+| 14 | `boot_source_page_count` |
+| 15 | `hypercall_caps` |
 
 ## Instruction Encoding Overview
 
@@ -95,7 +100,7 @@ Notes:
 
 - LS opcodes are shared between format `00` and format `01`.
 - Behavior may differ by format and must be implemented/tested in both `_dispatchLSReg` and `_dispatchLSPCRel`.
-- JUMP instructions always use R15 as the target when doing PC-relative jumps. The 4 Rs1 bits are instead used to extend the PC-relative range by acting as the lower 4 bits, rather than a register index. 
+- For PC-relative JUMPs, `R15` is always the target. The low 4 bits in that encoding extend offset range instead of selecting a register.
 
 ## GP Opcode Space (format `110`)
 
@@ -136,9 +141,9 @@ Current convention used by project examples/tooling:
 
 Treat this as project ABI convention, not a formally versioned external ABI yet.
 
-## Change Checklist
+## Maintenance Checklist
 
-When adding/changing an instruction:
+When adding or changing an instruction:
 
 1. Update `host/arch/opcodes_*.def` if opcode metadata changes.
 2. Update emulator dispatch logic in `host/emulator/cpu.cpp`.
@@ -146,10 +151,8 @@ When adding/changing an instruction:
 4. Add or update tests under `tests/`.
 5. Update `docs/assembly-syntax.md` and this file.
 
-## Update Checklist
-
 Before merging architecture changes:
 
 - run `meson compile -C builddir`,
 - run `meson test -C builddir --print-errorlogs`,
-- verify opcode docs still match `host/arch/opcodes_ls.def` and `host/arch/opcodes_gp.def`.
+- verify opcode docs match `host/arch/opcodes_ls.def` and `host/arch/opcodes_gp.def`.

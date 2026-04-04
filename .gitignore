@@ -20,3 +20,5 @@ compilers/llvm/build
 
 *.elf
 .venv/
+.venv-docs/
+docs/_build/

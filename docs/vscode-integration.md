@@ -79,7 +79,7 @@ If stepping into BIOS helpers (for example `mix_debug_value`) shows assembly but
 
 For CLI LLDB sessions, the equivalent command is:
 
-```lldb
+```text
 settings append target.source-map target/c_boot /home/<user>/projects/little-64/target/c_boot
 ```
 
@@ -88,18 +88,8 @@ settings append target.source-map target/c_boot /home/<user>/projects/little-64/
 - LLDB-native architecture support for Little-64 remains incomplete.
 - Emulator virtual breakpoints (`Z0`/`z0`) are the stable path today.
 - Full implementation plan is tracked in `docs/lldb-arch-roadmap.md`.
-
-Current implemented LLDB-native foundation includes:
-
-- `ArchSpec` recognition for `little64` + ELF machine mapping,
-- LLDB Architecture plugin scaffold (`Architecture/Little64`),
-- LLDB ABI plugin scaffold with initial unwind + integer/pointer return handling (`ABI/Little64`).
-
-Remaining high-value work is full source-level stack/locals fidelity and robust `GetArgumentValues`/advanced return semantics.
-
-Current ABI fallback unwinding in LLDB assumes frame-pointer debug builds (for example `-fno-omit-frame-pointer`) and Little64's current prologue shape; optimized/no-frame-pointer code paths may still produce incomplete `step out`/backtrace behavior.
-
-Manual BIOS validation still reproduces `thread step-out` failure in some call sites (`Could not create return address breakpoint`), so step-out is not yet fully reliable even though remote attach/continue smoke tests pass.
+- Implemented foundation includes `ArchSpec` recognition, an Architecture plugin scaffold, and an ABI plugin scaffold.
+- Current fallback unwinding assumes frame-pointer debug builds (for example `-fno-omit-frame-pointer`); optimized/no-frame-pointer paths can still degrade backtrace and `thread step-out` reliability.
 
 ## Update Checklist
 

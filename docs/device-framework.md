@@ -12,7 +12,7 @@ This document describes how MMIO devices are modeled and integrated.
 
 ## Core Model
 
-## `Device`
+### `Device`
 
 `Device` extends `MemoryRegion` and adds lifecycle hooks:
 
@@ -20,7 +20,7 @@ This document describes how MMIO devices are modeled and integrated.
 - `tick()` — per-cycle progression
 - optional interrupt-line wiring via `connectInterruptSink(...)` and `setInterruptLine(...)`
 
-## `MachineConfig`
+### `MachineConfig`
 
 `MachineConfig` is the declarative wiring layer for memory regions and devices.
 

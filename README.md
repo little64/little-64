@@ -41,7 +41,7 @@ meson test -C builddir --print-errorlogs
 | `builddir/little-64-gui` | ImGui frontend |
 | `builddir/little-64-qt` | Qt frontend (if Qt detected/enabled) |
 
-Assembly to object code is performed through `compilers/bin/llvm-mc` (see `host/project/llvm_assembler.*`).
+Assembly to object code uses `compilers/bin/llvm-mc` (see `host/project/llvm_assembler.*`).
 
 ## Repository Layout
 
@@ -67,9 +67,9 @@ Meson files are modularized by subsystem:
   - `host/gui/meson.build`
   - `host/qt/meson.build`
 
-## Documentation Map
+## Documentation
 
-Start at `docs/README.md` for the full index.
+Start with `docs/README.md` for the full index.
 
 Key docs:
 
@@ -86,7 +86,7 @@ Key docs:
 
 Do not merge or restructure these trees as part of normal project cleanup.
 
-## Documentation Maintenance Rule
+## Documentation Maintenance
 
 When behavior changes, update docs in the same change:
 

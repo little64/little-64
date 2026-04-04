@@ -4,14 +4,14 @@ This document defines module boundaries and allowed dependencies.
 
 ## Runtime Boundary
 
-## Public runtime interface
+### Public runtime interface
 
 - `host/emulator/frontend_api.hpp`
   - `IEmulatorRuntime`
   - `RegisterSnapshot`
   - `MemoryRegionView`
 
-## Facade implementation
+### Facade implementation
 
 - `host/emulator/emulator_session.hpp/.cpp`
 
@@ -19,17 +19,17 @@ Frontend and tooling code should prefer `IEmulatorRuntime`/`EmulatorSession` ove
 
 ## Execution Paths
 
-## Headless emulator
+### Headless emulator
 
 - Entry: `host/emulator/main.cpp`
 - Shared helpers: `host/emulator/headless_runtime.hpp/.cpp`
 
-## Debug server
+### Debug server
 
 - Entry: `host/emulator/debug_main.cpp`
 - Server/transport: `host/emulator/debug_server.*`, `host/emulator/debug_transport.*`
 
-## Frontends
+### Frontends
 
 - ImGui frontend: `host/gui/`
 - Qt frontend: `host/qt/`
@@ -60,6 +60,7 @@ Top-level orchestration in `meson.build`, per-subsystem ownership in:
 2. Tool CLIs should use subsystem library APIs instead of duplicating logic.
 3. Device registration/wiring must flow through `MachineConfig`.
 4. Tests may reach internal APIs when needed but should prefer public surfaces first.
+5. Translation internals (TLB/radix walker choices) must remain behind CPU translation boundaries defined in `docs/paging-v1.md`.
 
 ## Compatibility Rule
 

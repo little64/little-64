@@ -1,6 +1,6 @@
 # Little-64 Assembly Syntax
 
-This document defines the assembly workflow used by Little-64.
+This document defines the Little-64 assembly workflow.
 
 ## Source of Truth
 
@@ -9,7 +9,7 @@ This document defines the assembly workflow used by Little-64.
 - Project assembly wrapper: `host/project/llvm_assembler.cpp`
 - ISA semantics: `../CPU_ARCH.md`
 
-If this document and `llvm-mc` behavior disagree, `llvm-mc` is authoritative.
+If this document and `llvm-mc` behavior differ, `llvm-mc` is authoritative.
 
 ## Standard Workflow
 
@@ -30,7 +30,7 @@ For multi-object linking into flat binary words:
 
 ## Supported Core Forms
 
-The LLVM Little-64 backend supports the core ISA instruction forms used by runtime and linker tests:
+The LLVM Little-64 backend supports the core ISA forms used by runtime and linker tests:
 
 - `LDI`, `LDI.S1`, `LDI.S2`, `LDI.S3`
 - GP ops (`ADD`, `SUB`, `AND`, `OR`, `TEST`, `STOP`, etc.)
@@ -40,9 +40,9 @@ The LLVM Little-64 backend supports the core ISA instruction forms used by runti
 
 ## Legacy Compatibility Notes
 
-Historical custom-assembler pseudo/informal forms like `LDI64`, `CALL`, `JAL`, `RET`, `PUSH`/`POP` textual forms, and `MOVE Rn+imm` are not guaranteed as direct `llvm-mc` syntax.
+Legacy pseudo-forms such as `LDI64`, `CALL`, `JAL`, `RET`, textual `PUSH`/`POP`, and `MOVE Rn+imm` are not guaranteed as direct `llvm-mc` syntax.
 
-Current CPU tests keep legacy source readability through compatibility preprocessing in `tests/support/cpu_test_helpers.hpp`, which rewrites those forms into LLVM-compatible code before assembly.
+CPU tests preserve legacy readability via compatibility preprocessing in `tests/support/cpu_test_helpers.hpp`, which rewrites these forms into LLVM-compatible code before assembly.
 
 That compatibility path is test-only and not a CLI contract.
 

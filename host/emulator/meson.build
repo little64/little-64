@@ -1,4 +1,5 @@
 core_emulator_src = [
+  'address_translator.cpp',
   'cpu.cpp',
   'debug_server.cpp',
   'debug_transport.cpp',
@@ -6,6 +7,7 @@ core_emulator_src = [
   'headless_runtime.cpp',
   'machine_config.cpp',
   'memory_region.cpp',
+  'page_table_builder.cpp',
   'memory_bus.cpp',
   'ram_region.cpp',
   'rom_region.cpp',

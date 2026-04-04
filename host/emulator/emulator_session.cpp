@@ -10,6 +10,12 @@ bool EmulatorSession::loadProgramElf(const std::vector<uint8_t>& elf_bytes, uint
     return _cpu.loadProgramElf(elf_bytes, base);
 }
 
+bool EmulatorSession::loadProgramElfDirectPaged(const std::vector<uint8_t>& elf_bytes,
+                                                uint64_t kernel_physical_base,
+                                                uint64_t direct_map_virtual_base) {
+    return _cpu.loadProgramElfDirectPaged(elf_bytes, kernel_physical_base, direct_map_virtual_base);
+}
+
 void EmulatorSession::cycle() {
     _cpu.cycle();
 }
@@ -49,6 +55,11 @@ RegisterSnapshot EmulatorSession::registers() const {
     snapshot.trap_access = _cpu.registers.trap_access;
     snapshot.trap_pc = _cpu.registers.trap_pc;
     snapshot.trap_aux = _cpu.registers.trap_aux;
+    snapshot.page_table_root_physical = _cpu.registers.page_table_root_physical;
+    snapshot.boot_info_frame_physical = _cpu.registers.boot_info_frame_physical;
+    snapshot.boot_source_page_size = _cpu.registers.boot_source_page_size;
+    snapshot.boot_source_page_count = _cpu.registers.boot_source_page_count;
+    snapshot.hypercall_caps = _cpu.registers.hypercall_caps;
     return snapshot;
 }
 

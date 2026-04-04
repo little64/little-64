@@ -1,6 +1,7 @@
 #include "cpu.hpp"
 #include "machine_config.hpp"
 #include "opcodes.hpp"
+#include "page_table_builder.hpp"
 #include "ram_region.hpp"
 #include <memory>
 #include <algorithm>
@@ -14,6 +15,31 @@
 
 Little64CPU::Little64CPU() {
 }
+
+namespace {
+
+struct CpuPageAllocator : public PageTableBuilder::Allocator {
+    explicit CpuPageAllocator(Little64CPU& cpu_ref) : cpu(cpu_ref) {}
+
+    bool allocatePage(uint64_t& out_physical_page) override {
+        return cpu._allocatePageTablePage(out_physical_page);
+    }
+
+    Little64CPU& cpu;
+};
+
+constexpr uint64_t HYPERCALL_MEMINFO = 1;
+constexpr uint64_t HYPERCALL_GET_BOOT_SOURCE_INFO = 2;
+constexpr uint64_t HYPERCALL_READ_BOOT_SOURCE_PAGES = 3;
+
+constexpr uint64_t HYPERCALL_STATUS_OK = 0;
+constexpr uint64_t HYPERCALL_STATUS_INVALID = 1;
+constexpr uint64_t HYPERCALL_STATUS_UNSUPPORTED = 2;
+constexpr uint64_t HYPERCALL_STATUS_RANGE = 3;
+
+constexpr uint64_t HYPERCALL_CAP_MINIMAL_BOOT = 1;
+
+} // namespace
 
 void Little64CPU::reset() {
     registers = {};
@@ -355,6 +381,9 @@ void Little64CPU::_dispatchGP(const Instruction& instr) {
         case GP::Opcode::SSR: {
             // Store special register
             registers.setSpecialRegister(b, a);
+            if (b == 15) {
+                _executeHypercall();
+            }
             break;
         }
 
@@ -379,18 +408,23 @@ void Little64CPU::_dispatchGP(const Instruction& instr) {
 }
 
 Little64CPU::TranslationResult Little64CPU::_translateAddress(uint64_t virtual_addr, CpuAccessType access) const {
-    if (access == CpuAccessType::Execute && (virtual_addr & 0x1ULL)) {
-        return TranslationResult{
-            .valid = false,
-            .physical = 0,
-            .trap_cause = 62,
-        };
+    PagingAccessType paging_access = PagingAccessType::Read;
+    switch (access) {
+        case CpuAccessType::Read: paging_access = PagingAccessType::Read; break;
+        case CpuAccessType::Write: paging_access = PagingAccessType::Write; break;
+        case CpuAccessType::Execute: paging_access = PagingAccessType::Execute; break;
     }
 
+    const PagingConfig cfg{
+        .enabled = registers.isPagingEnabled(),
+        .root_table_physical = registers.page_table_root_physical,
+    };
+    const PagingTranslateResult translated = _translator.translate(_bus, cfg, virtual_addr, paging_access);
     return TranslationResult{
-        .valid = true,
-        .physical = virtual_addr,
-        .trap_cause = 0,
+        .valid = translated.valid,
+        .physical = translated.physical,
+        .trap_cause = translated.trap_cause,
+        .trap_aux = translated.trap_aux,
     };
 }
 
@@ -405,10 +439,96 @@ bool Little64CPU::_mapAddress(uint64_t virtual_addr, CpuAccessType access, uint6
     registers.trap_fault_addr = virtual_addr;
     registers.trap_access = static_cast<uint64_t>(access);
     registers.trap_pc = operation_pc;
-    registers.trap_aux = 0;
+    registers.trap_aux = result.trap_aux;
 
     _raiseInterrupt(result.trap_cause, true, operation_pc);
     return false;
+}
+
+bool Little64CPU::_allocatePageTablePage(uint64_t& out_page) {
+    constexpr uint64_t PAGE = 4096;
+    if (_mem_size < PAGE || _page_table_alloc_cursor < (_mem_base + PAGE)) {
+        return false;
+    }
+
+    _page_table_alloc_cursor -= PAGE;
+    if (_page_table_alloc_cursor < _mem_base || _page_table_alloc_cursor + PAGE > _mem_base + _mem_size) {
+        return false;
+    }
+
+    out_page = _page_table_alloc_cursor;
+    for (uint64_t off = 0; off < PAGE; off += 8) {
+        _bus.write64(out_page + off, 0, MemoryAccessType::Write);
+    }
+    return true;
+}
+
+void Little64CPU::_executeHypercall() {
+    const uint64_t service = registers.regs[1];
+    registers.regs[1] = HYPERCALL_STATUS_UNSUPPORTED;
+
+    switch (service) {
+        case HYPERCALL_MEMINFO:
+            registers.regs[1] = HYPERCALL_STATUS_OK;
+            registers.regs[2] = _mem_base;
+            registers.regs[3] = _mem_size;
+            registers.regs[4] = 0xFFFFFFFFFFFF0000ULL;
+            registers.regs[5] = HYPERCALL_CAP_MINIMAL_BOOT;
+            break;
+        case HYPERCALL_GET_BOOT_SOURCE_INFO:
+            if (registers.regs[2] != 0) {
+                registers.regs[1] = HYPERCALL_STATUS_INVALID;
+                break;
+            }
+            registers.regs[1] = HYPERCALL_STATUS_OK;
+            registers.regs[2] = 1; // paged source
+            registers.regs[3] = registers.boot_source_page_size;
+            registers.regs[4] = registers.boot_source_page_count;
+            registers.regs[5] = 0;
+            break;
+        case HYPERCALL_READ_BOOT_SOURCE_PAGES: {
+            const uint64_t start_page = registers.regs[2];
+            const uint64_t page_count = registers.regs[3];
+            const uint64_t dst_phys = registers.regs[4];
+            const uint64_t source_selector = registers.regs[5];
+
+            if (source_selector != 0 || registers.boot_source_page_size == 0) {
+                registers.regs[1] = HYPERCALL_STATUS_INVALID;
+                break;
+            }
+
+            const uint64_t page_size = registers.boot_source_page_size;
+            const uint64_t total_pages = registers.boot_source_page_count;
+            if (start_page >= total_pages || page_count == 0 || start_page + page_count > total_pages) {
+                registers.regs[1] = HYPERCALL_STATUS_RANGE;
+                registers.regs[2] = 0;
+                break;
+            }
+
+            uint64_t copied_pages = 0;
+            for (uint64_t p = 0; p < page_count; ++p) {
+                const uint64_t source_page = start_page + p;
+                const uint64_t source_off = source_page * page_size;
+                const uint64_t dest_off = dst_phys + p * page_size;
+
+                for (uint64_t i = 0; i < page_size; ++i) {
+                    const uint64_t index = source_off + i;
+                    if (index >= _boot_source_bytes.size()) {
+                        break;
+                    }
+                    _bus.write8(dest_off + i, _boot_source_bytes[static_cast<size_t>(index)], MemoryAccessType::Write);
+                }
+                ++copied_pages;
+            }
+
+            registers.regs[1] = HYPERCALL_STATUS_OK;
+            registers.regs[2] = copied_pages;
+            break;
+        }
+        default:
+            registers.regs[1] = HYPERCALL_STATUS_UNSUPPORTED;
+            break;
+    }
 }
 
 uint8_t Little64CPU::_readMemory8(uint64_t addr, uint64_t operation_pc, CpuAccessType access) {
@@ -533,7 +653,14 @@ bool Little64CPU::loadProgramElf(const std::vector<uint8_t>& elf_bytes, uint64_t
          .addSerial(SERIAL_BASE, "SERIAL");
      cfg.applyTo(_bus, _devices, this);
 
+    _mem_base = base_addr;
+    _mem_size = total_ram;
+    _page_table_alloc_cursor = _mem_base + _mem_size;
+
     registers = {};
+    registers.boot_source_page_size = 4096;
+    registers.boot_source_page_count = (_boot_source_bytes.size() + 4095ULL) / 4096ULL;
+    registers.hypercall_caps = HYPERCALL_CAP_MINIMAL_BOOT;
     registers.regs[13] = base_addr + total_ram - 8;
     registers.regs[15] = ehdr->e_entry;
     isRunning = true;
@@ -567,13 +694,152 @@ void Little64CPU::loadProgram(const std::vector<uint16_t>& words, uint64_t base,
          .addSerial(SERIAL_BASE, "SERIAL");
      cfg.applyTo(_bus, _devices, this);
 
+    _mem_base = base;
+    _mem_size = total_size;
+    _page_table_alloc_cursor = _mem_base + _mem_size;
+
     // Reset CPU state.
     registers = {};
+    registers.boot_source_page_size = 4096;
+    registers.boot_source_page_count = (_boot_source_bytes.size() + 4095ULL) / 4096ULL;
+    registers.hypercall_caps = HYPERCALL_CAP_MINIMAL_BOOT;
     // R13 is the stack pointer.  Initialise it to the top of the memory region
     // (stacks grow downward) so that C/C++ function prologues work correctly.
     registers.regs[13] = base + total_size - 8;
     registers.regs[15] = base + entry_offset;
     isRunning = true;
+}
+
+bool Little64CPU::loadProgramElfDirectPaged(const std::vector<uint8_t>& elf_bytes,
+                                            uint64_t kernel_physical_base,
+                                            uint64_t direct_map_virtual_base) {
+    if (elf_bytes.size() < sizeof(Elf64_Ehdr)) {
+        return false;
+    }
+
+    const Elf64_Ehdr* ehdr = reinterpret_cast<const Elf64_Ehdr*>(elf_bytes.data());
+    if (ehdr->e_ident[EI_MAG0] != ELFMAG0 || ehdr->e_ident[EI_MAG1] != ELFMAG1 ||
+        ehdr->e_ident[EI_MAG2] != ELFMAG2 || ehdr->e_ident[EI_MAG3] != ELFMAG3) {
+        return false;
+    }
+    if (ehdr->e_ident[EI_CLASS] != ELFCLASS64 || ehdr->e_ident[EI_DATA] != ELFDATA2LSB) {
+        return false;
+    }
+    if (ehdr->e_machine != EM_LITTLE64) {
+        return false;
+    }
+    if (ehdr->e_phoff + static_cast<uint64_t>(ehdr->e_phnum) * ehdr->e_phentsize > elf_bytes.size()) {
+        return false;
+    }
+
+    uint64_t min_vaddr = UINT64_MAX;
+    uint64_t max_vaddr = 0;
+    bool found_load = false;
+    for (uint16_t i = 0; i < ehdr->e_phnum; ++i) {
+        const Elf64_Phdr* ph = reinterpret_cast<const Elf64_Phdr*>(
+            elf_bytes.data() + ehdr->e_phoff + static_cast<uint64_t>(i) * ehdr->e_phentsize);
+        if (ph->p_type != PT_LOAD) continue;
+        min_vaddr = std::min(min_vaddr, ph->p_vaddr);
+        max_vaddr = std::max(max_vaddr, ph->p_vaddr + ph->p_memsz);
+        found_load = true;
+    }
+    if (!found_load) {
+        return false;
+    }
+
+    constexpr uint64_t PAGE = 4096;
+    const uint64_t virt_base = (min_vaddr / PAGE) * PAGE;
+    const uint64_t image_span = ((max_vaddr - virt_base + PAGE - 1) / PAGE) * PAGE;
+
+    std::vector<uint8_t> ram_bytes(static_cast<size_t>(image_span), 0);
+    for (uint16_t i = 0; i < ehdr->e_phnum; ++i) {
+        const Elf64_Phdr* ph = reinterpret_cast<const Elf64_Phdr*>(
+            elf_bytes.data() + ehdr->e_phoff + static_cast<uint64_t>(i) * ehdr->e_phentsize);
+        if (ph->p_type != PT_LOAD) continue;
+        const uint64_t off = ph->p_vaddr - virt_base;
+        if (off + ph->p_filesz > ram_bytes.size() || ph->p_offset + ph->p_filesz > elf_bytes.size()) {
+            return false;
+        }
+        std::memcpy(ram_bytes.data() + off, elf_bytes.data() + ph->p_offset, static_cast<size_t>(ph->p_filesz));
+    }
+
+    constexpr uint64_t RAM_EXTRA = 64 * 1024 * 1024;
+    constexpr uint64_t SERIAL_BASE = 0xFFFFFFFFFFFF0000ULL;
+    const uint64_t total_ram = image_span + RAM_EXTRA;
+
+    MachineConfig cfg;
+    cfg.addPreloadedRam(kernel_physical_base, std::move(ram_bytes), total_ram, "MEM")
+        .addSerial(SERIAL_BASE, "SERIAL");
+    cfg.applyTo(_bus, _devices, this);
+
+    _mem_base = kernel_physical_base;
+    _mem_size = total_ram;
+    _page_table_alloc_cursor = _mem_base + _mem_size;
+
+    registers = {};
+    registers.boot_source_page_size = 4096;
+    registers.boot_source_page_count = (_boot_source_bytes.size() + 4095ULL) / 4096ULL;
+    registers.hypercall_caps = HYPERCALL_CAP_MINIMAL_BOOT;
+
+    CpuPageAllocator allocator(*this);
+    const auto root = PageTableBuilder::createRoot(allocator, _bus);
+    if (!root.ok) {
+        return false;
+    }
+
+    // Temporary identity mapping for initial low memory transition.
+    const uint64_t identity_limit = std::min<uint64_t>(_mem_base + 2 * 1024 * 1024, _mem_base + _mem_size);
+    for (uint64_t pa = _mem_base; pa < identity_limit; pa += PAGE) {
+        if (!PageTableBuilder::map4K(_bus, allocator, root.root, pa, pa, true, true, true, true)) {
+            return false;
+        }
+    }
+
+    // Direct-map full RAM in higher half.
+    for (uint64_t off = 0; off < _mem_size; off += PAGE) {
+        const uint64_t pa = _mem_base + off;
+        const uint64_t va = direct_map_virtual_base + off;
+        if (!PageTableBuilder::map4K(_bus, allocator, root.root, va, pa, true, true, true, true)) {
+            return false;
+        }
+    }
+
+    // Segment-accurate mappings for kernel virtual addresses.
+    for (uint16_t i = 0; i < ehdr->e_phnum; ++i) {
+        const Elf64_Phdr* ph = reinterpret_cast<const Elf64_Phdr*>(
+            elf_bytes.data() + ehdr->e_phoff + static_cast<uint64_t>(i) * ehdr->e_phentsize);
+        if (ph->p_type != PT_LOAD) continue;
+
+        const uint64_t seg_start = (ph->p_vaddr / PAGE) * PAGE;
+        const uint64_t seg_end = ((ph->p_vaddr + ph->p_memsz + PAGE - 1) / PAGE) * PAGE;
+        const bool r = (ph->p_flags & PF_R) != 0;
+        const bool w = (ph->p_flags & PF_W) != 0;
+        const bool x = (ph->p_flags & PF_X) != 0;
+
+        for (uint64_t va = seg_start; va < seg_end; va += PAGE) {
+            const uint64_t pa = kernel_physical_base + (va - virt_base);
+            if (!PageTableBuilder::map4K(_bus, allocator, root.root, va, pa, r, w, x, true)) {
+                return false;
+            }
+        }
+    }
+
+    registers.page_table_root_physical = root.root;
+    registers.setPagingEnabled(true);
+    registers.regs[13] = direct_map_virtual_base + (_mem_size - 8);
+    registers.regs[15] = ehdr->e_entry;
+    isRunning = true;
+    return true;
+}
+
+void Little64CPU::setBootSourcePages(std::vector<uint8_t> bytes, uint64_t page_size) {
+    _boot_source_bytes = std::move(bytes);
+    registers.boot_source_page_size = page_size;
+    if (page_size == 0) {
+        registers.boot_source_page_count = 0;
+    } else {
+        registers.boot_source_page_count = (static_cast<uint64_t>(_boot_source_bytes.size()) + page_size - 1) / page_size;
+    }
 }
 
 SerialDevice* Little64CPU::getSerial() {

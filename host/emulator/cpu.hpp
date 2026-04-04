@@ -2,9 +2,11 @@
 
 #include <cstdint>
 #include <vector>
+#include <string>
 #include "device.hpp"
 #include "memory_bus.hpp"
 #include "serial_device.hpp"
+#include "address_translator.hpp"
 
 class Little64CPU : public InterruptSink {
 public:
@@ -65,6 +67,19 @@ public:
             cpu_control = (cpu_control & ~0xFC) | ((num & 0x3F) << 2);
         }
 
+        static constexpr uint64_t CPU_CONTROL_PAGING_ENABLE = 1ULL << 16;
+
+        constexpr bool isPagingEnabled() const {
+            return (cpu_control & CPU_CONTROL_PAGING_ENABLE) != 0;
+        }
+        constexpr void setPagingEnabled(bool enabled) {
+            if (enabled) {
+                cpu_control |= CPU_CONTROL_PAGING_ENABLE;
+            } else {
+                cpu_control &= ~CPU_CONTROL_PAGING_ENABLE;
+            }
+        }
+
 
         // Stores pointer to interrupt handler table (base address of an array of 64-bit handler addresses)
         uint64_t interrupt_table_base;
@@ -90,6 +105,11 @@ public:
         uint64_t trap_access;
         uint64_t trap_pc;
         uint64_t trap_aux;
+        uint64_t page_table_root_physical;
+        uint64_t boot_info_frame_physical;
+        uint64_t boot_source_page_size;
+        uint64_t boot_source_page_count;
+        uint64_t hypercall_caps;
 
         uint64_t getSpecialRegister(uint64_t index) const {
             switch (index) {
@@ -104,6 +124,11 @@ public:
                 case 8: return trap_access;
                 case 9: return trap_pc;
                 case 10: return trap_aux;
+                case 11: return page_table_root_physical;
+                case 12: return boot_info_frame_physical;
+                case 13: return boot_source_page_size;
+                case 14: return boot_source_page_count;
+                case 15: return hypercall_caps;
                 default: return 0;
             }
         }
@@ -121,6 +146,11 @@ public:
                 case 8: trap_access = value; break;
                 case 9: trap_pc = value; break;
                 case 10: trap_aux = value; break;
+                case 11: page_table_root_physical = value; break;
+                case 12: boot_info_frame_physical = value; break;
+                case 13: boot_source_page_size = value; break;
+                case 14: boot_source_page_count = value; break;
+                case 15: hypercall_caps = value; break;
             }
         }
 
@@ -141,6 +171,11 @@ public:
             trap_access = 0;
             trap_pc = 0;
             trap_aux = 0;
+            page_table_root_physical = 0;
+            boot_info_frame_physical = 0;
+            boot_source_page_size = 0;
+            boot_source_page_count = 0;
+            hypercall_caps = 0;
         }
     };
 
@@ -275,6 +310,13 @@ public:
     // Load a linked ELF image into RAM at base address. Entry point is taken from e_entry.
     // Returns true if loading succeeded, false on error.
     bool loadProgramElf(const std::vector<uint8_t>& elf_bytes, uint64_t base = 0);
+    bool loadProgramElfDirectPaged(const std::vector<uint8_t>& elf_bytes,
+                                   uint64_t kernel_physical_base = 0x100000,
+                                   uint64_t direct_map_virtual_base = 0xFFFFFFC000000000ULL);
+
+    void setBootSourcePages(std::vector<uint8_t> bytes, uint64_t page_size);
+
+    bool _allocatePageTablePage(uint64_t& out_page);
 
     // Resets CPU and all configured devices.
     void reset();
@@ -318,10 +360,13 @@ private:
         bool valid = true;
         uint64_t physical = 0;
         uint64_t trap_cause = 0;
+        uint64_t trap_aux = 0;
     };
 
     TranslationResult _translateAddress(uint64_t virtual_addr, CpuAccessType access) const;
     bool _mapAddress(uint64_t virtual_addr, CpuAccessType access, uint64_t operation_pc, uint64_t& physical_out);
+
+    void _executeHypercall();
 
     uint8_t  _readMemory8 (uint64_t addr, uint64_t operation_pc, CpuAccessType access = CpuAccessType::Read);
     void     _writeMemory8(uint64_t addr, uint8_t v, uint64_t operation_pc);
@@ -334,4 +379,9 @@ private:
 
     MemoryBus _bus;
     std::vector<Device*> _devices;
+    AddressTranslator _translator;
+    uint64_t _page_table_alloc_cursor = 0;
+    uint64_t _mem_base = 0;
+    uint64_t _mem_size = 0;
+    std::vector<uint8_t> _boot_source_bytes;
 };

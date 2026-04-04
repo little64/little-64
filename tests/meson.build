@@ -76,6 +76,20 @@ test_memory_bus = executable('test-memory-bus',
 )
 test('memory-bus', test_memory_bus, suite : ['unit', 'memory'], timeout : 60)
 
+test_paging = executable('test-paging',
+  ['host/test_paging.cpp'],
+  link_with : [emulator_lib, linker_lib, project_lib],
+  include_directories : [
+    emulator_inc,
+    linker_inc,
+    project_inc,
+    arch_inc,
+    test_inc,
+  ],
+  install : false,
+)
+test('paging', test_paging, suite : ['unit', 'paging', 'memory'], timeout : 60)
+
 test_boot_frame = executable('test-boot-frame',
   ['host/test_boot_frame.cpp'],
   link_with : [project_lib],
@@ -112,6 +126,15 @@ test('boot-bios-run',
     meson.project_source_root() / 'tests/host/boot/test_bios_boot.py',
   ],
   suite : ['boot', 'integration'],
+  timeout : 60,
+)
+
+test('boot-direct-paging-run',
+  python3,
+  args : [
+    meson.project_source_root() / 'tests/host/boot/test_direct_boot_paging.py',
+  ],
+  suite : ['boot', 'integration', 'paging'],
   timeout : 60,
 )
 
