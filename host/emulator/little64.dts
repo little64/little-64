@@ -1,0 +1,42 @@
+/dts-v1/;
+
+/ {
+    #address-cells = <2>;
+    #size-cells = <2>;
+    compatible = "little64,virt";
+    model = "Little-64 Virtual Machine";
+
+    cpus {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        cpu@0 {
+            compatible = "little64";
+            device_type = "cpu";
+            reg = <0>;
+            clock-frequency = <1000000000>;  /* 1 GHz */
+        };
+    };
+
+    memory@1000 {
+        device_type = "memory";
+        reg = <0x0 0x1000 0x0 0x4000000>;  /* 64 MB; patched at runtime */
+    };
+
+    chosen {
+        bootargs = "";
+    };
+
+    uart@ffffffffffff0000 {
+        compatible = "ns16550a";
+        reg = <0xffffffff 0xffff0000  0x0 0x8>;
+        interrupts = <4>;
+        clock-frequency = <1843200>;
+    };
+
+    timer@ffffffffffff1000 {
+        compatible = "little64,timer";
+        reg = <0xffffffff 0xffff1000  0x0 0x20>;
+        interrupts = <5>;
+    };
+};

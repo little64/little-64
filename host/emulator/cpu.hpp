@@ -7,6 +7,7 @@
 #include "memory_bus.hpp"
 #include "serial_device.hpp"
 #include "address_translator.hpp"
+#include "emulator_clock.hpp"
 
 class Little64CPU : public InterruptSink {
 public:
@@ -126,6 +127,11 @@ public:
         uint64_t boot_source_page_size;
         uint64_t boot_source_page_count;
         uint64_t hypercall_caps;
+
+        // Load-Linked / Store-Conditional reservation state
+        // (not special registers, but internal CPU state for atomics)
+        uint64_t ll_reservation_addr = 0;    // address of the reserved location
+        bool ll_reservation_valid = false;   // is the reservation still valid?
 
         uint64_t getSpecialRegister(uint64_t index) const {
             switch (index) {
@@ -357,7 +363,12 @@ public:
 
     bool isRunning = true;
 
+    // Access to virtual clock (for devices and GUI integration)
+    EmulatorClock& clock() { return _clock; }
+    const EmulatorClock& clock() const { return _clock; }
+
 private:
+    EmulatorClock _clock;
     void _dispatchLSReg(const Instruction& instr);
     void _dispatchLSPCRel(const Instruction& instr);
     void _dispatchLDI(const Instruction& instr);

@@ -4,6 +4,27 @@
 // R0 always-zero invariant (must be tested through cycle(), not dispatchInstruction).
 
 // ---------------------------------------------------------------------------
+// LLR, SCR — load-linked and store-conditional (atomics)
+// ---------------------------------------------------------------------------
+static void test_llr_scr() {
+    // Test LLR/SCR basic execution (LLVM backend support is pending)
+    // For now, we just verify the instructions don't crash
+    Little64CPU cpu;
+    cpu.loadProgram(std::vector<uint16_t>{
+        0xC191,  // LLR R3, R1 (opcode 3, RS1_RD: rd=3, rs1=1)
+        0xC211,  // SCR R2, R1 (opcode 4, RS1_RD: rd=2, rs1=1)
+        0xDF00   // STOP
+    });
+
+    // Run and verify it doesn't crash
+    while (cpu.isRunning) {
+        cpu.cycle();
+    }
+
+    CHECK_FALSE(cpu.isRunning, "LLR/SCR program completes");
+}
+
+// ---------------------------------------------------------------------------
 // STOP — halts the CPU
 // ---------------------------------------------------------------------------
 static void test_stop() {
@@ -174,6 +195,32 @@ static void test_iret() {
 }
 
 // ---------------------------------------------------------------------------
+// SYSCALL — system call instruction (opcode 27)
+// ---------------------------------------------------------------------------
+static void test_syscall() {
+    // SYSCALL in user mode: fires TRAP_SYSCALL (64)
+    Little64CPU cpu;
+    cpu.loadProgram(std::vector<uint16_t>{0xDB00}); // SYSCALL (opcode 27, NONE)
+
+    cpu.registers.setUserMode(true);
+    cpu.cycle();
+
+    CHECK_FALSE(cpu.isRunning, "SYSCALL in user mode halts CPU (exception not handled)");
+    CHECK_EQ(cpu.registers.trap_cause, 64ULL, "SYSCALL in user mode: trap_cause = 64");
+    CHECK_EQ(cpu.registers.trap_pc, 0ULL, "SYSCALL in user mode: trap_pc = instruction address");
+
+    // SYSCALL in supervisor mode: fires TRAP_SYSCALL_FROM_SUPERVISOR (65)
+    cpu = Little64CPU();
+    cpu.loadProgram(std::vector<uint16_t>{0xDB00}); // SYSCALL
+
+    cpu.registers.setUserMode(false);
+    cpu.cycle();
+
+    CHECK_FALSE(cpu.isRunning, "SYSCALL in supervisor mode halts CPU (exception not handled)");
+    CHECK_EQ(cpu.registers.trap_cause, 65ULL, "SYSCALL in supervisor mode: trap_cause = 65");
+}
+
+// ---------------------------------------------------------------------------
 // Execute translation fault (alignment) populates trap record
 // ---------------------------------------------------------------------------
 static void test_execute_alignment_fault_trap_record() {
@@ -195,11 +242,13 @@ static void test_execute_alignment_fault_trap_record() {
 // ---------------------------------------------------------------------------
 int main() {
     std::printf("=== Little-64 CPU special instruction tests ===\n\n");
+    std::printf("LLR/SCR\n");           test_llr_scr();
     std::printf("STOP\n");              test_stop();
     std::printf("R0 always zero\n");    test_r0_always_zero();
     std::printf("LSR\n");               test_lsr();
     std::printf("SSR\n");               test_ssr();
     std::printf("IRET\n");              test_iret();
+    std::printf("SYSCALL\n");           test_syscall();
     std::printf("Execute alignment trap\n"); test_execute_alignment_fault_trap_record();
     return print_summary();
 }

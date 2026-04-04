@@ -3,6 +3,8 @@
 #include "ram_region.hpp"
 #include "rom_region.hpp"
 #include "serial_device.hpp"
+#include "timer_device.hpp"
+#include "emulator_clock.hpp"
 
 MachineConfig& MachineConfig::addRegion(RegionFactory factory) {
     _region_factories.push_back(std::move(factory));
@@ -43,7 +45,15 @@ MachineConfig& MachineConfig::addSerial(uint64_t base, std::string_view name) {
     });
 }
 
-void MachineConfig::applyTo(MemoryBus& bus, std::vector<Device*>& devices, InterruptSink* interrupt_sink) const {
+MachineConfig& MachineConfig::addTimer(uint64_t base, std::string_view name) {
+    std::string region_name(name);
+    return addDevice([base, region_name]() {
+        return std::make_unique<TimerDevice>(base);  // clock will be set in applyTo
+    });
+}
+
+void MachineConfig::applyTo(MemoryBus& bus, std::vector<Device*>& devices, InterruptSink* interrupt_sink,
+                            const EmulatorClock* clock) const {
     bus.clearRegions();
     devices.clear();
 
@@ -56,6 +66,12 @@ void MachineConfig::applyTo(MemoryBus& bus, std::vector<Device*>& devices, Inter
         std::unique_ptr<Device> device = factory();
         if (interrupt_sink) {
             device->connectInterruptSink(interrupt_sink);
+        }
+        // Set clock on TimerDevice if present
+        if (clock) {
+            if (auto* timer = dynamic_cast<TimerDevice*>(device.get())) {
+                timer->setClock(clock);
+            }
         }
         devices.push_back(device.get());
         std::unique_ptr<MemoryRegion> region(std::move(device));

@@ -9,6 +9,8 @@
 #include <string_view>
 #include <vector>
 
+class EmulatorClock;  // forward declaration
+
 class MachineConfig {
 public:
     using RegionFactory = std::function<std::unique_ptr<MemoryRegion>()>;
@@ -20,9 +22,11 @@ public:
                                    uint64_t total_size, std::string_view name = "MEM");
     MachineConfig& addRom(uint64_t base, std::vector<uint8_t> data, std::string_view name = "ROM");
     MachineConfig& addSerial(uint64_t base, std::string_view name = "SERIAL");
+    MachineConfig& addTimer(uint64_t base, std::string_view name = "TIMER");
     MachineConfig& addDevice(DeviceFactory factory);
 
-    void applyTo(MemoryBus& bus, std::vector<Device*>& devices, InterruptSink* interrupt_sink = nullptr) const;
+    void applyTo(MemoryBus& bus, std::vector<Device*>& devices, InterruptSink* interrupt_sink = nullptr,
+                 const EmulatorClock* clock = nullptr) const;
 
 private:
     std::vector<RegionFactory> _region_factories;

@@ -87,6 +87,8 @@ void Little64CPU::cycle() {
             device->tick();
         }
     }
+
+    _clock.tick();  // Advance virtual clock after all CPU and device activity
 }
 
 void Little64CPU::assertInterrupt(uint64_t num) {
@@ -293,6 +295,38 @@ void Little64CPU::_dispatchGP(const Instruction& instr) {
             // do not store result
             break;
         }
+
+        case GP::Opcode::LLR: {
+            // Load-Linked: read the value at Rs1 and set reservation
+            uint64_t addr = b;  // rs1 is the address
+            uint64_t value = _readMemory64(addr, registers.regs[15]);
+            registers.regs[instr.rd] = value;
+
+            // Set reservation for this address
+            registers.ll_reservation_addr = addr;
+            registers.ll_reservation_valid = true;
+            break;
+        }
+
+        case GP::Opcode::SCR: {
+            // Store-Conditional: conditionally store Rd to Rs1
+            // Z flag: 1 if store succeeded (reservation valid), 0 if failed
+            uint64_t addr = b;  // rs1 is the address
+            uint64_t value = a;  // rd is the value to store
+
+            if (registers.ll_reservation_valid && registers.ll_reservation_addr == addr) {
+                // Reservation is valid, perform the store
+                _writeMemory64(addr, value, registers.regs[15]);
+                registers.ll_reservation_valid = false;  // clear reservation after successful store
+                registers.flags |= FLAG_ZERO;  // set Z flag to indicate success
+            } else {
+                // Reservation is invalid or different address, store fails
+                registers.ll_reservation_valid = false;
+                registers.flags &= ~FLAG_ZERO;  // clear Z flag to indicate failure
+            }
+            break;
+        }
+
         case GP::Opcode::AND: {
             uint64_t result = a & b;
             _updateFlags(result);
@@ -370,6 +404,17 @@ void Little64CPU::_dispatchGP(const Instruction& instr) {
             _updateFlags(result, carry);
             registers.regs[instr.rd] = result;
             break;
+        }
+
+        case GP::Opcode::SYSCALL: {
+            // System call: user mode fires TRAP_SYSCALL (64), supervisor fires TRAP_SYSCALL_FROM_SUPERVISOR (65)
+            uint64_t trap_num = registers.isUserMode()
+                ? AddressTranslator::TRAP_SYSCALL
+                : AddressTranslator::TRAP_SYSCALL_FROM_SUPERVISOR;
+            registers.trap_pc = registers.regs[15] - 2;  // EPC points to the SYSCALL instruction
+            registers.trap_cause = trap_num;
+            _raiseInterrupt(trap_num, true, registers.regs[15] - 2);
+            return;
         }
 
         case GP::Opcode::LSR: {
@@ -616,6 +661,11 @@ void Little64CPU::_writeMemory64(uint64_t addr, uint64_t v, uint64_t operation_p
         return;
     }
     _bus.write64(physical, v, MemoryAccessType::Write);
+
+    // Invalidate LL/SC reservation if any write happens to the reserved address
+    if (registers.ll_reservation_valid && registers.ll_reservation_addr == addr) {
+        registers.ll_reservation_valid = false;
+    }
 }
 
 bool Little64CPU::loadProgramElf(const std::vector<uint8_t>& elf_bytes, uint64_t /*base_unused*/) {
@@ -669,12 +719,14 @@ bool Little64CPU::loadProgramElf(const std::vector<uint8_t>& elf_bytes, uint64_t
 
     constexpr uint64_t RAM_EXTRA = 64 * 1024 * 1024;
     constexpr uint64_t SERIAL_BASE = 0xFFFFFFFFFFFF0000ULL;
+    constexpr uint64_t TIMER_BASE = 0xFFFFFFFFFFFF1000ULL;
     uint64_t total_ram = alloc_size + RAM_EXTRA;
 
      MachineConfig cfg;
      cfg.addPreloadedRam(base_addr, std::move(ram_bytes), total_ram, "MEM")
-         .addSerial(SERIAL_BASE, "SERIAL");
-     cfg.applyTo(_bus, _devices, this);
+         .addSerial(SERIAL_BASE, "SERIAL")
+         .addTimer(TIMER_BASE, "TIMER");
+     cfg.applyTo(_bus, _devices, this, &_clock);
 
     _mem_base = base_addr;
     _mem_size = total_ram;
@@ -710,12 +762,14 @@ void Little64CPU::loadProgram(const std::vector<uint16_t>& words, uint64_t base,
     // .bss, breaking any C/C++ program that modifies global or static variables.
     constexpr uint64_t RAM_SIZE    = 64 * 1024 * 1024;  // 64 MB
     constexpr uint64_t SERIAL_BASE = 0xFFFFFFFFFFFF0000ULL;
+    constexpr uint64_t TIMER_BASE = 0xFFFFFFFFFFFF1000ULL;
     uint64_t total_size = prog_size + RAM_SIZE;
 
      MachineConfig cfg;
      cfg.addPreloadedRam(base, std::move(bytes), total_size, "MEM")
-         .addSerial(SERIAL_BASE, "SERIAL");
-     cfg.applyTo(_bus, _devices, this);
+         .addSerial(SERIAL_BASE, "SERIAL")
+         .addTimer(TIMER_BASE, "TIMER");
+     cfg.applyTo(_bus, _devices, this, &_clock);
 
     _mem_base = base;
     _mem_size = total_size;
@@ -788,12 +842,14 @@ bool Little64CPU::loadProgramElfDirectPaged(const std::vector<uint8_t>& elf_byte
 
     constexpr uint64_t RAM_EXTRA = 64 * 1024 * 1024;
     constexpr uint64_t SERIAL_BASE = 0xFFFFFFFFFFFF0000ULL;
+    constexpr uint64_t TIMER_BASE = 0xFFFFFFFFFFFF1000ULL;
     const uint64_t total_ram = image_span + RAM_EXTRA;
 
     MachineConfig cfg;
     cfg.addPreloadedRam(kernel_physical_base, std::move(ram_bytes), total_ram, "MEM")
-        .addSerial(SERIAL_BASE, "SERIAL");
-    cfg.applyTo(_bus, _devices, this);
+        .addSerial(SERIAL_BASE, "SERIAL")
+        .addTimer(TIMER_BASE, "TIMER");
+    cfg.applyTo(_bus, _devices, this, &_clock);
 
     _mem_base = kernel_physical_base;
     _mem_size = total_ram;

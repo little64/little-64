@@ -121,16 +121,42 @@ From `host/arch/opcodes_gp.def`:
 | 23 | `SLLI` | `IMM4_RD` |
 | 24 | `SRLI` | `IMM4_RD` |
 | 25 | `SRAI` | `IMM4_RD` |
+| 3 | `LLR` | `RS1_RD` |
+| 4 | `SCR` | `RS1_RD` |
+| 27 | `SYSCALL` | `NONE` |
 | 28 | `LSR` | `RS1_RD` |
 | 29 | `SSR` | `RS1_RD` |
 | 30 | `IRET` | `NONE` |
 | 31 | `STOP` | `NONE` |
 
-## Control-Flow Notes
+## Control-Flow and Synchronization Notes
 
 - Conditional `JUMP.*` instructions exist in LS opcode space.
 - Unconditional `JUMP` uses extended format `111` with a 13-bit signed PC-relative offset.
+- `SYSCALL` is a synchronous exception instruction. In user mode, it raises trap 64 (`TRAP_SYSCALL`). In supervisor mode, it raises trap 65 (`TRAP_SYSCALL_FROM_SUPERVISOR`). The exception handler can advance past the SYSCALL by setting `interrupt_epc` to `saved_epc + 2` before executing `IRET`. By convention: R1 = syscall number, R2–R7 = arguments, R1 = return value.
 - `IRET` is a privileged instruction. It restores PC from `interrupt_epc`, flags from `interrupt_eflags`, and full CPU control state (including privilege level) from `interrupt_cpu_control`. It is blocked in user mode and raises trap 63 (`TRAP_PRIVILEGED_INSTRUCTION`) if executed in user mode.
+
+### Load-Linked / Store-Conditional (`LLR`, `SCR`)
+
+`LLR Rs1, Rd` — Load-Linked Register: `Rd = MEM64[Rs1]`, record a reservation on that address.
+`SCR Rs1, Rd` — Store-Conditional Register: If reservation valid, `MEM64[Rs1] = Rd` and Z = 1; else Z = 0, no store.
+
+Reservation is invalidated by:
+- A successful `SCR` to the same address
+- Any intervening memory write (from any instruction) to the reserved address
+- A new `LLR` to a different address
+
+**Typical usage (compare-and-swap loop):**
+```
+retry:
+    LLR R3, R1          ; load *ptr, set reservation on address in R1
+    SUB R3, R2          ; compare with expected value
+    JUMP.Z matched      ; if equal, continue
+    [else: return failure]
+matched:
+    SCR R4, R1          ; conditional store of new value to address in R1
+    JUMP.Z retry        ; if Z=0 (failed), retry the whole sequence
+```
 
 ## Privilege Levels and User Mode
 
@@ -175,6 +201,56 @@ Current convention used by project examples/tooling:
 - Return values typically in `R1` (and `R2` when needed)
 
 Treat this as project ABI convention, not a formally versioned external ABI yet.
+
+## Emulated Devices
+
+### Serial Device (UART)
+
+**MMIO base:** `0xFFFFFFFFFFFF0000` (16 bytes)  
+**IRQ:** 4
+
+16550A-compatible serial device for console I/O. TX to stdout, RX via host input.
+
+### Timer Device
+
+**MMIO base:** `0xFFFFFFFFFFFF1000` (32 bytes)  
+**IRQ:** 5
+
+Programmable timer supporting two firing modes:
+
+| Offset | Size | Access | Register |
+|---|---|---|---|
+| +0 | 8B | RO | Cycle counter (from `EmulatorClock::cycles()`) |
+| +8 | 8B | RO | Virtual nanoseconds (from `EmulatorClock::virtualNanoseconds()`) |
+| +16 | 8B | RW | Cycle interval (fire every N cycles; 0 = disabled) |
+| +24 | 8B | RW | Time interval in nanoseconds (fire every N ns; 0 = disabled) |
+
+Both interval registers are independent. The timer fires on whichever threshold is crossed first. The `EmulatorClock` supports real-time execution with optional speed scaling (1.0x = real time, 0.5x = half speed), pause/resume, and deterministic single-step mode for the GUI debugger.
+
+## Device Tree (DTB) Support
+
+The emulator provides a Flat Device Tree (FDT) binary describing the virtual hardware. The Device Tree source (`host/emulator/little64.dts`) is the authoritative specification of:
+
+- CPU frequency (1 GHz)
+- Memory regions
+- Serial device (UART at 0xFFFFFFFFFFFF0000, IRQ 4)
+- Timer device (at 0xFFFFFFFFFFFF1000, IRQ 5)
+
+To enable DTB embedding in the emulator binary:
+
+1. Install device tree compiler: `apt-get install device-tree-compiler`
+2. Compile the DTB:
+   ```bash
+   dtc -b0 host/emulator/little64.dts -o builddir/little64.dtb
+   xxd -i < builddir/little64.dtb > builddir/little64_dtb_embed.hpp
+   ```
+3. Copy the generated header to `host/emulator/little64_dtb_embed.hpp`
+4. Rebuild the emulator
+
+The DTB can then be accessed via `DTBLoader::getEmbeddedDTB()`. A running kernel would typically:
+- Read the DTB address from SR 12 (`boot_info_frame_physical`)
+- Parse the DTB to discover hardware layout
+- Configure devices based on discovered properties
 
 ## Maintenance Checklist
 

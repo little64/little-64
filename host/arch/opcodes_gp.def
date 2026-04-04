@@ -5,6 +5,10 @@ LITTLE64_GP_OPCODE(ADD,  0, "ADD",  2)
 LITTLE64_GP_OPCODE(SUB,  1, "SUB",  2)
 LITTLE64_GP_OPCODE(TEST, 2, "TEST", 2)
 
+// Atomic load-linked / store-conditional for synchronization primitives
+LITTLE64_GP_OPCODE(LLR,  3, "LLR",  2) // Load-linked: Rd = MEM64[Rs1], set reservation
+LITTLE64_GP_OPCODE(SCR,  4, "SCR",  2) // Store-conditional: if reservation valid, MEM64[Rs1] = Rd; Z = reservation_valid
+
 LITTLE64_GP_OPCODE(AND,  16, "AND", 2)
 LITTLE64_GP_OPCODE(OR,   17, "OR",  2)
 LITTLE64_GP_OPCODE(XOR,  18, "XOR", 2)
@@ -16,6 +20,9 @@ LITTLE64_GP_OPCODE(SRA,  22, "SRA", 2)
 LITTLE64_GP_OPCODE(SLLI, 23, "SLLI", 3)
 LITTLE64_GP_OPCODE(SRLI, 24, "SRLI", 3)
 LITTLE64_GP_OPCODE(SRAI, 25, "SRAI", 3)
+
+// System call instruction: triggers TRAP_SYSCALL (64) in user mode, TRAP_SYSCALL_FROM_SUPERVISOR (65) in supervisor
+LITTLE64_GP_OPCODE(SYSCALL, 27, "SYSCALL", 0)
 
 // Opcodes >= 28 are defined as "special"; while they are in ALU space,
 // they have non-ALU effects.

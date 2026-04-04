@@ -29,6 +29,8 @@ public:
 
     static constexpr uint64_t TRAP_EXEC_ALIGN = 62;
     static constexpr uint64_t TRAP_PRIVILEGED_INSTRUCTION = 63;
+    static constexpr uint64_t TRAP_SYSCALL = 64;
+    static constexpr uint64_t TRAP_SYSCALL_FROM_SUPERVISOR = 65;
     static constexpr uint64_t TRAP_PAGE_FAULT_BASE = 80;
     static constexpr uint64_t TRAP_PAGE_FAULT_NOT_PRESENT = TRAP_PAGE_FAULT_BASE + 1;
     static constexpr uint64_t TRAP_PAGE_FAULT_PERMISSION = TRAP_PAGE_FAULT_BASE + 2;

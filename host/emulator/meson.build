@@ -1,8 +1,19 @@
+# Device Tree (DTB) support - manual integration for now
+# To enable DTB embedding:
+# 1. Ensure dtc (device tree compiler) is installed: apt-get install device-tree-compiler
+# 2. From the project root, run:
+#    dtc -b0 host/emulator/little64.dts -o builddir/little64.dtb
+#    xxd -i < builddir/little64.dtb > builddir/little64_dtb_embed.hpp
+# 3. Move little64_dtb_embed.hpp to host/emulator/ or ensure it's in the include path
+# 4. The DTB will then be available via DTBLoader::getEmbeddedDTB()
+
 core_emulator_src = [
   'address_translator.cpp',
   'cpu.cpp',
   'debug_server.cpp',
   'debug_transport.cpp',
+  'dtb_loader.cpp',
+  'emulator_clock.cpp',
   'emulator_session.cpp',
   'headless_runtime.cpp',
   'machine_config.cpp',
@@ -12,6 +23,7 @@ core_emulator_src = [
   'ram_region.cpp',
   'rom_region.cpp',
   'serial_device.cpp',
+  'timer_device.cpp',
 ]
 
 emulator_lib = static_library('little-64-cpu',
