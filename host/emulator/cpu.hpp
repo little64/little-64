@@ -36,6 +36,8 @@ public:
         //   bit 0: Interrupt enable
         //   bit 1: In interrupt
         //   bits 2..8: currently handled interrupt number (if in interrupt)
+        //   bit 16: Paging enable
+        //   bit 17: User mode
         uint64_t cpu_control;
         
         constexpr bool isInterruptEnabled() const {
@@ -80,6 +82,19 @@ public:
             }
         }
 
+        static constexpr uint64_t CPU_CONTROL_USER_MODE = 1ULL << 17;
+
+        constexpr bool isUserMode() const {
+            return (cpu_control & CPU_CONTROL_USER_MODE) != 0;
+        }
+        constexpr void setUserMode(bool user) {
+            if (user) {
+                cpu_control |= CPU_CONTROL_USER_MODE;
+            } else {
+                cpu_control &= ~CPU_CONTROL_USER_MODE;
+            }
+        }
+
 
         // Stores pointer to interrupt handler table (base address of an array of 64-bit handler addresses)
         uint64_t interrupt_table_base;
@@ -100,6 +115,7 @@ public:
 
         uint64_t interrupt_epc;
         uint64_t interrupt_eflags;
+        uint64_t interrupt_cpu_control;
         uint64_t trap_cause;
         uint64_t trap_fault_addr;
         uint64_t trap_access;
@@ -129,6 +145,7 @@ public:
                 case 13: return boot_source_page_size;
                 case 14: return boot_source_page_count;
                 case 15: return hypercall_caps;
+                case 16: return interrupt_cpu_control;
                 default: return 0;
             }
         }
@@ -151,6 +168,7 @@ public:
                 case 13: boot_source_page_size = value; break;
                 case 14: boot_source_page_count = value; break;
                 case 15: hypercall_caps = value; break;
+                case 16: interrupt_cpu_control = value; break;
             }
         }
 
@@ -166,6 +184,7 @@ public:
             interrupt_states = 0;
             interrupt_epc = 0;
             interrupt_eflags = 0;
+            interrupt_cpu_control = 0;
             trap_cause = 0;
             trap_fault_addr = 0;
             trap_access = 0;

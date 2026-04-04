@@ -6,6 +6,7 @@ constexpr uint64_t PTE_V = 1ULL << 0;
 constexpr uint64_t PTE_R = 1ULL << 1;
 constexpr uint64_t PTE_W = 1ULL << 2;
 constexpr uint64_t PTE_X = 1ULL << 3;
+constexpr uint64_t PTE_U = 1ULL << 4;
 constexpr uint64_t PTE_A = 1ULL << 6;
 constexpr uint64_t PTE_D = 1ULL << 7;
 
@@ -160,6 +161,16 @@ PagingTranslateResult AddressTranslator::translate(const MemoryBus& bus,
     }
 
     if (!permission_ok) {
+        return PagingTranslateResult{
+            .valid = false,
+            .physical = 0,
+            .trap_cause = TRAP_PAGE_FAULT_PERMISSION,
+            .trap_aux = _encodeAux(AUX_SUBTYPE_PERMISSION, 0),
+        };
+    }
+
+    // User mode can only access pages marked with PTE_U
+    if (config.is_user && !(leaf & PTE_U)) {
         return PagingTranslateResult{
             .valid = false,
             .physical = 0,

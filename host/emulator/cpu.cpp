@@ -373,12 +373,24 @@ void Little64CPU::_dispatchGP(const Instruction& instr) {
         }
 
         case GP::Opcode::LSR: {
+            if (registers.isUserMode()) {
+                registers.trap_pc = registers.regs[15] - 2;
+                registers.trap_cause = AddressTranslator::TRAP_PRIVILEGED_INSTRUCTION;
+                _raiseInterrupt(AddressTranslator::TRAP_PRIVILEGED_INSTRUCTION, true, registers.regs[15] - 2);
+                return;
+            }
             // Load special register, e.g. for CPU control and interrupt table base
             registers.regs[instr.rd] = registers.getSpecialRegister(b);
             break;
         }
 
         case GP::Opcode::SSR: {
+            if (registers.isUserMode()) {
+                registers.trap_pc = registers.regs[15] - 2;
+                registers.trap_cause = AddressTranslator::TRAP_PRIVILEGED_INSTRUCTION;
+                _raiseInterrupt(AddressTranslator::TRAP_PRIVILEGED_INSTRUCTION, true, registers.regs[15] - 2);
+                return;
+            }
             // Store special register
             registers.setSpecialRegister(b, a);
             if (b == 15) {
@@ -388,15 +400,25 @@ void Little64CPU::_dispatchGP(const Instruction& instr) {
         }
 
         case GP::Opcode::IRET: {
-            registers.regs[15] = registers.interrupt_epc;
-            registers.flags    = registers.interrupt_eflags;
-            registers.setInInterrupt(false);
-            registers.setInterruptEnabled(true);
-            registers.setCurrentInterruptNumber(0);
+            if (registers.isUserMode()) {
+                registers.trap_pc = registers.regs[15] - 2;
+                registers.trap_cause = AddressTranslator::TRAP_PRIVILEGED_INSTRUCTION;
+                _raiseInterrupt(AddressTranslator::TRAP_PRIVILEGED_INSTRUCTION, true, registers.regs[15] - 2);
+                return;
+            }
+            registers.regs[15]   = registers.interrupt_epc;
+            registers.flags      = registers.interrupt_eflags;
+            registers.cpu_control = registers.interrupt_cpu_control;
             break;
         }
 
         case GP::Opcode::STOP: {
+            if (registers.isUserMode()) {
+                registers.trap_pc = registers.regs[15] - 2;
+                registers.trap_cause = AddressTranslator::TRAP_PRIVILEGED_INSTRUCTION;
+                _raiseInterrupt(AddressTranslator::TRAP_PRIVILEGED_INSTRUCTION, true, registers.regs[15] - 2);
+                return;
+            }
             std::cerr << "STOP instruction hit. Register state:" << std::endl;
             for (int i = 0; i < 16; ++i) {
                 std::cerr << "  R" << i << ": 0x" << std::hex << registers.regs[i] << std::dec << std::endl;
@@ -418,6 +440,7 @@ Little64CPU::TranslationResult Little64CPU::_translateAddress(uint64_t virtual_a
     const PagingConfig cfg{
         .enabled = registers.isPagingEnabled(),
         .root_table_physical = registers.page_table_root_physical,
+        .is_user = registers.isUserMode(),
     };
     const PagingTranslateResult translated = _translator.translate(_bus, cfg, virtual_addr, paging_access);
     return TranslationResult{
@@ -875,6 +898,10 @@ bool Little64CPU::_raiseInterrupt(uint64_t interrupt_number, bool exception, uin
     uint64_t handler = _readMemory64(handler_addr, registers.regs[15]);
     if (handler == 0)
         return false;  // no handler registered
+
+    // Save full CPU control state (including privilege level) and force supervisor mode on interrupt entry
+    registers.interrupt_cpu_control = registers.cpu_control;
+    registers.setUserMode(false);
 
     // Set interrupt state and disable further interrupts
     registers.interrupt_states |= (1ULL << (interrupt_number));

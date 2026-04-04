@@ -13,6 +13,7 @@ enum class PagingAccessType : uint8_t {
 struct PagingConfig {
     bool enabled = false;
     uint64_t root_table_physical = 0;
+    bool is_user = false;          // true when CPU is in user mode
 };
 
 struct PagingTranslateResult {
@@ -27,6 +28,7 @@ public:
     static constexpr uint64_t PAGE_SIZE = 4096;
 
     static constexpr uint64_t TRAP_EXEC_ALIGN = 62;
+    static constexpr uint64_t TRAP_PRIVILEGED_INSTRUCTION = 63;
     static constexpr uint64_t TRAP_PAGE_FAULT_BASE = 80;
     static constexpr uint64_t TRAP_PAGE_FAULT_NOT_PRESENT = TRAP_PAGE_FAULT_BASE + 1;
     static constexpr uint64_t TRAP_PAGE_FAULT_PERMISSION = TRAP_PAGE_FAULT_BASE + 2;

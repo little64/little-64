@@ -150,6 +150,9 @@ static void test_iret() {
 
     cpu.registers.interrupt_epc    = saved_pc;
     cpu.registers.interrupt_eflags = saved_flags;
+    // Set up the pre-interrupt cpu_control state that IRET will restore
+    // With interrupt enabled (bit 0 = 1), not in interrupt (bit 1 = 0), and interrupt number 0
+    cpu.registers.interrupt_cpu_control = 0x1;  // IntEnable=1
     cpu.registers.setInInterrupt(true);
     cpu.registers.setInterruptEnabled(false);
     cpu.registers.setCurrentInterruptNumber(handler_num);

@@ -61,6 +61,7 @@ Current index map (from `cpu.hpp`):
 | 13 | `boot_source_page_size` |
 | 14 | `boot_source_page_count` |
 | 15 | `hypercall_caps` |
+| 16 | `interrupt_cpu_control` |
 
 ## Instruction Encoding Overview
 
@@ -129,7 +130,41 @@ From `host/arch/opcodes_gp.def`:
 
 - Conditional `JUMP.*` instructions exist in LS opcode space.
 - Unconditional `JUMP` uses extended format `111` with a 13-bit signed PC-relative offset.
-- `IRET` restores interrupt return state (`interrupt_epc`/`interrupt_eflags`) and re-enables interrupts.
+- `IRET` is a privileged instruction. It restores PC from `interrupt_epc`, flags from `interrupt_eflags`, and full CPU control state (including privilege level) from `interrupt_cpu_control`. It is blocked in user mode and raises trap 63 (`TRAP_PRIVILEGED_INSTRUCTION`) if executed in user mode.
+
+## Privilege Levels and User Mode
+
+User mode is controlled by bit 17 in `cpu_control`. Two privilege levels exist:
+
+- **Supervisor mode** (bit 17 = 0): Can execute all instructions and access all memory.
+- **User mode** (bit 17 = 1): Cannot execute privileged instructions (`IRET`, `STOP`, `LSR`, `SSR`); cannot access supervisor-only pages.
+
+### Privileged Instructions
+
+The following instructions raise trap 63 (`TRAP_PRIVILEGED_INSTRUCTION`) if executed in user mode:
+- `IRET` — return from exception (allows changing privilege level)
+- `STOP` — halt emulation
+- `LSR` — load special register
+- `SSR` — store special register
+
+### Page Table User Bit
+
+Bit 4 in a page table entry (PTE) is the user bit (`PTE_U`). In user mode, a page must have `PTE_U` set; otherwise, access raises trap 82 (`TRAP_PAGE_FAULT_PERMISSION`). In supervisor mode, `PTE_U` is ignored.
+
+### Kernel→User Transition
+
+The standard pattern to enter user mode:
+1. In supervisor mode, set up `interrupt_epc` (user entry address) and `interrupt_eflags` (desired flags).
+2. Write to `interrupt_cpu_control` (SR 16) with the desired `cpu_control` value **with bit 17 set** (user mode).
+3. Execute `IRET` — this restores `cpu_control` (including mode), PC, and flags, entering user mode.
+
+### Interrupt Entry
+
+On any interrupt or exception:
+1. The CPU saves `cpu_control` to `interrupt_cpu_control`.
+2. The CPU forcibly clears the user-mode bit (bit 17), entering supervisor mode.
+3. Other control bits are modified per interrupt handling rules (`InInterrupt`, `IntEnable`, `CurIntNum`).
+4. PC jumps to the handler address from the interrupt table.
 
 ## Calling Convention (Project Convention)
 
