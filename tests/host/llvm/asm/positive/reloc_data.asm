@@ -4,7 +4,7 @@
 .text
 .global _start
 _start:
-    LDI64 #message, R1
+    LDI64 message, R1
     LOAD [R1], R2
     STOP
 

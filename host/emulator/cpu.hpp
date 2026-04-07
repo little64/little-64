@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <array>
 #include <vector>
 #include <string>
 #include "device.hpp"
@@ -353,6 +354,12 @@ public:
     // Returns a pointer to the serial device if one is present, or nullptr.
     SerialDevice* getSerial();
 
+    // Enable/disable MMIO trace logging on all attached devices.
+    void setMmioTrace(bool enabled);
+
+    // Dump the boot event log to stderr. No-op if already dumped.
+    void dumpBootLog(const char* reason);
+
     // Assert a hardware interrupt line (sets the bit in interrupt_states).
     // The interrupt will be serviced on the next cycle if enabled and unmasked.
     void assertInterrupt(uint64_t num) override;
@@ -368,6 +375,18 @@ public:
     const EmulatorClock& clock() const { return _clock; }
 
 private:
+    struct BootEvent {
+        const char* tag = "";
+        uint64_t cycle = 0;
+        uint64_t pc = 0;
+        uint64_t a = 0;
+        uint64_t b = 0;
+        uint64_t c = 0;
+    };
+
+    void _recordBootEvent(const char* tag, uint64_t a = 0, uint64_t b = 0, uint64_t c = 0);
+    void _dumpBootEvents(const char* reason);
+
     EmulatorClock _clock;
     void _dispatchLSReg(const Instruction& instr);
     void _dispatchLSPCRel(const Instruction& instr);
@@ -414,4 +433,11 @@ private:
     uint64_t _mem_base = 0;
     uint64_t _mem_size = 0;
     std::vector<uint8_t> _boot_source_bytes;
+
+    static constexpr size_t kBootEventCapacity = 128;
+    std::array<BootEvent, kBootEventCapacity> _boot_events{};
+    size_t _boot_event_head = 0;
+    bool _boot_event_wrapped = false;
+    bool _boot_event_dumped = false;
+    uint64_t _cycle_count = 0;
 };

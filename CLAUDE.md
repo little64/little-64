@@ -10,6 +10,32 @@ This file documents practical update paths and maintenance rules for common proj
   - `meson.build` (top-level orchestration)
   - subsystem build files in `host/emulator/`, `host/disassembler/`, `host/linker/`, `host/project/`, `tests/`, `host/gui/`, `host/qt/`
 
+## Temporary Linux Build Script
+
+- A temporary Linux kernel build helper exists at `target/linux_port/build.sh`.
+- It invokes the Linux kernel `make` target with the Little64 LLVM toolchain from `compilers/bin`.
+- The script is currently not part of the Meson graph and is meant for local Linux port experimentation only.
+- Usage: `target/linux_port/build.sh [target]` where the default target is `vmlinux`.
+- The script normally passes `-j$(nproc)` to `make` unless a `-j` argument is already provided.
+- Optional guarded-clang mode can be enabled to catch backend non-termination/memory blowups:
+  - `LITTLE64_CLANG_GUARD=1` enables `target/linux_port/clang_guard.sh` wrapper.
+  - `LITTLE64_CLANG_TIMEOUT_SEC` sets per-clang timeout (default `120`).
+  - `LITTLE64_CLANG_MAX_VMEM_KB` sets per-clang virtual memory cap in KB (default `10485760`, ~10 GB).
+  - `LITTLE64_CLANG_GUARD_LOG_DIR` sets log directory (default `/tmp/little64-clang-guard`).
+- Direct ELF boot helper for first Linux bring-up exists at `target/linux_port/boot_direct.sh`:
+  - Default image path: `target/linux_port/build/vmlinux`.
+  - Usage: `target/linux_port/boot_direct.sh [optional-path-to-vmlinux]`.
+  - It launches the headless emulator in direct mode (`--boot-mode=direct`).
+- PC-to-source lookup helper for Linux kernel debugging exists at `target/linux_port/pc_to_line.sh`:
+  - Default image path: `target/linux_port/build/vmlinux`.
+  - Usage: `target/linux_port/pc_to_line.sh [--elf <path>] [--context-bytes N] [--no-disasm] <pc>`.
+  - It resolves a PC to function/file/line using LLVM tools from `compilers/bin` and can show nearby disassembly.
+- To override core count or pass custom `make` arguments, add them after the target, for example:
+  - `target/linux_port/build.sh vmlinux -j4`
+  - `target/linux_port/build.sh vmlinux LOCALVERSION=-custom CONFIG_DEBUG_INFO=y`
+  - `LITTLE64_CLANG_GUARD=1 LITTLE64_CLANG_TIMEOUT_SEC=90 target/linux_port/build.sh vmlinux -j4`
+  - `LITTLE64_CLANG_GUARD=1 LITTLE64_CLANG_MAX_VMEM_KB=10485760 target/linux_port/build.sh vmlinux -j1`
+
 ## Instruction Change Guide
 
 ## LS instructions (formats 00 and 01)
@@ -109,3 +135,7 @@ meson compile -C builddir little-64-debug
 meson test -C builddir debug-rsp-integration --print-errorlogs
 meson test -C builddir debug-lldb-remote-smoke --print-errorlogs
 ```
+
+## Required Reading
+
+Before answering any questions, planning any tasks or implementing any changes, you are required to read the documentation under `docs/`. If you find code contradicts the documentation, the code is authorative, as previously stated, and you must in your next response message report the contradiction, and how it should be solved.

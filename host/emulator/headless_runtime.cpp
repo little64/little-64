@@ -175,8 +175,7 @@ bool loadRuntimeImageFromPath(IEmulatorRuntime& runtime,
         const bool use_direct = (options.boot_mode == HeadlessBootMode::Direct);
         const bool loaded = use_direct
             ? runtime.loadProgramElfDirectPaged(bytes,
-                                               options.direct_kernel_physical_base,
-                                               options.direct_map_virtual_base)
+                                               options.direct_kernel_physical_base)
             : runtime.loadProgramElf(bytes);
         if (!loaded) {
             error = "Error: failed to load ELF executable";
@@ -190,10 +189,18 @@ bool loadRuntimeImageFromPath(IEmulatorRuntime& runtime,
 
 int runRuntimeUntilStop(IEmulatorRuntime& runtime, const HeadlessRunOptions& options, std::string& error) {
     uint64_t cycles = 0;
+    int exit_code = 0;
     while (runtime.isRunning()) {
+        if (options.stop_signal != nullptr && *options.stop_signal != 0) {
+            error = "Error: execution interrupted by signal " + std::to_string(*options.stop_signal);
+            exit_code = 128 + static_cast<int>(*options.stop_signal);
+            break;
+        }
+
         if (options.max_cycles > 0 && cycles >= options.max_cycles) {
             error = "Error: execution reached max cycle limit";
-            return 1;
+            exit_code = 1;
+            break;
         }
 
         runtime.cycle();
@@ -214,5 +221,5 @@ int runRuntimeUntilStop(IEmulatorRuntime& runtime, const HeadlessRunOptions& opt
         }
     }
 
-    return 0;
+    return exit_code;
 }

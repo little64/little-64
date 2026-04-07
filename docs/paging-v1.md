@@ -146,15 +146,24 @@ PTE bits:
 - bit `6`: `A` (accessed)
 - bit `7`: `D` (dirty)
 - bits `[9:8]`: software-defined (ignored by hardware)
-- bits `[53:10]`: physical page number (PPN)
-- bits `[63:54]`: reserved (must be zero in v1)
+- bits `[63:10]`: physical page number (PPN)
 
 Interpretation:
 
 - Non-leaf PTE: `V=1` and `R=W=X=0`; points to next-level page table.
-- Leaf PTE: `V=1` and at least one of `R/W/X` set; maps a 4 KiB page.
+- Leaf PTE: `V=1` and at least one of `R/W/X` set; maps a page at the level where it appears.
 
-v1 requires 4 KiB leaves only. Large pages can be added later without changing boot or hypercall contracts.
+Leaf sizes supported by current runtime:
+
+- L2 leaf: 1 GiB page
+- L1 leaf: 2 MiB page
+- L0 leaf: 4 KiB page
+
+Superpage base handling:
+
+- L2/L1/L0 leaf bases are taken from the PPN field (`bits [63:10]`) in 4 KiB granularity.
+- Runtime composes physical address as: `page_base + page_offset_within_leaf`.
+- This permits non-1GiB/non-2MiB-aligned superpage bases during bring-up while keeping the 3-level walk and permission model stable.
 
 ### Translation and permissions
 
@@ -221,7 +230,7 @@ This keeps higher-half semantics stable for both `bios` and `direct` paths.
 1. Parse/load kernel ELF PT_LOAD segments to physical RAM.
 2. Allocate temporary page tables in RAM:
     - one L2 root page,
-    - required L1/L0 pages for kernel mappings,
+   - required lower-level pages for kernel mappings (or use aligned superpage leaves),
     - optional temporary identity/trampoline mapping page tables.
 3. Map kernel virtual range (higher-half) to loaded physical pages with `R/X` for text and `R/W` for data.
 4. Map boot info frame into kernel-visible VA (or map a temporary identity alias and pass physical pointer by ABI contract).

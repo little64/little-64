@@ -81,6 +81,14 @@ std::vector<MemoryRegionView> EmulatorSession::memoryRegions() const {
     return out;
 }
 
+void EmulatorSession::setMmioTrace(bool enabled) {
+    _cpu.setMmioTrace(enabled);
+}
+
+void EmulatorSession::dumpBootLog(const char* reason) {
+    _cpu.dumpBootLog(reason);
+}
+
 std::string EmulatorSession::drainSerialTx() {
     SerialDevice* serial = _cpu.getSerial();
     if (!serial) {

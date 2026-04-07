@@ -1,0 +1,4 @@
+Index:
+  Exclude:
+    - compilers
+    - target/linux_port/linux

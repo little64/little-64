@@ -51,6 +51,7 @@ DESIRED_TOOL_TARGETS=(
     lli
     llvm-ar
     llvm-as
+    llvm-addr2line
     llvm-bcanalyzer
     llvm-cas
     llvm-cat
@@ -121,6 +122,7 @@ COPY_TOOLS=(
     lli
     llvm-ar
     llvm-as
+    llvm-addr2line
     llvm-bcanalyzer
     llvm-cas
     llvm-cat
@@ -213,32 +215,35 @@ case "$ACTION" in
         echo "Building LLVM for Little-64"
         echo "==========================="
 
+        # Flags applied on every configure (fresh or incremental).
+        CMAKE_FLAGS=(
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo
+            -DLLVM_TARGETS_TO_BUILD="Little64"
+            -DLLVM_ENABLE_PROJECTS="$LLVM_ENABLE_PROJECTS"
+            -DLLVM_BUILD_TOOLS=ON
+            -DLLVM_INCLUDE_TESTS=OFF
+            -DLLVM_INCLUDE_EXAMPLES=OFF
+            -DLLVM_INCLUDE_BENCHMARKS=OFF
+            -DCLANG_INCLUDE_TESTS=OFF
+            -DCLANG_INCLUDE_DOCS=OFF
+            # Keep assert() active even in RelWithDebInfo (strips -DNDEBUG).
+            -DLLVM_ENABLE_ASSERTIONS=ON
+            # Use mold for host linking; ld.lld is still used for target output.
+            # LLVM_ENABLE_LLD must be OFF when LLVM_USE_LINKER is set explicitly.
+            -DLLVM_ENABLE_LLD=OFF
+            -DLLVM_USE_LINKER=mold
+        )
+
         if [ ! -f "$BUILD_DIR/CMakeCache.txt" ]; then
             echo "Configuring LLVM..."
-            cmake -S "$LLVM_SOURCE_DIR" -B "$BUILD_DIR" \
-                -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-                -DLLVM_TARGETS_TO_BUILD="Little64" \
-                -DLLVM_ENABLE_PROJECTS="$LLVM_ENABLE_PROJECTS" \
-                -DLLVM_BUILD_TOOLS=ON \
-                -DLLVM_INCLUDE_TESTS=OFF \
-                -DLLVM_INCLUDE_EXAMPLES=OFF \
-                -DLLVM_INCLUDE_BENCHMARKS=OFF \
-                -DCLANG_INCLUDE_TESTS=OFF \
-                -DCLANG_INCLUDE_DOCS=OFF
+            cmake -S "$LLVM_SOURCE_DIR" -B "$BUILD_DIR" "${CMAKE_FLAGS[@]}"
         else
             echo "Using existing CMake configuration."
-            if ! grep -q 'LLVM_ENABLE_PROJECTS:STRING=.*lldb' "$BUILD_DIR/CMakeCache.txt"; then
-                echo "Reconfiguring to enable LLDB project..."
-                cmake -S "$LLVM_SOURCE_DIR" -B "$BUILD_DIR" \
-                    -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-                    -DLLVM_TARGETS_TO_BUILD="Little64" \
-                    -DLLVM_ENABLE_PROJECTS="$LLVM_ENABLE_PROJECTS" \
-                    -DLLVM_BUILD_TOOLS=ON \
-                    -DLLVM_INCLUDE_TESTS=OFF \
-                    -DLLVM_INCLUDE_EXAMPLES=OFF \
-                    -DLLVM_INCLUDE_BENCHMARKS=OFF \
-                    -DCLANG_INCLUDE_TESTS=OFF \
-                    -DCLANG_INCLUDE_DOCS=OFF
+            if ! grep -q 'LLVM_ENABLE_PROJECTS:STRING=.*lldb' "$BUILD_DIR/CMakeCache.txt" ||
+               ! grep -q 'LLVM_ENABLE_ASSERTIONS:BOOL=ON' "$BUILD_DIR/CMakeCache.txt" ||
+               ! grep -q 'LLVM_USE_LINKER.*=mold' "$BUILD_DIR/CMakeCache.txt"; then
+                echo "Reconfiguring (assertions, linker, or projects changed)..."
+                cmake -S "$LLVM_SOURCE_DIR" -B "$BUILD_DIR" "${CMAKE_FLAGS[@]}"
             fi
         fi
 
@@ -257,15 +262,59 @@ case "$ACTION" in
         fi
 
         echo "Building tools: ${BUILD_TARGETS[*]}"
-        cmake --build "$BUILD_DIR" --target "${BUILD_TARGETS[@]}" -- -j"$(nproc)"
+        nice -n 19 cmake --build "$BUILD_DIR" --target "${BUILD_TARGETS[@]}" -- -j"$(nproc)"
 
         echo ""
         echo "Copying and stripping binaries to: $BIN_OUTPUT_DIR"
+
+        PARALLEL_COPY_JOBS="$(nproc)"
+        tmpdir=$(mktemp -d)
+        cleanup() {
+            rm -rf "$tmpdir"
+        }
+        trap cleanup EXIT
+
+        copy_pids=()
+        copy_failed=0
+        active_jobs=0
         for tool in "${COPY_TOOLS[@]}"; do
             src="$BUILD_DIR/bin/$tool"
             dst="$BIN_OUTPUT_DIR/$tool"
-            copy_binary "$src" "$dst"
+            outfile="$tmpdir/$tool.out"
+
+            (
+                copy_binary "$src" "$dst"
+            ) >"$outfile" 2>&1 &
+            copy_pids+=("$!")
+            active_jobs=$((active_jobs + 1))
+
+            if [ "$active_jobs" -ge "$PARALLEL_COPY_JOBS" ]; then
+                if ! wait -n; then
+                    copy_failed=1
+                fi
+                active_jobs=$((active_jobs - 1))
+            fi
         done
+
+        while [ "$active_jobs" -gt 0 ]; do
+            if ! wait -n; then
+                copy_failed=1
+            fi
+            active_jobs=$((active_jobs - 1))
+        done
+
+        for tool in "${COPY_TOOLS[@]}"; do
+            outfile="$tmpdir/$tool.out"
+            if [ -s "$outfile" ]; then
+                cat "$outfile"
+            fi
+        done
+
+        if [ "$copy_failed" -ne 0 ]; then
+            echo ""
+            echo "Error: one or more binaries failed to copy or strip."
+            exit 1
+        fi
 
         echo ""
         echo "✓ Build successful!"

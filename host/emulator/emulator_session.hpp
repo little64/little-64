@@ -29,6 +29,9 @@ public:
 
     std::string drainSerialTx() override;
 
+    void setMmioTrace(bool enabled);
+    void dumpBootLog(const char* reason);
+
 private:
     Little64CPU _cpu;
 };

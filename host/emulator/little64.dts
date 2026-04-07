@@ -18,13 +18,13 @@
         };
     };
 
-    memory@1000 {
+    memory@100000 {
         device_type = "memory";
-        reg = <0x0 0x1000 0x0 0x4000000>;  /* 64 MB; patched at runtime */
+        reg = <0x0 0x100000 0x0 0x4000000>;  /* 1 MiB base, 64 MiB size */
     };
 
     chosen {
-        bootargs = "";
+        bootargs = "console=ttyS0,115200 earlycon=uart8250,mmio64,0xffffffffffff0000,115200n8 ignore_loglevel loglevel=8";
     };
 
     uart@ffffffffffff0000 {

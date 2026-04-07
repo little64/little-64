@@ -129,12 +129,12 @@ test('boot-bios-run',
   timeout : 60,
 )
 
-test('boot-direct-paging-run',
+test('boot-direct-physical-run',
   python3,
   args : [
     meson.project_source_root() / 'tests/host/boot/test_direct_boot_paging.py',
   ],
-  suite : ['boot', 'integration', 'paging'],
+  suite : ['boot', 'integration', 'direct'],
   timeout : 60,
 )
 

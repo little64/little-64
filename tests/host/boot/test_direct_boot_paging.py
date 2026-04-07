@@ -13,10 +13,13 @@ def main() -> int:
     builddir = ROOT / "builddir"
     builddir.mkdir(parents=True, exist_ok=True)
 
-    asm = builddir / "test_direct_boot_highhalf.s"
-    linker = builddir / "test_direct_boot_highhalf.ld"
-    obj = builddir / "test_direct_boot_highhalf.o"
-    elf = builddir / "test_direct_boot_highhalf.elf"
+    # Note: renamed from test_direct_boot_highhalf to test_direct_boot_physical
+    # The direct boot mode now boots with paging OFF, so the ELF must link at
+    # the physical address (0x100000) not a virtual address.
+    asm = builddir / "test_direct_boot_physical.s"
+    linker = builddir / "test_direct_boot_physical.ld"
+    obj = builddir / "test_direct_boot_physical.o"
+    elf = builddir / "test_direct_boot_physical.elf"
 
     asm.write_text(
         ".text\n"
@@ -30,7 +33,7 @@ def main() -> int:
         "ENTRY(_start)\n"
         "SECTIONS\n"
         "{\n"
-        "  . = 0xFFFFFFC000000000;\n"
+        "  . = 0x100000;\n"
         "  .text : { *(.text*) }\n"
         "  .rodata : { *(.rodata*) }\n"
         "  .data : { *(.data*) }\n"

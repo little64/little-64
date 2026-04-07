@@ -12,7 +12,7 @@ void _start(void) {
         "LDI.S1 #0, R13\n\t"
         "LDI.S2 #0, R13\n\t"
         "LDI.S3 #4, R13\n\t"
-        "LDI64 #main, R1\n\t"
+        "LDI64 main, R1\n\t"
         "MOVE R1, PC"
     );
 }

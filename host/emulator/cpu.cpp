@@ -2,6 +2,7 @@
 #include "machine_config.hpp"
 #include "opcodes.hpp"
 #include "page_table_builder.hpp"
+#include "dtb_loader.hpp"
 #include "ram_region.hpp"
 #include <memory>
 #include <algorithm>
@@ -38,12 +39,56 @@ constexpr uint64_t HYPERCALL_STATUS_UNSUPPORTED = 2;
 constexpr uint64_t HYPERCALL_STATUS_RANGE = 3;
 
 constexpr uint64_t HYPERCALL_CAP_MINIMAL_BOOT = 1;
+constexpr uint64_t SERIAL_BASE = 0xFFFFFFFFFFFF0000ULL;
 
 } // namespace
+
+void Little64CPU::_recordBootEvent(const char* tag, uint64_t a, uint64_t b, uint64_t c) {
+    BootEvent& ev = _boot_events[_boot_event_head];
+    ev.tag = tag;
+    ev.cycle = _cycle_count;
+    ev.pc = registers.regs[15];
+    ev.a = a;
+    ev.b = b;
+    ev.c = c;
+
+    _boot_event_head = (_boot_event_head + 1) % kBootEventCapacity;
+    if (_boot_event_head == 0) {
+        _boot_event_wrapped = true;
+    }
+}
+
+void Little64CPU::_dumpBootEvents(const char* reason) {
+    if (_boot_event_dumped) {
+        return;
+    }
+    _boot_event_dumped = true;
+
+    std::cerr << "[little64] boot-debug: " << reason << "\n";
+    std::cerr << "[little64] boot-debug: last events (oldest to newest)\n";
+
+    const size_t count = _boot_event_wrapped ? kBootEventCapacity : _boot_event_head;
+    const size_t start = _boot_event_wrapped ? _boot_event_head : 0;
+    for (size_t i = 0; i < count; ++i) {
+        const size_t idx = (start + i) % kBootEventCapacity;
+        const BootEvent& ev = _boot_events[idx];
+        std::cerr << "  [" << ev.cycle << "] " << ev.tag
+                  << " pc=0x" << std::hex << ev.pc
+                  << " a=0x" << ev.a
+                  << " b=0x" << ev.b
+                  << " c=0x" << ev.c
+                  << std::dec << "\n";
+    }
+}
 
 void Little64CPU::reset() {
     registers = {};
     isRunning = true;
+    _boot_event_head = 0;
+    _boot_event_wrapped = false;
+    _boot_event_dumped = false;
+    _cycle_count = 0;
+    _recordBootEvent("reset");
     for (Device* device : _devices) {
         if (device) {
             device->reset();
@@ -54,6 +99,7 @@ void Little64CPU::reset() {
 void Little64CPU::cycle() {
     if (!isRunning)
         return;
+    ++_cycle_count;
 
     // R0 is always zero
     registers.regs[0] = 0;
@@ -61,6 +107,8 @@ void Little64CPU::cycle() {
     uint64_t pc = registers.regs[15];
     uint16_t instr_word = _readMemory16(pc, pc, CpuAccessType::Execute);
     if (!isRunning) {
+        _recordBootEvent("fetch-failed", pc, instr_word, registers.trap_cause);
+        _dumpBootEvents("execution stopped during fetch");
         return;
     }
     Instruction instr(instr_word);
@@ -464,11 +512,13 @@ void Little64CPU::_dispatchGP(const Instruction& instr) {
                 _raiseInterrupt(AddressTranslator::TRAP_PRIVILEGED_INSTRUCTION, true, registers.regs[15] - 2);
                 return;
             }
+            _recordBootEvent("stop", registers.regs[15], registers.flags, registers.cpu_control);
             std::cerr << "STOP instruction hit. Register state:" << std::endl;
             for (int i = 0; i < 16; ++i) {
                 std::cerr << "  R" << i << ": 0x" << std::hex << registers.regs[i] << std::dec << std::endl;
             }
             isRunning = false;
+            _dumpBootEvents("STOP instruction");
             break;
         }
     }
@@ -508,6 +558,11 @@ bool Little64CPU::_mapAddress(uint64_t virtual_addr, CpuAccessType access, uint6
     registers.trap_access = static_cast<uint64_t>(access);
     registers.trap_pc = operation_pc;
     registers.trap_aux = result.trap_aux;
+
+    _recordBootEvent("mmu-fault",
+                     virtual_addr,
+                     (static_cast<uint64_t>(access) << 56) | (result.trap_cause & 0x00FFFFFFFFFFFFFFULL),
+                     operation_pc);
 
     _raiseInterrupt(result.trap_cause, true, operation_pc);
     return false;
@@ -613,6 +668,9 @@ void Little64CPU::_writeMemory8(uint64_t addr, uint8_t v, uint64_t operation_pc)
         return;
     }
     _bus.write8(physical, v, MemoryAccessType::Write);
+    if (physical == SERIAL_BASE) {
+        _recordBootEvent("uart-tx", static_cast<uint64_t>(v), addr, operation_pc);
+    }
 }
 
 uint16_t Little64CPU::_readMemory16(uint64_t addr, uint64_t operation_pc, CpuAccessType access) {
@@ -669,6 +727,10 @@ void Little64CPU::_writeMemory64(uint64_t addr, uint64_t v, uint64_t operation_p
 }
 
 bool Little64CPU::loadProgramElf(const std::vector<uint8_t>& elf_bytes, uint64_t /*base_unused*/) {
+    _boot_event_head = 0;
+    _boot_event_wrapped = false;
+    _boot_event_dumped = false;
+    _cycle_count = 0;
     if (elf_bytes.size() < sizeof(Elf64_Ehdr))
         return false;
 
@@ -739,11 +801,16 @@ bool Little64CPU::loadProgramElf(const std::vector<uint8_t>& elf_bytes, uint64_t
     registers.regs[13] = base_addr + total_ram - 8;
     registers.regs[15] = ehdr->e_entry;
     isRunning = true;
+    _recordBootEvent("elf-load", base_addr, total_ram, ehdr->e_entry);
 
     return true;
 }
 
 void Little64CPU::loadProgram(const std::vector<uint16_t>& words, uint64_t base, uint64_t entry_offset) {
+    _boot_event_head = 0;
+    _boot_event_wrapped = false;
+    _boot_event_dumped = false;
+    _cycle_count = 0;
     // Convert 16-bit words to bytes (little-endian)
     std::vector<uint8_t> bytes;
     bytes.reserve(words.size() * 2);
@@ -785,11 +852,17 @@ void Little64CPU::loadProgram(const std::vector<uint16_t>& words, uint64_t base,
     registers.regs[13] = base + total_size - 8;
     registers.regs[15] = base + entry_offset;
     isRunning = true;
+    _recordBootEvent("bin-load", base, total_size, registers.regs[15]);
 }
 
 bool Little64CPU::loadProgramElfDirectPaged(const std::vector<uint8_t>& elf_bytes,
                                             uint64_t kernel_physical_base,
                                             uint64_t direct_map_virtual_base) {
+    (void)direct_map_virtual_base;
+    _boot_event_head = 0;
+    _boot_event_wrapped = false;
+    _boot_event_dumped = false;
+    _cycle_count = 0;
     if (elf_bytes.size() < sizeof(Elf64_Ehdr)) {
         return false;
     }
@@ -860,54 +933,46 @@ bool Little64CPU::loadProgramElfDirectPaged(const std::vector<uint8_t>& elf_byte
     registers.boot_source_page_count = (_boot_source_bytes.size() + 4095ULL) / 4096ULL;
     registers.hypercall_caps = HYPERCALL_CAP_MINIMAL_BOOT;
 
-    CpuPageAllocator allocator(*this);
-    const auto root = PageTableBuilder::createRoot(allocator, _bus);
-    if (!root.ok) {
+    // Place embedded DTB at 4KB-aligned offset after kernel image.
+    // The kernel will find it via R1 and use it for device discovery.
+    const uint64_t dtb_offset = (image_span + 0xFFFULL) & ~0xFFFULL;
+    const uint64_t dtb_phys = kernel_physical_base + dtb_offset;
+    auto dtb_span = DTBLoader::getEmbeddedDTB();
+    if (!dtb_span.empty() && dtb_phys + dtb_span.size() <= kernel_physical_base + total_ram) {
+        for (size_t i = 0; i < dtb_span.size(); ++i) {
+            _bus.write8(dtb_phys + i, dtb_span[i]);
+        }
+    }
+
+    uint64_t entry_physical = 0;
+    const uint64_t entry = ehdr->e_entry;
+    const uint64_t virt_end = virt_base + image_span;
+
+    // Accept both common kernel image styles:
+    // 1) virtual entry inside PT_LOAD virtual window, or
+    // 2) already-physical entry inside loaded physical image.
+    if (entry >= virt_base && entry < virt_end) {
+        entry_physical = kernel_physical_base + (entry - virt_base);
+    } else if (entry >= kernel_physical_base && entry < kernel_physical_base + image_span) {
+        entry_physical = entry;
+    } else {
         return false;
     }
 
-    // Temporary identity mapping for initial low memory transition.
-    const uint64_t identity_limit = std::min<uint64_t>(_mem_base + 2 * 1024 * 1024, _mem_base + _mem_size);
-    for (uint64_t pa = _mem_base; pa < identity_limit; pa += PAGE) {
-        if (!PageTableBuilder::map4K(_bus, allocator, root.root, pa, pa, true, true, true, true)) {
-            return false;
-        }
-    }
-
-    // Direct-map full RAM in higher half.
-    for (uint64_t off = 0; off < _mem_size; off += PAGE) {
-        const uint64_t pa = _mem_base + off;
-        const uint64_t va = direct_map_virtual_base + off;
-        if (!PageTableBuilder::map4K(_bus, allocator, root.root, va, pa, true, true, true, true)) {
-            return false;
-        }
-    }
-
-    // Segment-accurate mappings for kernel virtual addresses.
-    for (uint16_t i = 0; i < ehdr->e_phnum; ++i) {
-        const Elf64_Phdr* ph = reinterpret_cast<const Elf64_Phdr*>(
-            elf_bytes.data() + ehdr->e_phoff + static_cast<uint64_t>(i) * ehdr->e_phentsize);
-        if (ph->p_type != PT_LOAD) continue;
-
-        const uint64_t seg_start = (ph->p_vaddr / PAGE) * PAGE;
-        const uint64_t seg_end = ((ph->p_vaddr + ph->p_memsz + PAGE - 1) / PAGE) * PAGE;
-        const bool r = (ph->p_flags & PF_R) != 0;
-        const bool w = (ph->p_flags & PF_W) != 0;
-        const bool x = (ph->p_flags & PF_X) != 0;
-
-        for (uint64_t va = seg_start; va < seg_end; va += PAGE) {
-            const uint64_t pa = kernel_physical_base + (va - virt_base);
-            if (!PageTableBuilder::map4K(_bus, allocator, root.root, va, pa, r, w, x, true)) {
-                return false;
-            }
-        }
-    }
-
-    registers.page_table_root_physical = root.root;
-    registers.setPagingEnabled(true);
-    registers.regs[13] = direct_map_virtual_base + (_mem_size - 8);
-    registers.regs[15] = ehdr->e_entry;
+    // Linux-compatible boot handoff contract:
+    //   R1  = physical address of device tree blob
+    //   R13 = top of physical RAM (temporary early stack)
+    //   R15 = physical address of _start
+    //   Paging OFF, interrupts disabled, supervisor mode
+    //
+    // The kernel's head.S will set up page tables and enable paging.
+    registers.regs[1]  = dtb_phys;
+    registers.regs[13] = kernel_physical_base + total_ram - 8;
+    registers.regs[15] = entry_physical;
+    registers.boot_info_frame_physical = dtb_phys;  // SR12: for compatibility
     isRunning = true;
+    _recordBootEvent("direct-boot-load", kernel_physical_base, total_ram, entry_physical);
+    _recordBootEvent("direct-boot-dtb", dtb_phys, static_cast<uint64_t>(dtb_span.size()), registers.regs[1]);
     return true;
 }
 
@@ -929,11 +994,26 @@ SerialDevice* Little64CPU::getSerial() {
     return nullptr;
 }
 
+void Little64CPU::setMmioTrace(bool enabled) {
+    for (Device* d : _devices) {
+        if (auto* s = dynamic_cast<SerialDevice*>(d))
+            s->setMmioTrace(enabled);
+    }
+}
+
+void Little64CPU::dumpBootLog(const char* reason) {
+    _dumpBootEvents(reason);
+}
+
 bool Little64CPU::_raiseInterrupt(uint64_t interrupt_number, bool exception, uint64_t epc) {
+    _recordBootEvent(exception ? "exception-raise" : "irq-raise", interrupt_number, epc, registers.regs[15]);
     if(!registers.isInterruptEnabled()) {
         // interrupts disabled; interrupts are ignored, but exceptions cause lockup
-        if (exception)
+        if (exception) {
             isRunning = false;
+            _recordBootEvent("exception-lockup", interrupt_number, epc, registers.regs[15]);
+            _dumpBootEvents("exception while interrupts disabled");
+        }
         return false;
     }
 
@@ -952,8 +1032,10 @@ bool Little64CPU::_raiseInterrupt(uint64_t interrupt_number, bool exception, uin
 
     uint64_t handler_addr = registers.interrupt_table_base + (interrupt_number * 8);
     uint64_t handler = _readMemory64(handler_addr, registers.regs[15]);
-    if (handler == 0)
+    if (handler == 0) {
+        _recordBootEvent("interrupt-no-handler", interrupt_number, handler_addr, 0);
         return false;  // no handler registered
+    }
 
     // Save full CPU control state (including privilege level) and force supervisor mode on interrupt entry
     registers.interrupt_cpu_control = registers.cpu_control;
@@ -977,6 +1059,7 @@ bool Little64CPU::_raiseInterrupt(uint64_t interrupt_number, bool exception, uin
 
     // Jump to handler
     registers.regs[15] = handler;
+    _recordBootEvent("interrupt-enter", interrupt_number, handler, registers.interrupt_epc);
 
     return true;
 }

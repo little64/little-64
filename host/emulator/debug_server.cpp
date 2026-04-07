@@ -121,7 +121,22 @@ bool DebugServer::handlePacket(const std::string& payload, bool& should_exit) {
     }
 
     if (payload.starts_with("qMemoryRegionInfo:")) {
-        _transport.writePacket("start:0;size:ffffffffffffffff;permissions:rwx;");
+        uint64_t query_addr = 0;
+        if (!parseHexU64(payload.substr(std::string("qMemoryRegionInfo:").size()), query_addr)) {
+            _transport.writePacket("E01");
+            return true;
+        }
+
+        // Debugging interoperability:
+        // Always return a small finite region around the queried address.
+        // LLDB expression evaluation can assert if memory-region queries are
+        // non-contiguous or alternate between success/failure while it scans.
+        const uint64_t start = query_addr & ~0xFFFULL;
+        constexpr uint64_t size = 0x1000ULL;
+        std::ostringstream out;
+        out << std::hex;
+        out << "start:" << start << ";size:" << size << ";permissions:rwx;";
+        _transport.writePacket(out.str());
         return true;
     }
 
