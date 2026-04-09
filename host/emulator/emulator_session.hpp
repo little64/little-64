@@ -30,7 +30,10 @@ public:
     std::string drainSerialTx() override;
 
     void setMmioTrace(bool enabled);
+    void setControlFlowTrace(bool enabled);
     void dumpBootLog(const char* reason);
+    bool setBootEventOutputFile(const std::string& path);
+    bool dumpBootLogToFile(const char* reason, const std::string& path);
 
 private:
     Little64CPU _cpu;

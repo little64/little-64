@@ -5,10 +5,9 @@ SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
 REPO_ROOT=$(readlink -f "$SCRIPT_DIR/../..")
 EMULATOR_BIN="$REPO_ROOT/builddir/little-64"
 DEFAULT_KERNEL_ELF="$SCRIPT_DIR/build/vmlinux"
-DEFAULT_KERNEL_CMDLINE="console=ttyS0,115200 earlycon=uart8250,mmio,0x08000000,115200n8 ignore_loglevel loglevel=8"
 
 usage() {
-    cat <<EOF
+    cat <<EOM
 Usage: $0 [--max-cycles N] [kernel-elf]
 
 If kernel-elf is omitted, $DEFAULT_KERNEL_ELF is used.
@@ -19,11 +18,10 @@ Examples:
   $0 $DEFAULT_KERNEL_ELF
   $0 --max-cycles 10000000
   $0 $DEFAULT_KERNEL_ELF --max-cycles=10000000
-EOF
+EOM
 }
 
 KERNEL_ELF="$DEFAULT_KERNEL_ELF"
-KERNEL_CMDLINE="${LITTLE64_KERNEL_CMDLINE:-$DEFAULT_KERNEL_CMDLINE}"
 MAX_CYCLES=""
 POSITIONAL=()
 while [[ $# -gt 0 ]]; do
@@ -55,7 +53,7 @@ while [[ $# -gt 0 ]]; do
             done
             break
             ;;
-        -* )
+        -*)
             echo "error: unknown option: $1" >&2
             exit 1
             ;;
@@ -89,63 +87,33 @@ if [[ -n "$MAX_CYCLES" && ! "$MAX_CYCLES" =~ ^[0-9]+$ ]]; then
 fi
 
 if [[ ! -x "$EMULATOR_BIN" ]]; then
-    echo "error: emulator binary not found at $EMULATOR_BIN"
-    echo "hint: build it first with: meson compile -C $REPO_ROOT/builddir"
+    echo "error: emulator binary not found at $EMULATOR_BIN" >&2
+    echo "hint: build it first with: meson compile -C $REPO_ROOT/builddir" >&2
     exit 1
 fi
 
 if [[ ! -f "$KERNEL_ELF" ]]; then
-    echo "error: kernel ELF not found at $KERNEL_ELF"
-    echo "hint: build it first with: $SCRIPT_DIR/build.sh vmlinux -j1"
+    echo "error: kernel ELF not found at $KERNEL_ELF" >&2
+    echo "hint: build it first with: $SCRIPT_DIR/build.sh vmlinux -j1" >&2
     exit 1
 fi
 
-echo "[little64] direct boot: $KERNEL_ELF"
-if strings "$KERNEL_ELF" | grep -Fq "$KERNEL_CMDLINE"; then
-    echo "[little64] kernel cmdline signature present: $KERNEL_CMDLINE"
-else
-    echo "[little64] warning: expected kernel cmdline signature not found in $KERNEL_ELF" >&2
-    echo "[little64] warning: expected: $KERNEL_CMDLINE" >&2
-    echo "[little64] warning: rebuild kernel after updating arch/little64/boot/dts/little64.dts" >&2
-fi
-
-# Optional targeted LR trace instrumentation for return-address debugging.
-# Enable with:
-#   LITTLE64_TRACE_LR=1 target/linux_port/boot_direct.sh
-# Optionally override the PC window:
-#   LITTLE64_TRACE_LR_START=0xffffffc0000ad000 LITTLE64_TRACE_LR_END=0xffffffc0000b4700
 if [[ "${LITTLE64_TRACE_LR:-0}" == "1" ]]; then
     : "${LITTLE64_TRACE_LR_START:=0xffffffc0000ad000}"
     : "${LITTLE64_TRACE_LR_END:=0xffffffc0000b4700}"
     export LITTLE64_TRACE_LR_START LITTLE64_TRACE_LR_END
-    echo "[little64] lr trace enabled: pc in [${LITTLE64_TRACE_LR_START}, ${LITTLE64_TRACE_LR_END}]" >&2
 fi
 
-# Optional memory write-watch for narrow stack-slot mining.
-# Enable with:
-#   LITTLE64_TRACE_WATCH=1 target/linux_port/boot_direct.sh
-# Optionally override watched virtual address range:
-#   LITTLE64_TRACE_WATCH_START=0xffffffc0006a3f40 LITTLE64_TRACE_WATCH_END=0xffffffc0006a3f70
 if [[ "${LITTLE64_TRACE_WATCH:-0}" == "1" ]]; then
     : "${LITTLE64_TRACE_WATCH_START:=0xffffffc0006a3f40}"
     : "${LITTLE64_TRACE_WATCH_END:=0xffffffc0006a3f70}"
     export LITTLE64_TRACE_WATCH_START LITTLE64_TRACE_WATCH_END
-    echo "[little64] watch trace enabled: addr in [${LITTLE64_TRACE_WATCH_START}, ${LITTLE64_TRACE_WATCH_END}]" >&2
 fi
 
-# Keep output tooling readable when killed by timeout by forcing a trailing newline.
-print_trailing_newline() {
-    printf '\n' >&2
-}
-
-trap print_trailing_newline EXIT INT TERM
-EMULATOR_ARGS=("$EMULATOR_BIN" --trace-mmio --boot-events --trace-control-flow --boot-events-file=/tmp/little64_boot_events.log --boot-mode=direct)
+EMULATOR_ARGS=("$EMULATOR_BIN" --boot-mode=direct)
 if [[ -n "$MAX_CYCLES" ]]; then
     EMULATOR_ARGS+=("--max-cycles=$MAX_CYCLES")
 fi
 EMULATOR_ARGS+=("$KERNEL_ELF")
-"${EMULATOR_ARGS[@]}" 2> /tmp/little64_boot.log
-status=$?
-trap - EXIT INT TERM
-printf '\n(boot event log saved to /tmp/little64_boot_events.log)\n' >&2
-exit "$status"
+
+exec "${EMULATOR_ARGS[@]}"

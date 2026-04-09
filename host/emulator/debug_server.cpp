@@ -172,14 +172,24 @@ bool DebugServer::handlePacket(const std::string& payload, bool& should_exit) {
             return true;
         }
 
-        if (reg_index > 16) {
+        if (reg_index > 33) {
             _transport.writePacket("E45");
             return true;
         }
 
-        static constexpr const char* kNames[17] = {
+        static constexpr const char* kNames[34] = {
             "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7",
-            "r8", "r9", "r10", "r11", "r12", "sp", "lr", "pc", "flags"
+            "r8", "r9", "r10", "r11", "r12", "sp", "lr", "pc", "flags",
+            "sr0", "sr1", "sr2", "sr3", "sr4", "sr5", "sr6", "sr7",
+            "sr8", "sr9", "sr10", "sr11", "sr12", "sr13", "sr14", "sr15", "sr16"
+        };
+
+        static constexpr const char* kSrNames[17] = {
+            "cpu_control", "interrupt_table_base", "interrupt_mask", "interrupt_states",
+            "interrupt_epc", "interrupt_eflags", "trap_cause", "trap_fault_addr",
+            "trap_access", "trap_pc", "trap_aux", "page_table_root_physical",
+            "boot_info_frame_physical", "boot_source_page_size", "boot_source_page_count",
+            "hypercall_caps", "interrupt_cpu_control"
         };
 
         std::ostringstream out;
@@ -188,7 +198,21 @@ bool DebugServer::handlePacket(const std::string& payload, bool& should_exit) {
             << ";encoding:uint;format:hex;set:General Purpose Registers;"
             << "gcc:" << reg_index << ";dwarf:" << reg_index << ";";
 
-        if (reg_index == 11) {
+        if (reg_index >= 17 && reg_index <= 33) {
+            out << "alt-name:" << kSrNames[reg_index - 17] << ";";
+        }
+
+        if (reg_index == 6) {
+            out << "generic:arg5;";
+        } else if (reg_index == 7) {
+            out << "generic:arg4;";
+        } else if (reg_index == 8) {
+            out << "generic:arg3;";
+        } else if (reg_index == 9) {
+            out << "generic:arg2;";
+        } else if (reg_index == 10) {
+            out << "generic:arg1;";
+        } else if (reg_index == 11) {
             out << "alt-name:fp;";
             out << "generic:fp;";
         } else if (reg_index == 13) {
@@ -245,6 +269,10 @@ bool DebugServer::handlePacket(const std::string& payload, bool& should_exit) {
         }
         if (reg_index == 16) {
             _transport.writePacket(encodeHexU64LE(snapshot.flags));
+            return true;
+        }
+        if (reg_index >= 17 && reg_index <= 33) {
+            _transport.writePacket(encodeHexU64LE(snapshot.getSpecialRegisterByID(reg_index - 17)));
             return true;
         }
 
@@ -526,6 +554,9 @@ void DebugServer::setLastStopReply(const std::string& reply) {
                 << encodeHexU64LE(snapshot.gpr[static_cast<size_t>(reg)]) << ";";
         }
         out << std::hex << 16 << ":" << encodeHexU64LE(snapshot.flags) << ";";
+        for (int i = 0; i < 17; ++i) {
+            out << std::hex << (17 + i) << ":" << encodeHexU64LE(snapshot.getSpecialRegisterByID(static_cast<uint64_t>(i))) << ";";
+        }
 
         _last_stop_reply = out.str();
         return;
@@ -554,6 +585,9 @@ void DebugServer::setLastStopReplyWithReason(const std::string& signal_hex, cons
             << encodeHexU64LE(snapshot.gpr[static_cast<size_t>(reg)]) << ";";
     }
     out << std::hex << 16 << ":" << encodeHexU64LE(snapshot.flags) << ";";
+    for (int i = 0; i < 17; ++i) {
+        out << std::hex << (17 + i) << ":" << encodeHexU64LE(snapshot.getSpecialRegisterByID(i)) << ";";
+    }
 
     _last_stop_reply = out.str();
 }
@@ -561,11 +595,14 @@ void DebugServer::setLastStopReplyWithReason(const std::string& signal_hex, cons
 std::string DebugServer::registerPayload() const {
     const RegisterSnapshot snapshot = _runtime.registers();
     std::string out;
-    out.reserve((16 + 1) * 16);
+    out.reserve((16 + 1 + 17) * 16);
     for (int i = 0; i < 16; ++i) {
         out += encodeHexU64LE(snapshot.gpr[i]);
     }
     out += encodeHexU64LE(snapshot.flags);
+    for (uint64_t i = 0; i < 17; ++i) {
+        out += encodeHexU64LE(snapshot.getSpecialRegisterByID(i));
+    }
     return out;
 }
 
@@ -575,23 +612,40 @@ std::string DebugServer::targetXml() const {
 <target>
   <architecture>little64</architecture>
   <feature name="org.gnu.gdb.little64.core">
-        <reg name="r0" bitsize="64" regnum="0" dwarf_regnum="0" ehframe_regnum="0" generic="arg1"/>
-        <reg name="r1" bitsize="64" regnum="1" dwarf_regnum="1" ehframe_regnum="1" generic="arg2"/>
-        <reg name="r2" bitsize="64" regnum="2" dwarf_regnum="2" ehframe_regnum="2" generic="arg3"/>
-        <reg name="r3" bitsize="64" regnum="3" dwarf_regnum="3" ehframe_regnum="3" generic="arg4"/>
-        <reg name="r4" bitsize="64" regnum="4" dwarf_regnum="4" ehframe_regnum="4" generic="arg5"/>
-        <reg name="r5" bitsize="64" regnum="5" dwarf_regnum="5" ehframe_regnum="5" generic="arg6"/>
-        <reg name="r6" bitsize="64" regnum="6" dwarf_regnum="6" ehframe_regnum="6" generic="arg7"/>
-        <reg name="r7" bitsize="64" regnum="7" dwarf_regnum="7" ehframe_regnum="7" generic="arg8"/>
-        <reg name="r8" bitsize="64" regnum="8" dwarf_regnum="8" ehframe_regnum="8"/>
-        <reg name="r9" bitsize="64" regnum="9" dwarf_regnum="9" ehframe_regnum="9"/>
-        <reg name="r10" bitsize="64" regnum="10" dwarf_regnum="10" ehframe_regnum="10"/>
+        <reg name="r0" bitsize="64" regnum="0" dwarf_regnum="0" ehframe_regnum="0"/>
+        <reg name="r1" bitsize="64" regnum="1" dwarf_regnum="1" ehframe_regnum="1"/>
+        <reg name="r2" bitsize="64" regnum="2" dwarf_regnum="2" ehframe_regnum="2"/>
+        <reg name="r3" bitsize="64" regnum="3" dwarf_regnum="3" ehframe_regnum="3"/>
+        <reg name="r4" bitsize="64" regnum="4" dwarf_regnum="4" ehframe_regnum="4"/>
+        <reg name="r5" bitsize="64" regnum="5" dwarf_regnum="5" ehframe_regnum="5"/>
+        <reg name="r6" bitsize="64" regnum="6" dwarf_regnum="6" ehframe_regnum="6" generic="arg5"/>
+        <reg name="r7" bitsize="64" regnum="7" dwarf_regnum="7" ehframe_regnum="7" generic="arg4"/>
+        <reg name="r8" bitsize="64" regnum="8" dwarf_regnum="8" ehframe_regnum="8" generic="arg3"/>
+        <reg name="r9" bitsize="64" regnum="9" dwarf_regnum="9" ehframe_regnum="9" generic="arg2"/>
+        <reg name="r10" bitsize="64" regnum="10" dwarf_regnum="10" ehframe_regnum="10" generic="arg1"/>
         <reg name="r11" altname="fp" bitsize="64" regnum="11" dwarf_regnum="11" ehframe_regnum="11" generic="fp"/>
         <reg name="r12" bitsize="64" regnum="12" dwarf_regnum="12" ehframe_regnum="12"/>
         <reg name="sp" bitsize="64" regnum="13" dwarf_regnum="13" ehframe_regnum="13" generic="sp"/>
         <reg name="lr" altname="ra" bitsize="64" regnum="14" dwarf_regnum="14" ehframe_regnum="14" generic="ra"/>
         <reg name="pc" bitsize="64" regnum="15" dwarf_regnum="15" ehframe_regnum="15" generic="pc"/>
         <reg name="flags" bitsize="64" regnum="16" dwarf_regnum="16" ehframe_regnum="16" generic="flags"/>
+        <reg name="sr0" altname="cpu_control" bitsize="64" regnum="17" dwarf_regnum="17" ehframe_regnum="17"/>
+        <reg name="sr1" altname="interrupt_table_base" bitsize="64" regnum="18" dwarf_regnum="18" ehframe_regnum="18"/>
+        <reg name="sr2" altname="interrupt_mask" bitsize="64" regnum="19" dwarf_regnum="19" ehframe_regnum="19"/>
+        <reg name="sr3" altname="interrupt_states" bitsize="64" regnum="20" dwarf_regnum="20" ehframe_regnum="20"/>
+        <reg name="sr4" altname="interrupt_epc" bitsize="64" regnum="21" dwarf_regnum="21" ehframe_regnum="21"/>
+        <reg name="sr5" altname="interrupt_eflags" bitsize="64" regnum="22" dwarf_regnum="22" ehframe_regnum="22"/>
+        <reg name="sr6" altname="trap_cause" bitsize="64" regnum="23" dwarf_regnum="23" ehframe_regnum="23"/>
+        <reg name="sr7" altname="trap_fault_addr" bitsize="64" regnum="24" dwarf_regnum="24" ehframe_regnum="24"/>
+        <reg name="sr8" altname="trap_access" bitsize="64" regnum="25" dwarf_regnum="25" ehframe_regnum="25"/>
+        <reg name="sr9" altname="trap_pc" bitsize="64" regnum="26" dwarf_regnum="26" ehframe_regnum="26"/>
+        <reg name="sr10" altname="trap_aux" bitsize="64" regnum="27" dwarf_regnum="27" ehframe_regnum="27"/>
+        <reg name="sr11" altname="page_table_root_physical" bitsize="64" regnum="28" dwarf_regnum="28" ehframe_regnum="28"/>
+        <reg name="sr12" altname="boot_info_frame_physical" bitsize="64" regnum="29" dwarf_regnum="29" ehframe_regnum="29"/>
+        <reg name="sr13" altname="boot_source_page_size" bitsize="64" regnum="30" dwarf_regnum="30" ehframe_regnum="30"/>
+        <reg name="sr14" altname="boot_source_page_count" bitsize="64" regnum="31" dwarf_regnum="31" ehframe_regnum="31"/>
+        <reg name="sr15" altname="hypercall_caps" bitsize="64" regnum="32" dwarf_regnum="32" ehframe_regnum="32"/>
+        <reg name="sr16" altname="interrupt_cpu_control" bitsize="64" regnum="33" dwarf_regnum="33" ehframe_regnum="33"/>
   </feature>
 </target>
 )";

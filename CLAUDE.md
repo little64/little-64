@@ -26,6 +26,11 @@ This file documents practical update paths and maintenance rules for common proj
   - Default image path: `target/linux_port/build/vmlinux`.
   - Usage: `target/linux_port/boot_direct.sh [optional-path-to-vmlinux]`.
   - It launches the headless emulator in direct mode (`--boot-mode=direct`).
+  - It always streams full boot events to `/tmp/little64_boot_events.log` via `--boot-events-file`.
+  - It also always enables control flow tracing.
+- Boot-event analysis helper exists at `target/linux_port/analyze_lockup_flow.py`:
+  - Usage: `target/linux_port/analyze_lockup_flow.py --log /tmp/little64_boot_events.log [--tail N] [--elf <path>]`.
+  - The shell wrapper `target/linux_port/analyze_lockup_flow.sh` forwards to the Python analyzer.
 - PC-to-source lookup helper for Linux kernel debugging exists at `target/linux_port/pc_to_line.sh`:
   - Default image path: `target/linux_port/build/vmlinux`.
   - Usage: `target/linux_port/pc_to_line.sh [--elf <path>] [--context-bytes N] [--no-disasm] <pc>`.
@@ -35,6 +40,9 @@ This file documents practical update paths and maintenance rules for common proj
   - `target/linux_port/build.sh vmlinux LOCALVERSION=-custom CONFIG_DEBUG_INFO=y`
   - `LITTLE64_CLANG_GUARD=1 LITTLE64_CLANG_TIMEOUT_SEC=90 target/linux_port/build.sh vmlinux -j4`
   - `LITTLE64_CLANG_GUARD=1 LITTLE64_CLANG_MAX_VMEM_KB=10485760 target/linux_port/build.sh vmlinux -j1`
+- If you have made adjustmens to the LLVM toolchain, you **MUST** first clean the Linux build folder:
+  - `target/linux_port/build.sh clean`
+  - Do **NOT** use mrproper, use `clean`.
 
 ## Instruction Change Guide
 
@@ -116,6 +124,13 @@ meson compile -C builddir
 
 # Full test suite
 meson test -C builddir --print-errorlogs
+
+# LLVM Little64 backend tests (MUST run after LLVM backend changes)
+cd compilers && ./build.sh llvm
+cd llvm/build && ./bin/llvm-lit -sv test/CodeGen/Little64 test/MC/Little64
+
+# One-liner to run all Little64 LLVM tests
+(cd compilers/llvm/build && ./bin/llvm-lit -sv test/CodeGen/Little64 test/MC/Little64)
 ```
 
 For ISA bring-up via LLVM tools:

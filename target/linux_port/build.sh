@@ -29,6 +29,13 @@ if [[ "$*" != *"CONFIG_DEBUG_INFO="* && \
     )
 fi
 
+# Add debug-friendly C flags by default, unless caller already sets kernel C flags.
+DEFAULT_DEBUG_KCFLAGS="-O2 -g -fno-omit-frame-pointer -fno-optimize-sibling-calls"
+DEBUG_CFLAG_ARGS=()
+if [[ "$*" != *"KCFLAGS="* && "$*" != *"KBUILD_CFLAGS="* ]]; then
+    DEBUG_CFLAG_ARGS=("KCFLAGS=${LITTLE64_KERNEL_DEBUG_CFLAGS:-$DEFAULT_DEBUG_KCFLAGS}")
+fi
+
 echo "Building Linux kernel for Little64"
 if [ "${LITTLE64_CLANG_GUARD:-0}" = "1" ]; then
     CC_CMD="$SCRIPT_FOLDER/clang_guard.sh"
@@ -40,6 +47,11 @@ else
     echo "Using compiler: $CC_CMD"
 fi
 echo "Target: $TARGET"
+if [ ${#DEBUG_CFLAG_ARGS[@]} -gt 0 ]; then
+    echo "Kernel C flags: ${DEBUG_CFLAG_ARGS[0]#KCFLAGS=}"
+else
+    echo "Kernel C flags: caller-provided"
+fi
 echo "-----------------------------------"
 
 nice -n 19 make -C linux ARCH=little64 \
@@ -52,6 +64,7 @@ nice -n 19 make -C linux ARCH=little64 \
     HOSTCC=gcc \
     HOSTCXX=g++ \
     "${MAKE_ARGS[@]}" \
+    "${DEBUG_CFLAG_ARGS[@]}" \
     "${DEBUG_KCONFIG_ARGS[@]}" \
     $TARGET
 

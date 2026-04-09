@@ -16,7 +16,7 @@ void dumpFinalRegisters(EmulatorSession& runtime, const char* reason) {
     const RegisterSnapshot regs = runtime.registers();
     auto print_hex = [](const char* name, uint64_t value) {
         std::cerr << "  " << std::left << std::setw(24) << name
-                  << " = 0x" << std::hex << std::setw(16) << std::setfill('0')
+                  << " = 0x" << std::right << std::hex << std::setw(16) << std::setfill('0')
                   << value << std::dec << std::setfill(' ') << "\n";
     };
 
@@ -48,12 +48,14 @@ void dumpFinalRegisters(EmulatorSession& runtime, const char* reason) {
 
 static void printUsage(const char* argv0) {
     std::cerr << "Usage: " << argv0
-              << " [-h | --help] [--boot-mode=auto|bios|direct] [--max-cycles=N] [--trace-mmio] [--boot-events] [--final-registers]"
+              << " [-h | --help] [--boot-mode=auto|bios|direct] [--max-cycles=N] [--trace-mmio] [--trace-control-flow] [--boot-events] [--boot-events-file=PATH] [--final-registers]"
               << " <binary.bin|object.o>\n"
               << "  Runs the assembled binary/ELF object and prints any serial (UART) output to stdout.\n"
               << "  --max-cycles=N   Stop after N cycles and dump boot event log.\n"
               << "  --trace-mmio     Log every MMIO read/write to stderr.\n"
+              << "  --trace-control-flow  Record non-fallthrough PC changes into boot events.\n"
               << "  --boot-events    Always dump boot event log to stderr on exit.\n"
+              << "  --boot-events-file=PATH  Stream full boot event history to PATH during run.\n"
               << "  --final-registers Dump final register state to stderr on exit.\n"
               << "  -h | --help        Show this help message.\n";
 }
@@ -68,8 +70,10 @@ int main(int argc, char* argv[]) {
     HeadlessRunOptions  run_options;
     std::string image_path;
     bool trace_mmio   = false;
+    bool trace_control_flow = false;
     bool boot_events  = false;
     bool final_registers = false;
+    std::string boot_events_file;
 
     for (int i = 1; i < argc; ++i) {
         const std::string arg(argv[i]);
@@ -96,7 +100,16 @@ int main(int argc, char* argv[]) {
             final_registers = true; // emit final state on forced stop paths
             continue;
         }
+        if (arg.rfind("--boot-events-file=", 0) == 0) {
+            boot_events_file = arg.substr(std::string("--boot-events-file=").size());
+            if (boot_events_file.empty()) {
+                std::cerr << "Error: --boot-events-file requires a non-empty path\n";
+                return 1;
+            }
+            continue;
+        }
         if (arg == "--trace-mmio") { trace_mmio  = true; continue; }
+        if (arg == "--trace-control-flow") { trace_control_flow = true; continue; }
         if (arg == "--boot-events") {
             boot_events = true;
             final_registers = true;
@@ -126,6 +139,15 @@ int main(int argc, char* argv[]) {
 
     if (trace_mmio)
         runtime.setMmioTrace(true);
+    if (trace_control_flow)
+        runtime.setControlFlowTrace(true);
+    bool boot_events_stream_ok = false;
+    if (!boot_events_file.empty()) {
+        boot_events_stream_ok = runtime.setBootEventOutputFile(boot_events_file);
+        if (!boot_events_stream_ok) {
+            std::cerr << "[little64] warning: failed to open boot events stream file: " << boot_events_file << "\n";
+        }
+    }
 
     run_options.stop_signal = &g_stop_signal;
     std::signal(SIGINT, onSignal);
@@ -135,11 +157,18 @@ int main(int argc, char* argv[]) {
     if (!error.empty())
         std::cerr << error << "\n";
 
+    const char* exit_reason = g_stop_signal != 0 ? "signal" : "exit";
+
+    if (!boot_events_file.empty() && !boot_events_stream_ok &&
+        !runtime.dumpBootLogToFile(exit_reason, boot_events_file)) {
+        std::cerr << "[little64] warning: failed to write boot events fallback file: " << boot_events_file << "\n";
+    }
+
     if (boot_events || result != 0)
-        runtime.dumpBootLog(g_stop_signal != 0 ? "signal" : "exit");
+        runtime.dumpBootLog(exit_reason);
 
     if (final_registers)
-        dumpFinalRegisters(runtime, g_stop_signal != 0 ? "signal" : "exit");
+        dumpFinalRegisters(runtime, exit_reason);
 
     return result;
 }

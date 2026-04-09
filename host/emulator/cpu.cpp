@@ -6,7 +6,10 @@
 #include "ram_region.hpp"
 #include <memory>
 #include <algorithm>
+#include <cerrno>
 #include <cstring>
+#include <cstdlib>
+#include <fstream>
 #include <iostream>
 #include <elf.h>
 
@@ -15,6 +18,75 @@
 #endif
 
 Little64CPU::Little64CPU() {
+    auto parse_env_u64 = [](const char* name, uint64_t& out) -> bool {
+        const char* env_val = std::getenv(name);
+        if (!env_val || env_val[0] == '\0') {
+            return false;
+        }
+
+        char* end = nullptr;
+        errno = 0;
+        const unsigned long long parsed = std::strtoull(env_val, &end, 0);
+        if (errno != 0 || end == env_val || !end || *end != '\0') {
+            return false;
+        }
+
+        out = static_cast<uint64_t>(parsed);
+        return true;
+    };
+
+    const char* env = std::getenv("LITTLE64_TRACE_CONTROL_FLOW");
+    _trace_control_flow = (env && env[0] == '1');
+
+    const char* env_trace_lr = std::getenv("LITTLE64_TRACE_LR");
+    _trace_lr = (env_trace_lr && env_trace_lr[0] == '1');
+
+    if (_trace_lr) {
+        parse_env_u64("LITTLE64_TRACE_LR_START", _trace_lr_window_start);
+        parse_env_u64("LITTLE64_TRACE_LR_END", _trace_lr_window_end);
+
+        if (_trace_lr_window_end < _trace_lr_window_start) {
+            const uint64_t tmp = _trace_lr_window_start;
+            _trace_lr_window_start = _trace_lr_window_end;
+            _trace_lr_window_end = tmp;
+        }
+    }
+
+    const char* env_trace_watch = std::getenv("LITTLE64_TRACE_WATCH");
+    _trace_watch = (env_trace_watch && env_trace_watch[0] == '1');
+    if (_trace_watch) {
+        bool has_start = parse_env_u64("LITTLE64_TRACE_WATCH_START", _trace_watch_start);
+        bool has_end = parse_env_u64("LITTLE64_TRACE_WATCH_END", _trace_watch_end);
+        if (!has_start && !has_end) {
+            _trace_watch = false;
+        } else if (!has_start) {
+            _trace_watch_start = _trace_watch_end;
+        } else if (!has_end) {
+            _trace_watch_end = _trace_watch_start;
+        }
+
+        if (_trace_watch && _trace_watch_end < _trace_watch_start) {
+            const uint64_t tmp = _trace_watch_start;
+            _trace_watch_start = _trace_watch_end;
+            _trace_watch_end = tmp;
+        }
+    }
+
+    const char* env_trace_pc_probe = std::getenv("LITTLE64_TRACE_PC_PROBE");
+    _trace_pc_probe = (env_trace_pc_probe && env_trace_pc_probe[0] == '1');
+    if (_trace_pc_probe) {
+        bool has_pc0 = parse_env_u64("LITTLE64_TRACE_PC_PROBE0", _trace_pc_probe0);
+        bool has_pc1 = parse_env_u64("LITTLE64_TRACE_PC_PROBE1", _trace_pc_probe1);
+        if (!has_pc0 && !has_pc1) {
+            _trace_pc_probe = false;
+        } else if (!has_pc0) {
+            _trace_pc_probe0 = _trace_pc_probe1;
+        } else if (!has_pc1) {
+            _trace_pc_probe1 = _trace_pc_probe0;
+        }
+
+        parse_env_u64("LITTLE64_TRACE_PC_PROBE_LIMIT", _trace_pc_probe_limit);
+    }
 }
 
 namespace {
@@ -39,9 +111,65 @@ constexpr uint64_t HYPERCALL_STATUS_UNSUPPORTED = 2;
 constexpr uint64_t HYPERCALL_STATUS_RANGE = 3;
 
 constexpr uint64_t HYPERCALL_CAP_MINIMAL_BOOT = 1;
-constexpr uint64_t SERIAL_BASE = 0xFFFFFFFFFFFF0000ULL;
+// Keep MMIO out of RAM but in low physical space for early Linux/device access.
+constexpr uint64_t SERIAL_BASE = 0x08000000ULL;
+constexpr uint64_t TIMER_BASE = 0x08001000ULL;
 
 } // namespace
+
+bool Little64CPU::_isLrTracePcInRange(uint64_t pc) const {
+    return pc >= _trace_lr_window_start && pc <= _trace_lr_window_end;
+}
+
+bool Little64CPU::_isWatchAddrInRange(uint64_t addr) const {
+    return _trace_watch && addr >= _trace_watch_start && addr <= _trace_watch_end;
+}
+
+bool Little64CPU::_shouldTraceLrLsOp(const Instruction& instr, uint64_t op_pc) const {
+    if (!_trace_lr || !_isLrTracePcInRange(op_pc)) {
+        return false;
+    }
+
+    const LS::Opcode op = static_cast<LS::Opcode>(instr.opcode_ls);
+    if (op != LS::Opcode::PUSH && op != LS::Opcode::POP && op != LS::Opcode::MOVE) {
+        return false;
+    }
+
+    return instr.rd == 14 || instr.rd == 15 || instr.rs1 == 14 || instr.rs1 == 15;
+}
+
+void Little64CPU::_recordLrTraceRegs(const char* tag, uint64_t op_pc) {
+    _recordBootEvent(tag, op_pc, registers.regs[13], registers.regs[14]);
+    _recordBootEvent("lr-r15", op_pc, registers.regs[15], registers.flags);
+    _recordBootEvent("lr-r1r12", op_pc, registers.regs[1], registers.regs[12]);
+}
+
+bool Little64CPU::_isPcProbeMatch(uint64_t pc) const {
+    if (!_trace_pc_probe) {
+        return false;
+    }
+
+    return pc == _trace_pc_probe0 || pc == _trace_pc_probe1;
+}
+
+void Little64CPU::_recordPcProbe(uint64_t pc, uint16_t instr_word) {
+    if (!_isPcProbeMatch(pc)) {
+        return;
+    }
+
+    if (_trace_pc_probe_limit == 0) {
+        return;
+    }
+
+    _recordBootEvent("pc-probe", pc, instr_word, registers.flags);
+    _recordBootEvent("pc-probe-r8r9", pc, registers.regs[8], registers.regs[9]);
+    _recordBootEvent("pc-probe-r10r1", pc, registers.regs[10], registers.regs[1]);
+    _recordBootEvent("pc-probe-r6r7", pc, registers.regs[6], registers.regs[7]);
+    _recordBootEvent("pc-probe-r2r11", pc, registers.regs[2], registers.regs[11]);
+    _recordBootEvent("pc-probe-r14r15", pc, registers.regs[14], registers.regs[15]);
+
+    --_trace_pc_probe_limit;
+}
 
 void Little64CPU::_recordBootEvent(const char* tag, uint64_t a, uint64_t b, uint64_t c) {
     BootEvent& ev = _boot_events[_boot_event_head];
@@ -56,6 +184,15 @@ void Little64CPU::_recordBootEvent(const char* tag, uint64_t a, uint64_t b, uint
     if (_boot_event_head == 0) {
         _boot_event_wrapped = true;
     }
+
+    if (_boot_event_stream && *_boot_event_stream) {
+        (*_boot_event_stream) << "  [" << ev.cycle << "] " << ev.tag
+                              << " pc=0x" << std::hex << ev.pc
+                              << " a=0x" << ev.a
+                              << " b=0x" << ev.b
+                              << " c=0x" << ev.c
+                              << std::dec << "\n";
+    }
 }
 
 void Little64CPU::_dumpBootEvents(const char* reason) {
@@ -64,20 +201,24 @@ void Little64CPU::_dumpBootEvents(const char* reason) {
     }
     _boot_event_dumped = true;
 
-    std::cerr << "[little64] boot-debug: " << reason << "\n";
-    std::cerr << "[little64] boot-debug: last events (oldest to newest)\n";
+    _writeBootEvents(std::cerr, reason);
+}
+
+void Little64CPU::_writeBootEvents(std::ostream& out, const char* reason) const {
+    out << "[little64] boot-debug: " << reason << "\n";
+    out << "[little64] boot-debug: last events (oldest to newest)\n";
 
     const size_t count = _boot_event_wrapped ? kBootEventCapacity : _boot_event_head;
     const size_t start = _boot_event_wrapped ? _boot_event_head : 0;
     for (size_t i = 0; i < count; ++i) {
         const size_t idx = (start + i) % kBootEventCapacity;
         const BootEvent& ev = _boot_events[idx];
-        std::cerr << "  [" << ev.cycle << "] " << ev.tag
-                  << " pc=0x" << std::hex << ev.pc
-                  << " a=0x" << ev.a
-                  << " b=0x" << ev.b
-                  << " c=0x" << ev.c
-                  << std::dec << "\n";
+        out << "  [" << ev.cycle << "] " << ev.tag
+            << " pc=0x" << std::hex << ev.pc
+            << " a=0x" << ev.a
+            << " b=0x" << ev.b
+            << " c=0x" << ev.c
+            << std::dec << "\n";
     }
 }
 
@@ -112,10 +253,44 @@ void Little64CPU::cycle() {
         return;
     }
     Instruction instr(instr_word);
+    _recordPcProbe(pc, instr_word);
+    const uint64_t r1_before = registers.regs[1];
+    const uint64_t r11_before = registers.regs[11];
 
     registers.regs[15] += 2;  // advance PC before dispatch (so pc_rel is relative to next instruction)
 
     dispatchInstruction(instr);
+
+    if (_trace_lr && _isLrTracePcInRange(pc) && registers.regs[1] != r1_before) {
+        _recordBootEvent("r1-change", pc, r1_before, registers.regs[1]);
+        _recordBootEvent("r1-change-op", pc, instr_word, registers.regs[12]);
+    }
+    if (_trace_lr && _isLrTracePcInRange(pc) && registers.regs[11] != r11_before) {
+        _recordBootEvent("r11-change", pc, r11_before, registers.regs[11]);
+        _recordBootEvent("r11-change-op", pc, instr_word, registers.regs[13]);
+    }
+
+    const uint64_t next_pc = registers.regs[15];
+    const uint64_t fallthrough_pc = pc + 2;
+    if (_trace_control_flow && next_pc != fallthrough_pc) {
+        _recordBootEvent("pc-flow", pc, next_pc, instr_word);
+    }
+    if (_trace_control_flow && (next_pc & 1ULL)) {
+        _recordBootEvent("pc-odd", pc, next_pc, instr_word);
+    }
+    if (_trace_control_flow && next_pc < _mem_base) {
+        _recordBootEvent("pc-below-ram", pc, next_pc, _mem_base);
+    }
+
+    // If interrupts are disabled and control flow returns to the same PC,
+    // execution cannot make forward progress and cannot be externally broken
+    // by interrupt delivery. Stop immediately before the event ring is flooded.
+    if (isRunning && next_pc == pc && !registers.isInterruptEnabled()) {
+        _recordBootEvent("self-loop-lockup", pc, instr_word, registers.cpu_control);
+        isRunning = false;
+        _dumpBootEvents("self-loop while interrupts disabled");
+        return;
+    }
 
     registers.regs[0] = 0;  // enforce R0=0 after any write
 
@@ -192,22 +367,45 @@ static bool checkCondition(uint64_t flags, LS::Opcode op) {
 void Little64CPU::_dispatchLSReg(const Instruction& instr) {
     const uint64_t op_pc = registers.regs[15] - 2;
     uint64_t addr = registers.regs[instr.rs1] + (instr.offset2 * 2);
+    const bool trace_lr = _shouldTraceLrLsOp(instr, op_pc);
+    const LS::Opcode op = static_cast<LS::Opcode>(instr.opcode_ls);
 
-    switch (static_cast<LS::Opcode>(instr.opcode_ls)) {
+    if (trace_lr) {
+        _recordBootEvent("lr-ls-pre", op_pc,
+                         (static_cast<uint64_t>(instr.format) << 24) |
+                         (static_cast<uint64_t>(instr.opcode_ls) << 16) |
+                         (static_cast<uint64_t>(instr.rd) << 8) |
+                         static_cast<uint64_t>(instr.rs1),
+                         addr);
+        _recordLrTraceRegs("lr-regs-pre", op_pc);
+    }
+
+    switch (op) {
         case LS::Opcode::LOAD:
             registers.regs[instr.rd] = _readMemory64(addr, op_pc);
             break;
         case LS::Opcode::STORE:
             _writeMemory64(addr, registers.regs[instr.rd], op_pc);
             break;
-        case LS::Opcode::PUSH:
+        case LS::Opcode::PUSH: {
+            const uint64_t pushed_value = registers.regs[instr.rs1];
             registers.regs[instr.rd] -= 8;
-            _writeMemory64(registers.regs[instr.rd], registers.regs[instr.rs1], op_pc);
+            _writeMemory64(registers.regs[instr.rd], pushed_value, op_pc);
+            if (trace_lr) {
+                _recordBootEvent("lr-mem-write", registers.regs[instr.rd], pushed_value, op_pc);
+            }
             break;
-        case LS::Opcode::POP:
-            registers.regs[instr.rs1] = _readMemory64(registers.regs[instr.rd], op_pc);
+        }
+        case LS::Opcode::POP: {
+            const uint64_t pop_addr = registers.regs[instr.rd];
+            const uint64_t popped_value = _readMemory64(pop_addr, op_pc);
+            registers.regs[instr.rs1] = popped_value;
             registers.regs[instr.rd] += 8;
+            if (trace_lr) {
+                _recordBootEvent("lr-mem-read", pop_addr, popped_value, op_pc);
+            }
             break;
+        }
         case LS::Opcode::MOVE:
             registers.regs[instr.rd] = addr;
             break;
@@ -238,14 +436,36 @@ void Little64CPU::_dispatchLSReg(const Instruction& instr) {
                 registers.regs[instr.rd] = addr;
             break;
     }
+
+    if (trace_lr) {
+        _recordLrTraceRegs("lr-regs-post", op_pc);
+        _recordBootEvent("lr-ls-post", op_pc,
+                         (static_cast<uint64_t>(instr.format) << 24) |
+                         (static_cast<uint64_t>(instr.opcode_ls) << 16) |
+                         (static_cast<uint64_t>(instr.rd) << 8) |
+                         static_cast<uint64_t>(instr.rs1),
+                         addr);
+    }
 }
 
 void Little64CPU::_dispatchLSPCRel(const Instruction& instr) {
     const uint64_t op_pc = registers.regs[15] - 2;
     // PC is already post-incremented; pc_rel is in instruction units (×2 bytes)
     uint64_t effective = registers.regs[15] + (static_cast<int64_t>(instr.pc_rel) * 2);
+    const bool trace_lr = _shouldTraceLrLsOp(instr, op_pc);
+    const LS::Opcode op = static_cast<LS::Opcode>(instr.opcode_ls);
 
-    switch (static_cast<LS::Opcode>(instr.opcode_ls)) {
+    if (trace_lr) {
+        _recordBootEvent("lr-ls-pre", op_pc,
+                         (static_cast<uint64_t>(instr.format) << 24) |
+                         (static_cast<uint64_t>(instr.opcode_ls) << 16) |
+                         (static_cast<uint64_t>(instr.rd) << 8) |
+                         static_cast<uint64_t>(instr.rs1),
+                         effective);
+        _recordLrTraceRegs("lr-regs-pre", op_pc);
+    }
+
+    switch (op) {
         case LS::Opcode::LOAD:
             registers.regs[instr.rd] = _readMemory64(effective, op_pc);
             break;
@@ -256,12 +476,19 @@ void Little64CPU::_dispatchLSPCRel(const Instruction& instr) {
             uint64_t value = _readMemory64(effective, op_pc);
             registers.regs[instr.rd] -= 8;
             _writeMemory64(registers.regs[instr.rd], value, op_pc);
+            if (trace_lr) {
+                _recordBootEvent("lr-mem-write", registers.regs[instr.rd], value, op_pc);
+            }
             break;
         }
         case LS::Opcode::POP: {
-            uint64_t value = _readMemory64(registers.regs[instr.rd], op_pc);
+            const uint64_t pop_addr = registers.regs[instr.rd];
+            uint64_t value = _readMemory64(pop_addr, op_pc);
             registers.regs[instr.rd] += 8;
             _writeMemory64(effective, value, op_pc);
+            if (trace_lr) {
+                _recordBootEvent("lr-mem-read", pop_addr, value, op_pc);
+            }
             break;
         }
         case LS::Opcode::MOVE:
@@ -297,6 +524,16 @@ void Little64CPU::_dispatchLSPCRel(const Instruction& instr) {
                 registers.regs[15] = jump_effective;
             break;
         }
+    }
+
+    if (trace_lr) {
+        _recordLrTraceRegs("lr-regs-post", op_pc);
+        _recordBootEvent("lr-ls-post", op_pc,
+                         (static_cast<uint64_t>(instr.format) << 24) |
+                         (static_cast<uint64_t>(instr.opcode_ls) << 16) |
+                         (static_cast<uint64_t>(instr.rd) << 8) |
+                         static_cast<uint64_t>(instr.rs1),
+                         effective);
     }
 }
 
@@ -563,6 +800,7 @@ bool Little64CPU::_mapAddress(uint64_t virtual_addr, CpuAccessType access, uint6
                      virtual_addr,
                      (static_cast<uint64_t>(access) << 56) | (result.trap_cause & 0x00FFFFFFFFFFFFFFULL),
                      operation_pc);
+    _recordBootEvent("mmu-fault-detail", result.trap_cause, result.trap_aux, registers.page_table_root_physical);
 
     _raiseInterrupt(result.trap_cause, true, operation_pc);
     return false;
@@ -595,7 +833,7 @@ void Little64CPU::_executeHypercall() {
             registers.regs[1] = HYPERCALL_STATUS_OK;
             registers.regs[2] = _mem_base;
             registers.regs[3] = _mem_size;
-            registers.regs[4] = 0xFFFFFFFFFFFF0000ULL;
+            registers.regs[4] = SERIAL_BASE;
             registers.regs[5] = HYPERCALL_CAP_MINIMAL_BOOT;
             break;
         case HYPERCALL_GET_BOOT_SOURCE_INFO:
@@ -667,6 +905,10 @@ void Little64CPU::_writeMemory8(uint64_t addr, uint8_t v, uint64_t operation_pc)
     if (!_mapAddress(addr, CpuAccessType::Write, operation_pc, physical)) {
         return;
     }
+    if (_isWatchAddrInRange(addr)) {
+        _recordBootEvent("watch-write8", addr, static_cast<uint64_t>(v), operation_pc);
+        _recordBootEvent("watch-regs", registers.regs[11], registers.regs[12], registers.regs[13]);
+    }
     _bus.write8(physical, v, MemoryAccessType::Write);
     if (physical == SERIAL_BASE) {
         _recordBootEvent("uart-tx", static_cast<uint64_t>(v), addr, operation_pc);
@@ -686,6 +928,10 @@ void Little64CPU::_writeMemory16(uint64_t addr, uint16_t v, uint64_t operation_p
     if (!_mapAddress(addr, CpuAccessType::Write, operation_pc, physical)) {
         return;
     }
+    if (_isWatchAddrInRange(addr)) {
+        _recordBootEvent("watch-write16", addr, static_cast<uint64_t>(v), operation_pc);
+        _recordBootEvent("watch-regs", registers.regs[11], registers.regs[12], registers.regs[13]);
+    }
     _bus.write16(physical, v, MemoryAccessType::Write);
 }
 
@@ -702,6 +948,10 @@ void Little64CPU::_writeMemory32(uint64_t addr, uint32_t v, uint64_t operation_p
     if (!_mapAddress(addr, CpuAccessType::Write, operation_pc, physical)) {
         return;
     }
+    if (_isWatchAddrInRange(addr)) {
+        _recordBootEvent("watch-write32", addr, static_cast<uint64_t>(v), operation_pc);
+        _recordBootEvent("watch-regs", registers.regs[11], registers.regs[12], registers.regs[13]);
+    }
     _bus.write32(physical, v, MemoryAccessType::Write);
 }
 
@@ -717,6 +967,10 @@ void Little64CPU::_writeMemory64(uint64_t addr, uint64_t v, uint64_t operation_p
     uint64_t physical = 0;
     if (!_mapAddress(addr, CpuAccessType::Write, operation_pc, physical)) {
         return;
+    }
+    if (_isWatchAddrInRange(addr)) {
+        _recordBootEvent("watch-write64", addr, v, operation_pc);
+        _recordBootEvent("watch-regs", registers.regs[11], registers.regs[12], registers.regs[13]);
     }
     _bus.write64(physical, v, MemoryAccessType::Write);
 
@@ -780,8 +1034,6 @@ bool Little64CPU::loadProgramElf(const std::vector<uint8_t>& elf_bytes, uint64_t
     }
 
     constexpr uint64_t RAM_EXTRA = 64 * 1024 * 1024;
-    constexpr uint64_t SERIAL_BASE = 0xFFFFFFFFFFFF0000ULL;
-    constexpr uint64_t TIMER_BASE = 0xFFFFFFFFFFFF1000ULL;
     uint64_t total_ram = alloc_size + RAM_EXTRA;
 
      MachineConfig cfg;
@@ -828,8 +1080,6 @@ void Little64CPU::loadProgram(const std::vector<uint16_t>& words, uint64_t base,
     // working RAM.  A separate RomRegion would silently discard writes to .data /
     // .bss, breaking any C/C++ program that modifies global or static variables.
     constexpr uint64_t RAM_SIZE    = 64 * 1024 * 1024;  // 64 MB
-    constexpr uint64_t SERIAL_BASE = 0xFFFFFFFFFFFF0000ULL;
-    constexpr uint64_t TIMER_BASE = 0xFFFFFFFFFFFF1000ULL;
     uint64_t total_size = prog_size + RAM_SIZE;
 
      MachineConfig cfg;
@@ -914,8 +1164,6 @@ bool Little64CPU::loadProgramElfDirectPaged(const std::vector<uint8_t>& elf_byte
     }
 
     constexpr uint64_t RAM_EXTRA = 64 * 1024 * 1024;
-    constexpr uint64_t SERIAL_BASE = 0xFFFFFFFFFFFF0000ULL;
-    constexpr uint64_t TIMER_BASE = 0xFFFFFFFFFFFF1000ULL;
     const uint64_t total_ram = image_span + RAM_EXTRA;
 
     MachineConfig cfg;
@@ -1001,8 +1249,36 @@ void Little64CPU::setMmioTrace(bool enabled) {
     }
 }
 
+void Little64CPU::setControlFlowTrace(bool enabled) {
+    _trace_control_flow = enabled;
+}
+
 void Little64CPU::dumpBootLog(const char* reason) {
     _dumpBootEvents(reason);
+}
+
+bool Little64CPU::setBootEventOutputFile(const std::string& path) {
+    auto stream = std::make_unique<std::ofstream>(path, std::ios::out | std::ios::trunc);
+    if (!stream->is_open()) {
+        return false;
+    }
+
+    // Flush each line eagerly so abrupt termination still preserves trace.
+    (*stream) << std::unitbuf;
+    (*stream) << "[little64] boot-debug: full event stream\n";
+    (*stream) << "[little64] boot-debug: events (oldest to newest by cycle)\n";
+
+    _boot_event_stream = std::move(stream);
+    return true;
+}
+
+bool Little64CPU::dumpBootLogToFile(const char* reason, const std::string& path) const {
+    std::ofstream out(path, std::ios::out | std::ios::trunc);
+    if (!out.is_open()) {
+        return false;
+    }
+    _writeBootEvents(out, reason);
+    return static_cast<bool>(out);
 }
 
 bool Little64CPU::_raiseInterrupt(uint64_t interrupt_number, bool exception, uint64_t epc) {

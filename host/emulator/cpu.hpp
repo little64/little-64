@@ -4,6 +4,8 @@
 #include <array>
 #include <vector>
 #include <string>
+#include <memory>
+#include <fstream>
 #include "device.hpp"
 #include "memory_bus.hpp"
 #include "serial_device.hpp"
@@ -357,8 +359,20 @@ public:
     // Enable/disable MMIO trace logging on all attached devices.
     void setMmioTrace(bool enabled);
 
+    // Enable/disable control-flow trace events in the boot event ring.
+    // When enabled, non-fallthrough PC changes (branches/returns/interrupt entries)
+    // and suspicious targets are recorded to aid lockup debugging.
+    void setControlFlowTrace(bool enabled);
+
     // Dump the boot event log to stderr. No-op if already dumped.
     void dumpBootLog(const char* reason);
+
+    // Enable live boot-event streaming to file. When enabled, every event is
+    // written as it occurs, preserving full history beyond the ring buffer.
+    bool setBootEventOutputFile(const std::string& path);
+
+    // Dump the boot event log to a file path. Returns false on file I/O errors.
+    bool dumpBootLogToFile(const char* reason, const std::string& path) const;
 
     // Assert a hardware interrupt line (sets the bit in interrupt_states).
     // The interrupt will be serviced on the next cycle if enabled and unmasked.
@@ -385,6 +399,13 @@ private:
     };
 
     void _recordBootEvent(const char* tag, uint64_t a = 0, uint64_t b = 0, uint64_t c = 0);
+    bool _isLrTracePcInRange(uint64_t pc) const;
+    bool _shouldTraceLrLsOp(const Instruction& instr, uint64_t op_pc) const;
+    void _recordLrTraceRegs(const char* tag, uint64_t op_pc);
+    bool _isPcProbeMatch(uint64_t pc) const;
+    void _recordPcProbe(uint64_t pc, uint16_t instr_word);
+    bool _isWatchAddrInRange(uint64_t addr) const;
+    void _writeBootEvents(std::ostream& out, const char* reason) const;
     void _dumpBootEvents(const char* reason);
 
     EmulatorClock _clock;
@@ -440,4 +461,16 @@ private:
     bool _boot_event_wrapped = false;
     bool _boot_event_dumped = false;
     uint64_t _cycle_count = 0;
+    bool _trace_control_flow = false;
+    bool _trace_lr = false;
+    uint64_t _trace_lr_window_start = 0;
+    uint64_t _trace_lr_window_end = UINT64_MAX;
+    bool _trace_watch = false;
+    uint64_t _trace_watch_start = 0;
+    uint64_t _trace_watch_end = 0;
+    bool _trace_pc_probe = false;
+    uint64_t _trace_pc_probe0 = 0;
+    uint64_t _trace_pc_probe1 = 0;
+    uint64_t _trace_pc_probe_limit = UINT64_MAX;
+    std::unique_ptr<std::ofstream> _boot_event_stream;
 };

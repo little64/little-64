@@ -24,19 +24,20 @@
     };
 
     chosen {
-        bootargs = "console=ttyS0,115200 earlycon=uart8250,mmio64,0xffffffffffff0000,115200n8 ignore_loglevel loglevel=8";
+        bootargs = "console=ttyS0,115200 earlycon=uart8250,mmio,0x08000000,115200n8 ignore_loglevel loglevel=8";
+        stdout-path = "/uart@8000000";
     };
 
-    uart@ffffffffffff0000 {
+    uart@8000000 {
         compatible = "ns16550a";
-        reg = <0xffffffff 0xffff0000  0x0 0x8>;
+        reg = <0x0 0x08000000  0x0 0x8>;
         interrupts = <4>;
         clock-frequency = <1843200>;
     };
 
-    timer@ffffffffffff1000 {
+    timer@8001000 {
         compatible = "little64,timer";
-        reg = <0xffffffff 0xffff1000  0x0 0x20>;
+        reg = <0x0 0x08001000  0x0 0x20>;
         interrupts = <5>;
     };
 };

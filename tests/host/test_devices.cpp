@@ -56,7 +56,7 @@ static void test_cpu_reset_resets_devices() {
     CHECK_EQ(serial != nullptr, true, "CPU configured serial device");
     if (!serial) return;
 
-    constexpr uint64_t SERIAL_BASE = 0xFFFFFFFFFFFF0000ULL;
+    constexpr uint64_t SERIAL_BASE = 0x08000000ULL;
     cpu.getMemoryBus().write8(SERIAL_BASE, 'A');
     CHECK_EQ(serial->txBuffer().size(), 1ULL, "serial writes reach TX buffer before reset");
 
@@ -68,7 +68,7 @@ static void test_serial_rx_interrupt_line() {
     Little64CPU cpu;
     cpu.loadProgram(std::vector<uint16_t>{0xDF00}); // STOP
 
-    constexpr uint64_t SERIAL_BASE = 0xFFFFFFFFFFFF0000ULL;
+    constexpr uint64_t SERIAL_BASE = 0x08000000ULL;
     constexpr uint64_t SERIAL_IER = SERIAL_BASE + 1;
     constexpr uint64_t SERIAL_RBR = SERIAL_BASE + 0;
     constexpr uint64_t SERIAL_IIR = SERIAL_BASE + 2;

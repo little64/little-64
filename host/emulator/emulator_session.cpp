@@ -85,8 +85,20 @@ void EmulatorSession::setMmioTrace(bool enabled) {
     _cpu.setMmioTrace(enabled);
 }
 
+void EmulatorSession::setControlFlowTrace(bool enabled) {
+    _cpu.setControlFlowTrace(enabled);
+}
+
 void EmulatorSession::dumpBootLog(const char* reason) {
     _cpu.dumpBootLog(reason);
+}
+
+bool EmulatorSession::setBootEventOutputFile(const std::string& path) {
+    return _cpu.setBootEventOutputFile(path);
+}
+
+bool EmulatorSession::dumpBootLogToFile(const char* reason, const std::string& path) {
+    return _cpu.dumpBootLogToFile(reason, path);
 }
 
 std::string EmulatorSession::drainSerialTx() {

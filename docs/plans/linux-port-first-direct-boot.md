@@ -76,8 +76,12 @@ Or via helper script:
 
 3. Run direct boot
 - `target/linux_port/boot_direct.sh`
+ - This writes full boot events to `/tmp/little64_boot_events.log` by default.
 
-4. Capture first-failure evidence
+4. Analyze control-flow failures
+- `target/linux_port/analyze_lockup_flow.py --log /tmp/little64_boot_events.log`
+
+5. Capture first-failure evidence
 - record first serial lines,
 - record whether panic is before/after `start_kernel`,
 - record the first unresolved arch dependency.

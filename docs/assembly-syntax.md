@@ -35,6 +35,8 @@ The LLVM Little-64 backend supports the core ISA forms used by runtime and linke
 - `LDI`, `LDI.S1`, `LDI.S2`, `LDI.S3`
 - GP ops (`ADD`, `SUB`, `AND`, `OR`, `TEST`, `STOP`, etc.)
 - LS memory ops (`LOAD`, `STORE`, `BYTE_*`, `SHORT_*`, `WORD_*`)
+	- register-indirect LS offsets are encoded in 2-bit halfword units, so
+		accepted byte offsets are `{0,2,4,6}`
 - Branch/jump forms (`JUMP`, `JUMP.Z`, `JUMP.C`, `JUMP.S`, `JUMP.GT`, `JUMP.LT`)
 - directives used by linker/object workflows (`.global`, `.extern`, `.byte`, `.short`, `.long`)
 

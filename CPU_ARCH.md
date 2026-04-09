@@ -206,14 +206,14 @@ Treat this as project ABI convention, not a formally versioned external ABI yet.
 
 ### Serial Device (UART)
 
-**MMIO base:** `0xFFFFFFFFFFFF0000` (16 bytes)  
+**MMIO base:** `0x08000000` (16 bytes)  
 **IRQ:** 4
 
 16550A-compatible serial device for console I/O. TX to stdout, RX via host input.
 
 ### Timer Device
 
-**MMIO base:** `0xFFFFFFFFFFFF1000` (32 bytes)  
+**MMIO base:** `0x08001000` (32 bytes)  
 **IRQ:** 5
 
 Programmable timer supporting two firing modes:
@@ -233,8 +233,8 @@ The emulator provides a Flat Device Tree (FDT) binary describing the virtual har
 
 - CPU frequency (1 GHz)
 - Memory regions
-- Serial device (UART at 0xFFFFFFFFFFFF0000, IRQ 4)
-- Timer device (at 0xFFFFFFFFFFFF1000, IRQ 5)
+- Serial device (UART at 0x08000000, IRQ 4)
+- Timer device (at 0x08001000, IRQ 5)
 
 To enable DTB embedding in the emulator binary:
 

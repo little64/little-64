@@ -15,7 +15,7 @@ def snake_case(name: str) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Create a new Little-64 MMIO device skeleton")
     parser.add_argument("name", help="Device class name, e.g. TimerDevice")
-    parser.add_argument("--base", default="0xFFFFFFFFFFFF1000", help="Default MMIO base constant")
+    parser.add_argument("--base", default="0x08002000", help="Default MMIO base constant")
     parser.add_argument("--size", default="8", help="MMIO size in bytes")
     args = parser.parse_args()
 

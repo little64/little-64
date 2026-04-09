@@ -27,7 +27,6 @@ This document is the source of truth for the current paging/boot contract.
 
 - Emulator loads a kernel ELF directly.
 - Kernel image is physically loaded in low memory.
-- Runtime creates a valid temporary page-table hierarchy (in RAM), enables paging, and transfers control to higher-half VA entry.
 - Runtime synthesizes the same boot-info contract expected after BIOS handoff.
 
 `direct` exists only for dev iteration speed and should match `bios` handoff semantics as closely as possible.

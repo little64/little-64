@@ -10,8 +10,8 @@ The backend already supports several pseudo and lowering paths for direct Clang/
 
 | Feature | Direct Clang / CodeGen Path | AsmParser / Handwritten ASM Path | Notes |
 |---|---|---|---|
-| `CALL` pseudo | Implemented | Partially implemented / syntax-sensitive | Defined in `Little64InstrInfo.td`, expanded in `Little64AsmPrinter.cpp` |
-| `RET` pseudo | Implemented | Partially implemented / syntax-sensitive | Defined in `Little64InstrInfo.td`, expanded in `Little64AsmPrinter.cpp` |
+| `CALL` pseudo | Implemented | Partially implemented / syntax-sensitive | Defined in `Little64InstrInfo.td`, expanded in `Little64ExpandPseudos.cpp` |
+| `RET` pseudo | Implemented | Partially implemented / syntax-sensitive | Defined in `Little64InstrInfo.td`, expanded in `Little64ExpandPseudos.cpp` |
 | `LDI64` pseudo | Implemented | Implemented (special handling) | Lowered by `Little64ExpandPseudos.cpp`, special parser path in `Little64AsmParser.cpp` |
 | `PUSH` / `POP` ISA opcodes | Implemented | Implemented with current operand forms | Present in `Little64InstrInfo.td` as real instructions |
 | `JAL` alias | Not required by codegen | Missing alias | Candidate parser/InstAlias addition |
@@ -23,7 +23,6 @@ The backend already supports several pseudo and lowering paths for direct Clang/
 ## Confirmed Implementation Locations
 
 - `compilers/llvm/llvm-project/llvm/lib/Target/Little64/Little64InstrInfo.td`
-- `compilers/llvm/llvm-project/llvm/lib/Target/Little64/Little64AsmPrinter.cpp`
 - `compilers/llvm/llvm-project/llvm/lib/Target/Little64/Little64ExpandPseudos.cpp`
 - `compilers/llvm/llvm-project/llvm/lib/Target/Little64/AsmParser/Little64AsmParser.cpp`
 

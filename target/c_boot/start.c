@@ -2,7 +2,7 @@
 
 #include "boot_abi.h"
 
-#define SERIAL_BASE ((volatile unsigned char *)0xFFFFFFFFFFFF0000ULL)
+#define SERIAL_BASE ((volatile unsigned char *)0x08000000ULL)
 
 static volatile Little64BootInfoFrame g_boot_info;
 

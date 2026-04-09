@@ -1,6 +1,6 @@
 // CHECK_STDOUT: Hello from Little-64!
 
-#define SERIAL_BASE ((volatile unsigned char *)0xFFFFFFFFFFFF0000ULL)
+#define SERIAL_BASE ((volatile unsigned char *)0x08000000ULL)
 
 void print(const char *s) {
     while (*s) {

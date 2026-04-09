@@ -104,6 +104,30 @@ test_boot_frame = executable('test-boot-frame',
 )
 test('boot-frame', test_boot_frame, suite : ['unit', 'boot'], timeout : 60)
 
+test_clang_runtime_stress = executable('test-clang-runtime-stress',
+  ['host/test_clang_runtime_stress.cpp'],
+  link_with : [emulator_lib, linker_lib, project_lib],
+  include_directories : [
+    emulator_inc,
+    linker_inc,
+    project_inc,
+    arch_inc,
+    test_inc,
+    test_support_inc,
+  ],
+  install : false,
+)
+clang_runtime_test_env = [
+  'LITTLE64_LD=' + meson.project_source_root() + '/compilers/bin/ld.lld',
+  'LITTLE64_CC=' + meson.project_source_root() + '/compilers/bin/clang',
+]
+test('clang-runtime-stress',
+  test_clang_runtime_stress,
+  env : clang_runtime_test_env,
+  suite : ['integration', 'clang', 'cpu'],
+  timeout : 600,
+)
+
 little64_test_env = [
   'LITTLE64_LD=' + meson.project_source_root() + '/compilers/bin/ld.lld',
 ]
@@ -120,14 +144,24 @@ test('project-runner',
   suite : ['integration', 'project'],
 )
 
-test('boot-bios-run',
-  python3,
-  args : [
-    meson.project_source_root() / 'tests/host/boot/test_bios_boot.py',
-  ],
-  suite : ['boot', 'integration'],
-  timeout : 60,
-)
+boot_bios_opt_levels = ['0', '1', '2', '3', 's', 'z']
+foreach opt : boot_bios_opt_levels
+  boot_bios_test_name = 'boot-bios-run-o' + opt
+  if opt == '0'
+    boot_bios_test_name = 'boot-bios-run'
+  endif
+
+  test(boot_bios_test_name,
+    python3,
+    args : [
+      meson.project_source_root() / 'tests/host/boot/test_bios_boot.py',
+      '--opt',
+      opt,
+    ],
+    suite : ['boot', 'integration', 'opt-' + opt],
+    timeout : 60,
+  )
+endforeach
 
 test('boot-direct-physical-run',
   python3,

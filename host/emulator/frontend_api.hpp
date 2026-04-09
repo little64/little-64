@@ -30,6 +30,28 @@ struct RegisterSnapshot {
     uint64_t boot_source_page_size = 0;
     uint64_t boot_source_page_count = 0;
     uint64_t hypercall_caps = 0;
+
+    constexpr uint64_t getSpecialRegisterByID(uint64_t id) const {
+        switch(id) {
+            case 0: return cpu_control;
+            case 1: return interrupt_table_base;
+            case 2: return interrupt_mask;
+            case 3: return interrupt_states;
+            case 4: return interrupt_epc;
+            case 5: return interrupt_eflags;
+            case 6: return trap_cause;
+            case 7: return trap_fault_addr;
+            case 8: return trap_access;
+            case 9: return trap_pc;
+            case 10: return trap_aux;
+            case 11: return page_table_root_physical;
+            case 12: return boot_info_frame_physical;
+            case 13: return boot_source_page_size;
+            case 14: return boot_source_page_count;
+            case 15: return hypercall_caps;
+            default: return 0;
+        }
+    }
 };
 
 class IEmulatorRuntime {
