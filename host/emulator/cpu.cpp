@@ -74,6 +74,8 @@ Little64CPU::Little64CPU() {
 
     const char* env_trace_pc_probe = std::getenv("LITTLE64_TRACE_PC_PROBE");
     _trace_pc_probe = (env_trace_pc_probe && env_trace_pc_probe[0] == '1');
+    const char* env_trace_pc_probe_deref = std::getenv("LITTLE64_TRACE_PC_PROBE_DEREF");
+    _trace_pc_probe_deref = (env_trace_pc_probe_deref && env_trace_pc_probe_deref[0] == '1');
     if (_trace_pc_probe) {
         bool has_pc0 = parse_env_u64("LITTLE64_TRACE_PC_PROBE0", _trace_pc_probe0);
         bool has_pc1 = parse_env_u64("LITTLE64_TRACE_PC_PROBE1", _trace_pc_probe1);
@@ -164,9 +166,33 @@ void Little64CPU::_recordPcProbe(uint64_t pc, uint16_t instr_word) {
     _recordBootEvent("pc-probe", pc, instr_word, registers.flags);
     _recordBootEvent("pc-probe-r8r9", pc, registers.regs[8], registers.regs[9]);
     _recordBootEvent("pc-probe-r10r1", pc, registers.regs[10], registers.regs[1]);
+    _recordBootEvent("pc-probe-r3r4", pc, registers.regs[3], registers.regs[4]);
+    _recordBootEvent("pc-probe-r5r12", pc, registers.regs[5], registers.regs[12]);
     _recordBootEvent("pc-probe-r6r7", pc, registers.regs[6], registers.regs[7]);
     _recordBootEvent("pc-probe-r2r11", pc, registers.regs[2], registers.regs[11]);
     _recordBootEvent("pc-probe-r14r15", pc, registers.regs[14], registers.regs[15]);
+    if (_trace_pc_probe_deref) {
+        const uint64_t r10 = registers.regs[10];
+        const uint64_t r11 = registers.regs[11];
+        if (r10 != 0) {
+            const uint64_t r10w0 = _readMemory64(r10, pc, CpuAccessType::Read);
+            const uint64_t r10w1 = _readMemory64(r10 + 8, pc, CpuAccessType::Read);
+            const uint64_t r10w2 = _readMemory64(r10 + 16, pc, CpuAccessType::Read);
+            const uint64_t r10w3 = _readMemory64(r10 + 24, pc, CpuAccessType::Read);
+            const uint64_t r10w4 = _readMemory64(r10 + 32, pc, CpuAccessType::Read);
+            const uint64_t r10w5 = _readMemory64(r10 + 40, pc, CpuAccessType::Read);
+            _recordBootEvent("pc-probe-r10mem0", pc, r10w0, r10w1);
+            _recordBootEvent("pc-probe-r10mem1", pc, r10w2, r10);
+            _recordBootEvent("pc-probe-r10mem2", pc, r10w3, r10 + 24);
+            _recordBootEvent("pc-probe-r10mem3", pc, r10w4, r10 + 32);
+            _recordBootEvent("pc-probe-r10mem4", pc, r10w5, r10 + 40);
+        }
+        if (r11 != 0) {
+            const uint64_t r11w0 = _readMemory64(r11, pc, CpuAccessType::Read);
+            const uint64_t r11w1 = _readMemory64(r11 + 8, pc, CpuAccessType::Read);
+            _recordBootEvent("pc-probe-r11mem", pc, r11w0, r11w1);
+        }
+    }
 
     --_trace_pc_probe_limit;
 }
@@ -1181,9 +1207,18 @@ bool Little64CPU::loadProgramElfDirectPaged(const std::vector<uint8_t>& elf_byte
     registers.boot_source_page_count = (_boot_source_bytes.size() + 4095ULL) / 4096ULL;
     registers.hypercall_caps = HYPERCALL_CAP_MINIMAL_BOOT;
 
-    // Place embedded DTB at 4KB-aligned offset after kernel image.
-    // The kernel will find it via R1 and use it for device discovery.
-    const uint64_t dtb_offset = (image_span + 0xFFFULL) & ~0xFFFULL;
+    // Place embedded DTB at a 4KB-aligned offset after the kernel image and
+    // after a conservative early-boot scratch gap.
+    //
+    // head.S allocates three pages immediately after __bss_stop for:
+    //   - L2 root
+    //   - L1 kernel map
+    //   - L1 identity map
+    // The loader leaves a larger guard gap than the current minimum so small
+    // future head.S scratch additions do not silently overlap the DTB.
+    constexpr uint64_t EARLY_PT_SCRATCH_PAGES = 30;
+    const uint64_t early_pt_scratch_bytes = EARLY_PT_SCRATCH_PAGES * PAGE;
+    const uint64_t dtb_offset = (image_span + early_pt_scratch_bytes + 0xFFFULL) & ~0xFFFULL;
     const uint64_t dtb_phys = kernel_physical_base + dtb_offset;
     auto dtb_span = DTBLoader::getEmbeddedDTB();
     if (!dtb_span.empty() && dtb_phys + dtb_span.size() <= kernel_physical_base + total_ram) {
@@ -1244,8 +1279,9 @@ SerialDevice* Little64CPU::getSerial() {
 
 void Little64CPU::setMmioTrace(bool enabled) {
     for (Device* d : _devices) {
-        if (auto* s = dynamic_cast<SerialDevice*>(d))
-            s->setMmioTrace(enabled);
+        if (d) {
+            d->setMmioTrace(enabled);
+        }
     }
 }
 

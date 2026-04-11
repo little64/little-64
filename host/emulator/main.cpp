@@ -52,7 +52,7 @@ static void printUsage(const char* argv0) {
               << " <binary.bin|object.o>\n"
               << "  Runs the assembled binary/ELF object and prints any serial (UART) output to stdout.\n"
               << "  --max-cycles=N   Stop after N cycles and dump boot event log.\n"
-              << "  --trace-mmio     Log every MMIO read/write to stderr.\n"
+              << "  --trace-mmio     Log mapped device MMIO reads/writes to stderr.\n"
               << "  --trace-control-flow  Record non-fallthrough PC changes into boot events.\n"
               << "  --boot-events    Always dump boot event log to stderr on exit.\n"
               << "  --boot-events-file=PATH  Stream full boot event history to PATH during run.\n"

@@ -34,8 +34,8 @@ public:
     void clearTxBuffer() { _tx_buffer.clear(); }
     void pushRxByte(uint8_t byte);
 
-    // When enabled, every read/write is logged to stderr.
-    void setMmioTrace(bool enabled) { _trace = enabled; }
+    void traceMmioRead(uint64_t addr, size_t width, uint64_t value) const override;
+    void traceMmioWrite(uint64_t addr, size_t width, uint64_t value) const override;
 
 private:
     void updateInterruptState();
@@ -51,5 +51,4 @@ private:
     uint8_t _scr = 0x00;  // Scratch Register
     uint8_t _dll = 0x00;  // Divisor Latch LSB
     uint8_t _dlm = 0x00;  // Divisor Latch MSB
-    bool _trace = false;
 };

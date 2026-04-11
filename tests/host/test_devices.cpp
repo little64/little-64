@@ -5,7 +5,52 @@
 #include "support/test_harness.hpp"
 
 #include <cstdio>
+#include <string>
+#include <unistd.h>
 #include <vector>
+
+template <typename Fn>
+static std::string capture_stderr(Fn&& fn) {
+    std::fflush(stderr);
+
+    FILE* temp = std::tmpfile();
+    if (!temp) {
+        return {};
+    }
+
+    const int stderr_fd = ::fileno(stderr);
+    const int saved_stderr_fd = ::dup(stderr_fd);
+    if (saved_stderr_fd < 0) {
+        std::fclose(temp);
+        return {};
+    }
+
+    if (::dup2(::fileno(temp), stderr_fd) < 0) {
+        ::close(saved_stderr_fd);
+        std::fclose(temp);
+        return {};
+    }
+
+    fn();
+
+    std::fflush(stderr);
+    std::rewind(temp);
+
+    std::string output;
+    char buffer[256];
+    while (true) {
+        const size_t count = std::fread(buffer, 1, sizeof(buffer), temp);
+        if (count == 0) {
+            break;
+        }
+        output.append(buffer, count);
+    }
+
+    ::dup2(saved_stderr_fd, stderr_fd);
+    ::close(saved_stderr_fd);
+    std::fclose(temp);
+    return output;
+}
 
 static void test_machine_config_registration() {
     MemoryBus bus;
@@ -92,11 +137,48 @@ static void test_serial_rx_interrupt_line() {
              "Serial IRQ line clears when RX FIFO empties");
 }
 
+static void test_mmio_trace_reaches_timer_device() {
+    Little64CPU cpu;
+    cpu.loadProgram(std::vector<uint16_t>{0xDF00}); // STOP
+    cpu.setMmioTrace(true);
+
+    constexpr uint64_t TIMER_BASE = 0x08001000ULL;
+    constexpr uint64_t TIMER_CYCLE_INTERVAL = TIMER_BASE + 16;
+    const std::string trace = capture_stderr([&]() {
+        cpu.getMemoryBus().write64(TIMER_CYCLE_INTERVAL, 0x42ULL);
+        (void)cpu.getMemoryBus().read64(TIMER_CYCLE_INTERVAL);
+    });
+
+    CHECK_TRUE(trace.find("[mmio:TIMER] W64 +0x10 = 0x0000000000000042") != std::string::npos,
+               "Timer write64 is included in MMIO trace output");
+    CHECK_TRUE(trace.find("[mmio:TIMER] R64 +0x10 = 0x0000000000000042") != std::string::npos,
+               "Timer read64 is included in MMIO trace output");
+}
+
+static void test_mmio_trace_preserves_serial_printable_format() {
+    Little64CPU cpu;
+    cpu.loadProgram(std::vector<uint16_t>{0xDF00}); // STOP
+    cpu.setMmioTrace(true);
+
+    constexpr uint64_t SERIAL_BASE = 0x08000000ULL;
+    const std::string trace = capture_stderr([&]() {
+        cpu.getMemoryBus().write8(SERIAL_BASE, 'A');
+        (void)cpu.getMemoryBus().read8(SERIAL_BASE + 5);
+    });
+
+    CHECK_TRUE(trace.find("[mmio:SERIAL] W +0x0 = 0x41 ('A')") != std::string::npos,
+               "Serial THR writes retain printable-character MMIO formatting");
+    CHECK_TRUE(trace.find("[mmio:SERIAL] R +0x5 = 0x60") != std::string::npos,
+               "Serial reads retain byte-oriented MMIO formatting");
+}
+
 int main() {
     std::printf("=== Little-64 device framework tests ===\n");
     test_machine_config_registration();
     test_serial_register_behavior_and_reset();
     test_cpu_reset_resets_devices();
     test_serial_rx_interrupt_line();
+    test_mmio_trace_reaches_timer_device();
+    test_mmio_trace_preserves_serial_printable_format();
     return print_summary();
 }

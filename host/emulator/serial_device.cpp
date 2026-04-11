@@ -1,4 +1,5 @@
 #include "serial_device.hpp"
+
 #include <cstdio>
 
 SerialDevice::SerialDevice(uint64_t base, std::string_view name, uint64_t irq_line)
@@ -36,6 +37,54 @@ void SerialDevice::pushRxByte(uint8_t byte) {
     updateInterruptState();
 }
 
+void SerialDevice::traceMmioRead(uint64_t addr, size_t width, uint64_t value) const {
+    if (!isMmioTraceEnabled()) {
+        return;
+    }
+
+    const uint64_t offset = addr - base();
+    if (width == 1) {
+        std::fprintf(stderr,
+                     "[mmio:%.*s] R +0x%llx = 0x%02llx\n",
+                     static_cast<int>(_name.size()),
+                     _name.data(),
+                     static_cast<unsigned long long>(offset),
+                     static_cast<unsigned long long>(value & 0xFFULL));
+        return;
+    }
+
+    Device::traceMmioRead(addr, width, value);
+}
+
+void SerialDevice::traceMmioWrite(uint64_t addr, size_t width, uint64_t value) const {
+    if (!isMmioTraceEnabled()) {
+        return;
+    }
+
+    const uint64_t offset = addr - base();
+    if (width == 1) {
+        const uint8_t byte_value = static_cast<uint8_t>(value & 0xFFULL);
+        if (offset == 0 && byte_value >= 0x20 && byte_value < 0x7F) {
+            std::fprintf(stderr,
+                         "[mmio:%.*s] W +0x0 = 0x%02x ('%c')\n",
+                         static_cast<int>(_name.size()),
+                         _name.data(),
+                         byte_value,
+                         byte_value);
+        } else {
+            std::fprintf(stderr,
+                         "[mmio:%.*s] W +0x%llx = 0x%02x\n",
+                         static_cast<int>(_name.size()),
+                         _name.data(),
+                         static_cast<unsigned long long>(offset),
+                         byte_value);
+        }
+        return;
+    }
+
+    Device::traceMmioWrite(addr, width, value);
+}
+
 uint8_t SerialDevice::read8(uint64_t addr) {
     bool dlab = (_lcr & 0x80) != 0;
     uint8_t offset = static_cast<uint8_t>(addr - _base);
@@ -69,26 +118,12 @@ uint8_t SerialDevice::read8(uint64_t addr) {
         case 7:  result = _scr;   break;
         default: result = 0xFF;   break;
     }
-    if (_trace) {
-        fprintf(stderr, "[mmio:SERIAL] R +0x%x = 0x%02x\n", offset, result);
-    }
     return result;
 }
 
 void SerialDevice::write8(uint64_t addr, uint8_t val) {
     bool dlab = (_lcr & 0x80) != 0;
     uint8_t offset = static_cast<uint8_t>(addr - _base);
-    if (_trace) {
-        if (offset == 0 && !dlab) {
-            // THR write — show character if printable
-            if (val >= 0x20 && val < 0x7F)
-                fprintf(stderr, "[mmio:SERIAL] W +0x0 = 0x%02x ('%c')\n", val, val);
-            else
-                fprintf(stderr, "[mmio:SERIAL] W +0x0 = 0x%02x\n", val);
-        } else {
-            fprintf(stderr, "[mmio:SERIAL] W +0x%x = 0x%02x\n", offset, val);
-        }
-    }
     switch (offset) {
         case 0:
             if (dlab) { _dll = val; return; }

@@ -233,6 +233,8 @@ This keeps higher-half semantics stable for both `bios` and `direct` paths.
     - optional temporary identity/trampoline mapping page tables.
 3. Map kernel virtual range (higher-half) to loaded physical pages with `R/X` for text and `R/W` for data.
 4. Map boot info frame into kernel-visible VA (or map a temporary identity alias and pass physical pointer by ABI contract).
+   - Ensure boot-info/DTB placement does not overlap early boot page-table scratch pages used by kernel entry code.
+   - For current Little64 head.S flow, reserve at least 3 x 4 KiB pages after image end before placing DTB.
 5. Install root pointer + enable paging.
 6. Transfer control to kernel virtual entry point.
 7. Keep temporary identity mapping only as long as needed for safe transition.

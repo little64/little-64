@@ -1,7 +1,26 @@
 #include "memory_bus.hpp"
+
+#include "device.hpp"
+
 #include <stdexcept>
 #include <algorithm>
 #include <limits>
+
+namespace {
+
+void traceDeviceRead(const MemoryRegion* region, uint64_t addr, size_t width, uint64_t value) {
+    if (const auto* device = dynamic_cast<const Device*>(region)) {
+        device->traceMmioRead(addr, width, value);
+    }
+}
+
+void traceDeviceWrite(const MemoryRegion* region, uint64_t addr, size_t width, uint64_t value) {
+    if (const auto* device = dynamic_cast<const Device*>(region)) {
+        device->traceMmioWrite(addr, width, value);
+    }
+}
+
+} // namespace
 
 void MemoryBus::addRegion(std::unique_ptr<MemoryRegion> region) {
     uint64_t new_base = region->base();
@@ -55,12 +74,23 @@ bool MemoryBus::spansSingleRegion(uint64_t addr, uint64_t width, MemoryAccessTyp
 
 uint8_t MemoryBus::read8(uint64_t addr, MemoryAccessType access) const {
     MemoryRegion* r = resolveAccessRange(addr, 1, access);
-    return r ? r->read8(addr) : 0xFF;
+    if (!r) {
+        return 0xFF;
+    }
+
+    const uint8_t value = r->read8(addr);
+    traceDeviceRead(r, addr, 1, value);
+    return value;
 }
 
 void MemoryBus::write8(uint64_t addr, uint8_t val, MemoryAccessType access) {
     MemoryRegion* r = resolveAccessRange(addr, 1, access);
-    if (r) r->write8(addr, val);
+    if (!r) {
+        return;
+    }
+
+    r->write8(addr, val);
+    traceDeviceWrite(r, addr, 1, val);
 }
 
 // For wide accesses: if both ends are in the same region, use the region's optimized
@@ -68,42 +98,72 @@ void MemoryBus::write8(uint64_t addr, uint8_t val, MemoryAccessType access) {
 
 uint16_t MemoryBus::read16(uint64_t addr, MemoryAccessType access) const {
     MemoryRegion* r = resolveAccessRange(addr, 2, access);
-    if (r) return r->read16(addr);
+    if (r) {
+        const uint16_t value = r->read16(addr);
+        traceDeviceRead(r, addr, 2, value);
+        return value;
+    }
+
     return static_cast<uint16_t>(read8(addr, access)) |
            (static_cast<uint16_t>(read8(addr + 1, access)) << 8);
 }
 
 void MemoryBus::write16(uint64_t addr, uint16_t val, MemoryAccessType access) {
     MemoryRegion* r = resolveAccessRange(addr, 2, access);
-    if (r) { r->write16(addr, val); return; }
+    if (r) {
+        r->write16(addr, val);
+        traceDeviceWrite(r, addr, 2, val);
+        return;
+    }
+
     write8(addr,     static_cast<uint8_t>(val), access);
     write8(addr + 1, static_cast<uint8_t>(val >> 8), access);
 }
 
 uint32_t MemoryBus::read32(uint64_t addr, MemoryAccessType access) const {
     MemoryRegion* r = resolveAccessRange(addr, 4, access);
-    if (r) return r->read32(addr);
+    if (r) {
+        const uint32_t value = r->read32(addr);
+        traceDeviceRead(r, addr, 4, value);
+        return value;
+    }
+
     return static_cast<uint32_t>(read16(addr, access)) |
            (static_cast<uint32_t>(read16(addr + 2, access)) << 16);
 }
 
 void MemoryBus::write32(uint64_t addr, uint32_t val, MemoryAccessType access) {
     MemoryRegion* r = resolveAccessRange(addr, 4, access);
-    if (r) { r->write32(addr, val); return; }
+    if (r) {
+        r->write32(addr, val);
+        traceDeviceWrite(r, addr, 4, val);
+        return;
+    }
+
     write16(addr,     static_cast<uint16_t>(val), access);
     write16(addr + 2, static_cast<uint16_t>(val >> 16), access);
 }
 
 uint64_t MemoryBus::read64(uint64_t addr, MemoryAccessType access) const {
     MemoryRegion* r = resolveAccessRange(addr, 8, access);
-    if (r) return r->read64(addr);
+    if (r) {
+        const uint64_t value = r->read64(addr);
+        traceDeviceRead(r, addr, 8, value);
+        return value;
+    }
+
     return static_cast<uint64_t>(read32(addr, access)) |
            (static_cast<uint64_t>(read32(addr + 4, access)) << 32);
 }
 
 void MemoryBus::write64(uint64_t addr, uint64_t val, MemoryAccessType access) {
     MemoryRegion* r = resolveAccessRange(addr, 8, access);
-    if (r) { r->write64(addr, val); return; }
+    if (r) {
+        r->write64(addr, val);
+        traceDeviceWrite(r, addr, 8, val);
+        return;
+    }
+
     write32(addr,     static_cast<uint32_t>(val), access);
     write32(addr + 4, static_cast<uint32_t>(val >> 32), access);
 }

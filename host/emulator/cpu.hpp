@@ -469,6 +469,7 @@ private:
     uint64_t _trace_watch_start = 0;
     uint64_t _trace_watch_end = 0;
     bool _trace_pc_probe = false;
+    bool _trace_pc_probe_deref = false;
     uint64_t _trace_pc_probe0 = 0;
     uint64_t _trace_pc_probe1 = 0;
     uint64_t _trace_pc_probe_limit = UINT64_MAX;

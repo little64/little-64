@@ -38,6 +38,16 @@ In `Little64CPU`:
 - `reset()` cascades to all devices,
 - `cycle()` ticks all devices.
 - configured devices can assert/clear CPU interrupt lines through `InterruptSink`.
+- `--trace-mmio` / `setMmioTrace(true)` now enables shared MMIO tracing on all attached devices via `Device` trace hooks.
+
+## MMIO Tracing
+
+All `Device` instances inherit shared MMIO trace support.
+
+- Base behavior is implemented in `host/emulator/device.hpp` and emitted from `host/emulator/memory_bus.cpp`.
+- The default formatter logs device name, access width, region-relative offset, and value.
+- Devices can override the trace formatting when they need richer output; `SerialDevice` does this to preserve printable TX byte logging.
+- Headless CLI flag `--trace-mmio` toggles this path for every attached device, not only UART.
 
 ## Adding a New Device
 
@@ -72,7 +82,8 @@ meson test -C builddir --suite device --print-errorlogs
 1. Keep register map and side effects local to the device class.
 2. Use `reset()` to return to power-on state.
 3. Use `tick()` only when time progression matters.
-4. Avoid scattered ad-hoc memory-map edits outside `MachineConfig`.
+4. Prefer the shared `Device` MMIO trace hooks over ad-hoc `fprintf` logging inside device read/write methods.
+5. Avoid scattered ad-hoc memory-map edits outside `MachineConfig`.
 
 ## Update Checklist
 
