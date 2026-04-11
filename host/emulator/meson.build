@@ -41,6 +41,7 @@ core_emulator_src = [
   'rom_region.cpp',
   'serial_device.cpp',
   'timer_device.cpp',
+  'trace_writer.cpp',
 ]
 
 emulator_lib = static_library('little-64-cpu',

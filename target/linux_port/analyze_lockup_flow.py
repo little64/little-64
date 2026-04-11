@@ -527,6 +527,81 @@ def flatten_display_events(blocks: List[FlowBlock]) -> List[Event]:
     return out
 
 
+def _parse_binary_trace_filtered(
+    path: str,
+    tail_records: int = 100_000,
+) -> Tuple[List[Event], Optional[Event], Optional[Event], Optional[Event]]:
+    """Parse a L64T binary trace file directly into filtered Event objects.
+
+    Replaces the old _decode_binary_trace + parse_relevant_events pipeline by
+    going straight from binary records to Event objects, filtering by relevant
+    tag IDs at the binary level and using batch I/O with struct.iter_unpack.
+
+    Only reads the last *tail_records* records from the file to avoid processing
+    the entire trace when only the tail is needed.
+    """
+    import struct as _struct
+
+    _HEADER_SIZE = 64
+    _RECORD_SIZE = 41
+    _HEADER_FMT = "<4sIIIQQQQ16x"
+    _RECORD_FMT = "<BQQQQQ"
+
+    with open(path, "rb") as f:
+        hdr_data = f.read(_HEADER_SIZE)
+        if len(hdr_data) < _HEADER_SIZE:
+            return [], None, None, None
+        (
+            magic, version, flags, tag_count,
+            event_count, total_written, tag_table_off, events_off,
+        ) = _struct.unpack(_HEADER_FMT, hdr_data)
+
+        # Read tag table and build relevant tag-ID lookup
+        relevant_ids: Dict[int, str] = {}
+        if tag_table_off > 0:
+            f.seek(tag_table_off)
+            for i in range(tag_count):
+                len_byte = f.read(1)
+                if not len_byte:
+                    break
+                name_len = len_byte[0]
+                name = f.read(name_len).decode("utf-8", errors="replace")
+                if name in RELEVANT_TAGS:
+                    relevant_ids[i] = name
+
+        if not relevant_ids:
+            return [], None, None, None
+
+        # Read only the tail portion of events
+        read_count = min(event_count, tail_records)
+        start_record = event_count - read_count
+        f.seek(events_off + start_record * _RECORD_SIZE)
+        raw = f.read(read_count * _RECORD_SIZE)
+
+    # Decode + filter in a single pass
+    pc_flows: List[Event] = []
+    odd_ev: Optional[Event] = None
+    low_ev: Optional[Event] = None
+    mmu_detail: Optional[Event] = None
+
+    _get = relevant_ids.get
+    for tag_id, cycle, pc, a, b, c in _struct.iter_unpack(_RECORD_FMT, raw):
+        tag_name = _get(tag_id)
+        if tag_name is None:
+            continue
+        ev = Event(cycle=cycle, tag=tag_name, pc=pc, a=a, b=b, c=c)
+        if tag_name == "pc-flow":
+            pc_flows.append(ev)
+        elif tag_name == "pc-odd":
+            odd_ev = ev
+        elif tag_name == "pc-below-ram":
+            low_ev = ev
+        elif tag_name == "mmu-fault-detail":
+            mmu_detail = ev
+
+    return pc_flows, odd_ev, low_ev, mmu_detail
+
+
 def main() -> int:
     script_dir = os.path.dirname(os.path.realpath(__file__))
     repo_root = os.path.realpath(os.path.join(script_dir, "..", ".."))
@@ -567,12 +642,10 @@ def main() -> int:
         if not os.path.isfile(args.log):
             print(f"error: log file not found: {args.log}", file=sys.stderr)
             return 2
-        with open(args.log, "r", encoding="utf-8", errors="replace") as f:
-            lines = f.read().splitlines()
+        pc_flows, odd_ev, low_ev, mmu_detail = _parse_binary_trace_filtered(args.log)
     else:
         lines = sys.stdin.read().splitlines()
-
-    pc_flows, odd_ev, low_ev, mmu_detail = parse_relevant_events(lines)
+        pc_flows, odd_ev, low_ev, mmu_detail = parse_relevant_events(lines)
     if not pc_flows:
         print("[little64] no pc-flow events found", file=sys.stderr)
         return 1
@@ -594,7 +667,7 @@ def main() -> int:
         suspect_reason = "last pc-flow"
 
     print("[little64] control-flow summary")
-    print(f"  total pc-flow events: {len(pc_flows)}")
+    print(f"  total analyzed pc-flow events: {len(pc_flows)}")
     if low_ev is not None:
         print(f"  memory base: {fmt_hex(low_ev.c)}")
     if mmu_detail is not None:

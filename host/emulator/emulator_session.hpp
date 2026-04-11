@@ -1,6 +1,7 @@
 #pragma once
 
 #include "cpu.hpp"
+#include "trace_writer.hpp"
 #include "frontend_api.hpp"
 #include <cstdint>
 #include <string>
@@ -33,6 +34,7 @@ public:
     void setControlFlowTrace(bool enabled);
     void dumpBootLog(const char* reason);
     bool setBootEventOutputFile(const std::string& path);
+    bool setTraceWriter(std::unique_ptr<TraceWriter> writer);
     bool dumpBootLogToFile(const char* reason, const std::string& path);
 
 private:

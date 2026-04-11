@@ -213,13 +213,8 @@ void Little64CPU::_recordBootEvent(const char* tag, uint64_t a, uint64_t b, uint
         _boot_event_wrapped = true;
     }
 
-    if (_boot_event_stream && *_boot_event_stream) {
-        (*_boot_event_stream) << "  [" << ev.cycle << "] " << ev.tag
-                              << " pc=0x" << std::hex << ev.pc
-                              << " a=0x" << ev.a
-                              << " b=0x" << ev.b
-                              << " c=0x" << ev.c
-                              << std::dec << "\n";
+    if (_trace_writer) {
+        _trace_writer->writeEvent(ev.tag, ev.cycle, ev.pc, ev.a, ev.b, ev.c);
     }
 }
 
@@ -267,6 +262,7 @@ void Little64CPU::reset() {
     _boot_event_wrapped = false;
     _boot_event_dumped = false;
     _cycle_count = 0;
+    _clock.resume();  // Start the virtual clock so timer devices can fire
     _flushTLB();
     _recordBootEvent("reset");
     for (Device* device : _devices) {
@@ -1297,6 +1293,7 @@ bool Little64CPU::loadProgramElfDirectPaged(const std::vector<uint8_t>& elf_byte
     registers.regs[15] = entry_physical;
     registers.boot_info_frame_physical = dtb_phys;  // SR12: for compatibility
     isRunning = true;
+    _clock.resume();  // Start the virtual clock so timer devices can fire
     _recordBootEvent("direct-boot-load", kernel_physical_base, total_ram, entry_physical);
     _recordBootEvent("direct-boot-dtb", dtb_phys, static_cast<uint64_t>(dtb_span.size()), registers.regs[1]);
     return true;
@@ -1335,20 +1332,28 @@ void Little64CPU::setControlFlowTrace(bool enabled) {
 
 void Little64CPU::dumpBootLog(const char* reason) {
     _dumpBootEvents(reason);
+    if (_trace_writer) {
+        _trace_writer->flush();
+        _trace_writer->printStats();
+    }
 }
 
 bool Little64CPU::setBootEventOutputFile(const std::string& path) {
-    auto stream = std::make_unique<std::ofstream>(path, std::ios::out | std::ios::trunc);
-    if (!stream->is_open()) {
+    TraceWriter::Config config;
+    config.path = path;
+    auto writer = std::make_unique<TraceWriter>(std::move(config));
+    if (!writer->open()) {
         return false;
     }
+    _trace_writer = std::move(writer);
+    return true;
+}
 
-    // Flush each line eagerly so abrupt termination still preserves trace.
-    (*stream) << std::unitbuf;
-    (*stream) << "[little64] boot-debug: full event stream\n";
-    (*stream) << "[little64] boot-debug: events (oldest to newest by cycle)\n";
-
-    _boot_event_stream = std::move(stream);
+bool Little64CPU::setTraceWriter(std::unique_ptr<TraceWriter> writer) {
+    if (!writer || !writer->isOpen()) {
+        return false;
+    }
+    _trace_writer = std::move(writer);
     return true;
 }
 

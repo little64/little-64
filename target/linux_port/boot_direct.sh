@@ -139,7 +139,18 @@ print_trailing_newline() {
 }
 
 trap print_trailing_newline EXIT INT TERM
-EMULATOR_ARGS=("$EMULATOR_BIN" --trace-mmio --boot-events --trace-control-flow --boot-events-file=/tmp/little64_boot_events.log --boot-mode=direct)
+
+BOOT_EVENTS_FILE="/tmp/little64_boot_events.l64t"
+
+EMULATOR_ARGS=("$EMULATOR_BIN" --trace-mmio --boot-events --trace-control-flow --boot-events-file="$BOOT_EVENTS_FILE" --boot-events-max-mb="${LITTLE64_BOOT_EVENTS_MAX_MB:-500}" --boot-mode=direct)
+
+if [[ -n "${LITTLE64_TRACE_START_CYCLE:-}" ]]; then
+    EMULATOR_ARGS+=("--trace-start-cycle=$LITTLE64_TRACE_START_CYCLE")
+fi
+if [[ -n "${LITTLE64_TRACE_END_CYCLE:-}" ]]; then
+    EMULATOR_ARGS+=("--trace-end-cycle=$LITTLE64_TRACE_END_CYCLE")
+fi
+
 if [[ -n "$MAX_CYCLES" ]]; then
     EMULATOR_ARGS+=("--max-cycles=$MAX_CYCLES")
 fi
@@ -147,5 +158,5 @@ EMULATOR_ARGS+=("$KERNEL_ELF")
 "${EMULATOR_ARGS[@]}" 2> /tmp/little64_boot.log
 status=$?
 trap - EXIT INT TERM
-printf '\n(boot event log saved to /tmp/little64_boot_events.log)\n' >&2
+printf '\n(boot event log saved to %s)\n' "$BOOT_EVENTS_FILE" >&2
 exit "$status"

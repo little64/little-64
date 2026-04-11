@@ -26,11 +26,21 @@ This file documents practical update paths and maintenance rules for common proj
   - Default image path: `target/linux_port/build/vmlinux`.
   - Usage: `target/linux_port/boot_direct.sh [optional-path-to-vmlinux]`.
   - It launches the headless emulator in direct mode (`--boot-mode=direct`).
-  - It always streams full boot events to `/tmp/little64_boot_events.log` via `--boot-events-file`.
+  - It always streams full boot events to `/tmp/little64_boot_events.l64t` via `--boot-events-file`.
   - It also always enables control flow tracing.
+  - Default file size cap: 500 MB (override with `LITTLE64_BOOT_EVENTS_MAX_MB`).
+  - Supports cycle-window tracing: `LITTLE64_TRACE_START_CYCLE=N LITTLE64_TRACE_END_CYCLE=N`.
 - Boot-event analysis helper exists at `target/linux_port/analyze_lockup_flow.py`:
-  - Usage: `target/linux_port/analyze_lockup_flow.py --log /tmp/little64_boot_events.log [--tail N] [--elf <path>]`.
+  - Usage: `target/linux_port/analyze_lockup_flow.py --log /tmp/little64_boot_events.l64t [--tail N] [--elf <path>]`.
+  - Reads binary `.l64t` trace files.
   - The shell wrapper `target/linux_port/analyze_lockup_flow.sh` forwards to the Python analyzer.
+- Binary trace decoder exists at `target/linux_port/l64trace.py`:
+  - Usage: `l64trace.py decode <file>` to convert binary to text.
+  - Usage: `l64trace.py stats <file>` for trace statistics.
+  - Usage: `l64trace.py tail <file> -n N` for last N events.
+  - Usage: `l64trace.py search <file> --tags TAG --pc 0xADDR` for filtering.
+  - Usage: `l64trace.py watch <file>` for live-tailing (like `tail -f`), survives file recreation between runs.
+  - **Important**: Trace files (`.l64t`) are binary and cannot be read directly. Always use `l64trace.py` subcommands to inspect them.
 - PC-to-source lookup helper for Linux kernel debugging exists at `target/linux_port/pc_to_line.sh`:
   - Default image path: `target/linux_port/build/vmlinux`.
   - Usage: `target/linux_port/pc_to_line.sh [--elf <path>] [--context-bytes N] [--no-disasm] <pc>`.
@@ -112,8 +122,9 @@ When behavior changes, update docs in the same change:
 2. `docs/assembly-syntax.md` for assembler syntax/directive changes.
 3. `docs/architecture-boundaries.md` for layering/API changes.
 4. `docs/device-framework.md` for machine/device model changes.
-5. `README.md` and `docs/README.md` when command paths or reading order changes.
-6. this `CLAUDE.md` when contributor workflow instructions change.
+5. `docs/tracing.md` for trace subsystem, CLI flags, environment variables, or event changes.
+6. `README.md` and `docs/README.md` when command paths or reading order changes.
+7. this `CLAUDE.md` when contributor workflow instructions change.
 
 ## Verification Commands
 

@@ -1,5 +1,6 @@
 #include "emulator_session.hpp"
 #include "headless_runtime.hpp"
+#include "trace_writer.hpp"
 #include <csignal>
 #include <iomanip>
 #include <iostream>
@@ -48,14 +49,18 @@ void dumpFinalRegisters(EmulatorSession& runtime, const char* reason) {
 
 static void printUsage(const char* argv0) {
     std::cerr << "Usage: " << argv0
-              << " [-h | --help] [--boot-mode=auto|bios|direct] [--max-cycles=N] [--trace-mmio] [--trace-control-flow] [--boot-events] [--boot-events-file=PATH] [--final-registers]"
+              << " [-h | --help] [--boot-mode=auto|bios|direct] [--max-cycles=N] [--trace-mmio] [--trace-control-flow] [--boot-events] [--boot-events-file=PATH] [--boot-events-max-mb=N] [--trace-start-cycle=N] [--trace-end-cycle=N] [--final-registers]"
               << " <binary.bin|object.o>\n"
               << "  Runs the assembled binary/ELF object and prints any serial (UART) output to stdout.\n"
               << "  --max-cycles=N   Stop after N cycles and dump boot event log.\n"
               << "  --trace-mmio     Log mapped device MMIO reads/writes to stderr.\n"
               << "  --trace-control-flow  Record non-fallthrough PC changes into boot events.\n"
               << "  --boot-events    Always dump boot event log to stderr on exit.\n"
-              << "  --boot-events-file=PATH  Stream full boot event history to PATH during run.\n"
+              << "  --boot-events-file=PATH  Stream full boot event history to PATH (binary L64T format).\n"
+              << "                   Use l64trace.py to decode binary traces.\n"
+              << "  --boot-events-max-mb=N   Cap trace file at N megabytes (default: unlimited).\n"
+              << "  --trace-start-cycle=N    Only trace events at or after cycle N.\n"
+              << "  --trace-end-cycle=N      Only trace events at or before cycle N.\n"
               << "  --final-registers Dump final register state to stderr on exit.\n"
               << "  -h | --help        Show this help message.\n";
 }
@@ -74,6 +79,9 @@ int main(int argc, char* argv[]) {
     bool boot_events  = false;
     bool final_registers = false;
     std::string boot_events_file;
+    uint64_t boot_events_max_mb = 0;
+    uint64_t trace_start_cycle = 0;
+    uint64_t trace_end_cycle = UINT64_MAX;
 
     for (int i = 1; i < argc; ++i) {
         const std::string arg(argv[i]);
@@ -116,6 +124,33 @@ int main(int argc, char* argv[]) {
             continue;
         }
         if (arg == "--final-registers") { final_registers = true; continue; }
+        if (arg.rfind("--boot-events-max-mb=", 0) == 0) {
+            try {
+                boot_events_max_mb = std::stoull(arg.substr(std::string("--boot-events-max-mb=").size()));
+            } catch (...) {
+                std::cerr << "Error: invalid --boot-events-max-mb value\n";
+                return 1;
+            }
+            continue;
+        }
+        if (arg.rfind("--trace-start-cycle=", 0) == 0) {
+            try {
+                trace_start_cycle = std::stoull(arg.substr(std::string("--trace-start-cycle=").size()));
+            } catch (...) {
+                std::cerr << "Error: invalid --trace-start-cycle value\n";
+                return 1;
+            }
+            continue;
+        }
+        if (arg.rfind("--trace-end-cycle=", 0) == 0) {
+            try {
+                trace_end_cycle = std::stoull(arg.substr(std::string("--trace-end-cycle=").size()));
+            } catch (...) {
+                std::cerr << "Error: invalid --trace-end-cycle value\n";
+                return 1;
+            }
+            continue;
+        }
 
         if (!image_path.empty()) {
             std::cerr << "Error: multiple image paths provided\n";
@@ -143,8 +178,17 @@ int main(int argc, char* argv[]) {
         runtime.setControlFlowTrace(true);
     bool boot_events_stream_ok = false;
     if (!boot_events_file.empty()) {
-        boot_events_stream_ok = runtime.setBootEventOutputFile(boot_events_file);
-        if (!boot_events_stream_ok) {
+        TraceWriter::Config tc;
+        tc.path = boot_events_file;
+        tc.max_bytes = boot_events_max_mb > 0
+            ? boot_events_max_mb * 1024ULL * 1024ULL : 0;
+        tc.start_cycle = trace_start_cycle;
+        tc.end_cycle = trace_end_cycle;
+        auto writer = std::make_unique<TraceWriter>(std::move(tc));
+        if (writer->open()) {
+            boot_events_stream_ok = true;
+            runtime.setTraceWriter(std::move(writer));
+        } else {
             std::cerr << "[little64] warning: failed to open boot events stream file: " << boot_events_file << "\n";
         }
     }

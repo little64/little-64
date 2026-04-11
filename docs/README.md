@@ -19,6 +19,7 @@ This index is the entry point for project docs.
 - `architecture-boundaries.md` — layering and API boundaries
 - `paging-v1.md` — v1 paging, boot-mode, and minimal hypercall contract
 - `device-framework.md` — memory-region/device lifecycle model
+- `tracing.md` — binary trace subsystem, CLI flags, environment variables, events
 
 ## Authoring & Tooling
 

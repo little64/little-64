@@ -7,6 +7,7 @@
 #include <memory>
 #include <fstream>
 #include "device.hpp"
+#include "trace_writer.hpp"
 #include "memory_bus.hpp"
 #include "serial_device.hpp"
 #include "address_translator.hpp"
@@ -369,7 +370,12 @@ public:
 
     // Enable live boot-event streaming to file. When enabled, every event is
     // written as it occurs, preserving full history beyond the ring buffer.
+    // Convenience wrapper: creates a TraceWriter with default config.
     bool setBootEventOutputFile(const std::string& path);
+
+    // Set a pre-configured TraceWriter for boot-event streaming.
+    // Ownership transfers to the CPU.
+    bool setTraceWriter(std::unique_ptr<TraceWriter> writer);
 
     // Dump the boot event log to a file path. Returns false on file I/O errors.
     bool dumpBootLogToFile(const char* reason, const std::string& path) const;
@@ -515,7 +521,7 @@ private:
     uint64_t _trace_pc_probe0 = 0;
     uint64_t _trace_pc_probe1 = 0;
     uint64_t _trace_pc_probe_limit = UINT64_MAX;
-    std::unique_ptr<std::ofstream> _boot_event_stream;
+    std::unique_ptr<TraceWriter> _trace_writer;
 
     // Combined flag: true when any debug trace is active. Allows the hot loop
     // to skip all trace checks with a single branch when tracing is off.

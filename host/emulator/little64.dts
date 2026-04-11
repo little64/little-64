@@ -18,6 +18,12 @@
         };
     };
 
+    intc: interrupt-controller {
+        compatible = "little64,intc";
+        interrupt-controller;
+        #interrupt-cells = <1>;
+    };
+
     memory@100000 {
         device_type = "memory";
         reg = <0x0 0x100000 0x0 0x4000000>;  /* 1 MiB base, 64 MiB size */
@@ -31,6 +37,7 @@
     uart@8000000 {
         compatible = "ns16550a";
         reg = <0x0 0x08000000  0x0 0x8>;
+        interrupt-parent = <&intc>;
         interrupts = <4>;
         clock-frequency = <1843200>;
     };
@@ -38,6 +45,7 @@
     timer@8001000 {
         compatible = "little64,timer";
         reg = <0x0 0x08001000  0x0 0x20>;
+        interrupt-parent = <&intc>;
         interrupts = <5>;
     };
 };

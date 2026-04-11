@@ -97,6 +97,10 @@ bool EmulatorSession::setBootEventOutputFile(const std::string& path) {
     return _cpu.setBootEventOutputFile(path);
 }
 
+bool EmulatorSession::setTraceWriter(std::unique_ptr<TraceWriter> writer) {
+    return _cpu.setTraceWriter(std::move(writer));
+}
+
 bool EmulatorSession::dumpBootLogToFile(const char* reason, const std::string& path) {
     return _cpu.dumpBootLogToFile(reason, path);
 }

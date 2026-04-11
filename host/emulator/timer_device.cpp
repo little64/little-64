@@ -98,6 +98,8 @@ void TimerDevice::write64(uint64_t addr, uint64_t val) {
             if (val != 0) {
                 _next_cycle_fire = _clock->cycles() + val;
                 _fired_this_cycle = false;
+            } else {
+                clearInterruptLine();
             }
             break;
 
@@ -107,6 +109,8 @@ void TimerDevice::write64(uint64_t addr, uint64_t val) {
             if (val != 0) {
                 _next_time_fire_ns = _clock->virtualNanoseconds() + val;
                 _fired_this_cycle = false;
+            } else {
+                clearInterruptLine();
             }
             break;
 
