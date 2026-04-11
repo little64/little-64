@@ -31,6 +31,14 @@ public:
 
     virtual std::string_view name() const = 0;
 
+    // Access notification hooks for MMIO tracing.  No-op by default;
+    // Device overrides these so MemoryBus never needs dynamic_cast.
+    virtual void notifyRead(uint64_t /*addr*/, size_t /*width*/, uint64_t /*value*/) const {}
+    virtual void notifyWrite(uint64_t /*addr*/, size_t /*width*/, uint64_t /*value*/) const {}
+
+    // Fast non-virtual check: does this region want notifyRead/notifyWrite calls?
+    bool wantsAccessNotification() const { return _notify_access; }
+
     uint64_t base() const { return _base; }
     uint64_t size() const { return _size; }
     uint64_t end()  const { return _base + _size; }  // exclusive
@@ -38,6 +46,11 @@ public:
 protected:
     MemoryRegion(uint64_t base, uint64_t size) : _base(base), _size(size) {}
 
+    void setNotifyAccess(bool v) { _notify_access = v; }
+
     uint64_t _base;
     uint64_t _size;
+
+private:
+    bool _notify_access = false;
 };

@@ -89,6 +89,8 @@ Little64CPU::Little64CPU() {
 
         parse_env_u64("LITTLE64_TRACE_PC_PROBE_LIMIT", _trace_pc_probe_limit);
     }
+
+    _updateAnyTraceActive();
 }
 
 namespace {
@@ -248,6 +250,16 @@ void Little64CPU::_writeBootEvents(std::ostream& out, const char* reason) const 
     }
 }
 
+void Little64CPU::_flushTLB() {
+    for (auto& e : _tlb) {
+        e.vpage = UINT64_MAX;
+    }
+}
+
+void Little64CPU::_updateAnyTraceActive() {
+    _any_trace_active = _trace_control_flow || _trace_lr || _trace_watch || _trace_pc_probe;
+}
+
 void Little64CPU::reset() {
     registers = {};
     isRunning = true;
@@ -255,6 +267,7 @@ void Little64CPU::reset() {
     _boot_event_wrapped = false;
     _boot_event_dumped = false;
     _cycle_count = 0;
+    _flushTLB();
     _recordBootEvent("reset");
     for (Device* device : _devices) {
         if (device) {
@@ -279,43 +292,52 @@ void Little64CPU::cycle() {
         return;
     }
     Instruction instr(instr_word);
-    _recordPcProbe(pc, instr_word);
-    const uint64_t r1_before = registers.regs[1];
-    const uint64_t r11_before = registers.regs[11];
+
+    // Trace checks gated behind combined flag — zero overhead when tracing is off.
+    if (__builtin_expect(_any_trace_active, 0)) {
+        _recordPcProbe(pc, instr_word);
+    }
+    const uint64_t r1_before  = __builtin_expect(_any_trace_active, 0) ? registers.regs[1]  : 0;
+    const uint64_t r11_before = __builtin_expect(_any_trace_active, 0) ? registers.regs[11] : 0;
 
     registers.regs[15] += 2;  // advance PC before dispatch (so pc_rel is relative to next instruction)
 
     dispatchInstruction(instr);
 
-    if (_trace_lr && _isLrTracePcInRange(pc) && registers.regs[1] != r1_before) {
-        _recordBootEvent("r1-change", pc, r1_before, registers.regs[1]);
-        _recordBootEvent("r1-change-op", pc, instr_word, registers.regs[12]);
-    }
-    if (_trace_lr && _isLrTracePcInRange(pc) && registers.regs[11] != r11_before) {
-        _recordBootEvent("r11-change", pc, r11_before, registers.regs[11]);
-        _recordBootEvent("r11-change-op", pc, instr_word, registers.regs[13]);
-    }
+    if (__builtin_expect(_any_trace_active, 0)) {
+        if (_trace_lr && _isLrTracePcInRange(pc) && registers.regs[1] != r1_before) {
+            _recordBootEvent("r1-change", pc, r1_before, registers.regs[1]);
+            _recordBootEvent("r1-change-op", pc, instr_word, registers.regs[12]);
+        }
+        if (_trace_lr && _isLrTracePcInRange(pc) && registers.regs[11] != r11_before) {
+            _recordBootEvent("r11-change", pc, r11_before, registers.regs[11]);
+            _recordBootEvent("r11-change-op", pc, instr_word, registers.regs[13]);
+        }
 
-    const uint64_t next_pc = registers.regs[15];
-    const uint64_t fallthrough_pc = pc + 2;
-    if (_trace_control_flow && next_pc != fallthrough_pc) {
-        _recordBootEvent("pc-flow", pc, next_pc, instr_word);
-    }
-    if (_trace_control_flow && (next_pc & 1ULL)) {
-        _recordBootEvent("pc-odd", pc, next_pc, instr_word);
-    }
-    if (_trace_control_flow && next_pc < _mem_base) {
-        _recordBootEvent("pc-below-ram", pc, next_pc, _mem_base);
+        const uint64_t next_pc = registers.regs[15];
+        const uint64_t fallthrough_pc = pc + 2;
+        if (_trace_control_flow && next_pc != fallthrough_pc) {
+            _recordBootEvent("pc-flow", pc, next_pc, instr_word);
+        }
+        if (_trace_control_flow && (next_pc & 1ULL)) {
+            _recordBootEvent("pc-odd", pc, next_pc, instr_word);
+        }
+        if (_trace_control_flow && next_pc < _mem_base) {
+            _recordBootEvent("pc-below-ram", pc, next_pc, _mem_base);
+        }
     }
 
     // If interrupts are disabled and control flow returns to the same PC,
     // execution cannot make forward progress and cannot be externally broken
     // by interrupt delivery. Stop immediately before the event ring is flooded.
-    if (isRunning && next_pc == pc && !registers.isInterruptEnabled()) {
-        _recordBootEvent("self-loop-lockup", pc, instr_word, registers.cpu_control);
-        isRunning = false;
-        _dumpBootEvents("self-loop while interrupts disabled");
-        return;
+    {
+        const uint64_t next_pc = registers.regs[15];
+        if (isRunning && next_pc == pc && !registers.isInterruptEnabled()) {
+            _recordBootEvent("self-loop-lockup", pc, instr_word, registers.cpu_control);
+            isRunning = false;
+            _dumpBootEvents("self-loop while interrupts disabled");
+            return;
+        }
     }
 
     registers.regs[0] = 0;  // enforce R0=0 after any write
@@ -323,12 +345,7 @@ void Little64CPU::cycle() {
     // Poll for pending interrupts each cycle
     uint64_t pending = registers.interrupt_states & registers.interrupt_mask;
     if (pending) {
-        for (int i = 0; i < 64; ++i) {
-            if (pending & (1ULL << i)) {
-                _raiseInterrupt(i);
-                break;
-            }
-        }
+        _raiseInterrupt(__builtin_ctzll(pending));
     }
 
     for (Device* device : _devices) {
@@ -749,6 +766,10 @@ void Little64CPU::_dispatchGP(const Instruction& instr) {
             }
             // Store special register
             registers.setSpecialRegister(b, a);
+            // Flush TLB when paging config changes (page table root or cpu_control).
+            if (b == 0 || b == 11) {
+                _flushTLB();
+            }
             if (b == 15) {
                 _executeHypercall();
             }
@@ -765,6 +786,7 @@ void Little64CPU::_dispatchGP(const Instruction& instr) {
             registers.regs[15]   = registers.interrupt_epc;
             registers.flags      = registers.interrupt_eflags;
             registers.cpu_control = registers.interrupt_cpu_control;
+            _flushTLB();  // cpu_control may change paging/privilege state
             break;
         }
 
@@ -809,10 +831,28 @@ Little64CPU::TranslationResult Little64CPU::_translateAddress(uint64_t virtual_a
     };
 }
 
-bool Little64CPU::_mapAddress(uint64_t virtual_addr, CpuAccessType access, uint64_t operation_pc, uint64_t& physical_out) {
+bool Little64CPU::_mapAddressSlowPath(uint64_t virtual_addr, CpuAccessType access, uint64_t operation_pc, uint64_t& physical_out) {
     const TranslationResult result = _translateAddress(virtual_addr, access);
     if (result.valid) {
         physical_out = result.physical;
+
+        // Populate TLB on successful translation.
+        if (registers.isPagingEnabled()) {
+            const uint64_t vpage = virtual_addr >> 12;
+            const size_t idx = vpage & kTLBMask;
+            TLBEntry& entry = _tlb[idx];
+            const uint8_t access_bit = 1u << static_cast<uint8_t>(access);
+            if (entry.vpage == vpage) {
+                // Same page -- accumulate permission bits.
+                entry.perms |= access_bit;
+            } else {
+                // Different page -- replace entry.
+                entry.vpage = vpage;
+                entry.pbase = result.physical & ~0xFFFULL;
+                entry.perms = access_bit;
+                entry.user_accessible = registers.isUserMode();
+            }
+        }
         return true;
     }
 
@@ -1011,6 +1051,7 @@ bool Little64CPU::loadProgramElf(const std::vector<uint8_t>& elf_bytes, uint64_t
     _boot_event_wrapped = false;
     _boot_event_dumped = false;
     _cycle_count = 0;
+    _flushTLB();
     if (elf_bytes.size() < sizeof(Elf64_Ehdr))
         return false;
 
@@ -1089,6 +1130,7 @@ void Little64CPU::loadProgram(const std::vector<uint16_t>& words, uint64_t base,
     _boot_event_wrapped = false;
     _boot_event_dumped = false;
     _cycle_count = 0;
+    _flushTLB();
     // Convert 16-bit words to bytes (little-endian)
     std::vector<uint8_t> bytes;
     bytes.reserve(words.size() * 2);
@@ -1139,6 +1181,7 @@ bool Little64CPU::loadProgramElfDirectPaged(const std::vector<uint8_t>& elf_byte
     _boot_event_wrapped = false;
     _boot_event_dumped = false;
     _cycle_count = 0;
+    _flushTLB();
     if (elf_bytes.size() < sizeof(Elf64_Ehdr)) {
         return false;
     }
@@ -1287,6 +1330,7 @@ void Little64CPU::setMmioTrace(bool enabled) {
 
 void Little64CPU::setControlFlowTrace(bool enabled) {
     _trace_control_flow = enabled;
+    _updateAnyTraceActive();
 }
 
 void Little64CPU::dumpBootLog(const char* reason) {

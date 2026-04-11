@@ -1,26 +1,8 @@
 #include "memory_bus.hpp"
 
-#include "device.hpp"
-
 #include <stdexcept>
 #include <algorithm>
 #include <limits>
-
-namespace {
-
-void traceDeviceRead(const MemoryRegion* region, uint64_t addr, size_t width, uint64_t value) {
-    if (const auto* device = dynamic_cast<const Device*>(region)) {
-        device->traceMmioRead(addr, width, value);
-    }
-}
-
-void traceDeviceWrite(const MemoryRegion* region, uint64_t addr, size_t width, uint64_t value) {
-    if (const auto* device = dynamic_cast<const Device*>(region)) {
-        device->traceMmioWrite(addr, width, value);
-    }
-}
-
-} // namespace
 
 void MemoryBus::addRegion(std::unique_ptr<MemoryRegion> region) {
     uint64_t new_base = region->base();
@@ -33,22 +15,35 @@ void MemoryBus::addRegion(std::unique_ptr<MemoryRegion> region) {
         }
     }
     _regions.push_back(std::move(region));
+    _invalidateCache();
 }
 
 void MemoryBus::removeRegion(std::string_view name) {
     auto it = std::find_if(_regions.begin(), _regions.end(),
         [&](const auto& r) { return r->name() == name; });
-    if (it != _regions.end()) _regions.erase(it);
+    if (it != _regions.end()) {
+        _regions.erase(it);
+        _invalidateCache();
+    }
 }
 
 void MemoryBus::clearRegions() {
     _regions.clear();
+    _invalidateCache();
 }
 
 MemoryRegion* MemoryBus::findRegion(uint64_t addr) const {
+    // 1-entry cache: most accesses hit the same region (RAM) repeatedly.
+    if (addr >= _cached_base && addr < _cached_end) {
+        return _cached_region;
+    }
     for (const auto& r : _regions) {
-        if (addr >= r->base() && addr < r->end())
-            return r.get();
+        if (addr >= r->base() && addr < r->end()) {
+            _cached_region = r.get();
+            _cached_base = r->base();
+            _cached_end = r->end();
+            return _cached_region;
+        }
     }
     return nullptr;
 }
@@ -79,7 +74,7 @@ uint8_t MemoryBus::read8(uint64_t addr, MemoryAccessType access) const {
     }
 
     const uint8_t value = r->read8(addr);
-    traceDeviceRead(r, addr, 1, value);
+    if (r->wantsAccessNotification()) r->notifyRead(addr, 1, value);
     return value;
 }
 
@@ -90,7 +85,7 @@ void MemoryBus::write8(uint64_t addr, uint8_t val, MemoryAccessType access) {
     }
 
     r->write8(addr, val);
-    traceDeviceWrite(r, addr, 1, val);
+    if (r->wantsAccessNotification()) r->notifyWrite(addr, 1, val);
 }
 
 // For wide accesses: if both ends are in the same region, use the region's optimized
@@ -100,7 +95,7 @@ uint16_t MemoryBus::read16(uint64_t addr, MemoryAccessType access) const {
     MemoryRegion* r = resolveAccessRange(addr, 2, access);
     if (r) {
         const uint16_t value = r->read16(addr);
-        traceDeviceRead(r, addr, 2, value);
+        if (r->wantsAccessNotification()) r->notifyRead(addr, 2, value);
         return value;
     }
 
@@ -112,7 +107,7 @@ void MemoryBus::write16(uint64_t addr, uint16_t val, MemoryAccessType access) {
     MemoryRegion* r = resolveAccessRange(addr, 2, access);
     if (r) {
         r->write16(addr, val);
-        traceDeviceWrite(r, addr, 2, val);
+        if (r->wantsAccessNotification()) r->notifyWrite(addr, 2, val);
         return;
     }
 
@@ -124,7 +119,7 @@ uint32_t MemoryBus::read32(uint64_t addr, MemoryAccessType access) const {
     MemoryRegion* r = resolveAccessRange(addr, 4, access);
     if (r) {
         const uint32_t value = r->read32(addr);
-        traceDeviceRead(r, addr, 4, value);
+        if (r->wantsAccessNotification()) r->notifyRead(addr, 4, value);
         return value;
     }
 
@@ -136,7 +131,7 @@ void MemoryBus::write32(uint64_t addr, uint32_t val, MemoryAccessType access) {
     MemoryRegion* r = resolveAccessRange(addr, 4, access);
     if (r) {
         r->write32(addr, val);
-        traceDeviceWrite(r, addr, 4, val);
+        if (r->wantsAccessNotification()) r->notifyWrite(addr, 4, val);
         return;
     }
 
@@ -148,7 +143,7 @@ uint64_t MemoryBus::read64(uint64_t addr, MemoryAccessType access) const {
     MemoryRegion* r = resolveAccessRange(addr, 8, access);
     if (r) {
         const uint64_t value = r->read64(addr);
-        traceDeviceRead(r, addr, 8, value);
+        if (r->wantsAccessNotification()) r->notifyRead(addr, 8, value);
         return value;
     }
 
@@ -160,7 +155,7 @@ void MemoryBus::write64(uint64_t addr, uint64_t val, MemoryAccessType access) {
     MemoryRegion* r = resolveAccessRange(addr, 8, access);
     if (r) {
         r->write64(addr, val);
-        traceDeviceWrite(r, addr, 8, val);
+        if (r->wantsAccessNotification()) r->notifyWrite(addr, 8, val);
         return;
     }
 

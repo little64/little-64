@@ -35,5 +35,13 @@ private:
     MemoryRegion* resolveAccessRange(uint64_t addr, uint64_t width, MemoryAccessType access) const;
     bool spansSingleRegion(uint64_t addr, uint64_t width, MemoryAccessType access) const;
 
+    void _invalidateCache() { _cached_region = nullptr; _cached_base = 0; _cached_end = 0; }
+
     std::vector<std::unique_ptr<MemoryRegion>> _regions;
+
+    // 1-entry region cache — avoids linear scan for repeated accesses to the same
+    // region (instruction fetch + data access almost always hit RAM).
+    mutable MemoryRegion* _cached_region = nullptr;
+    mutable uint64_t _cached_base = 0;
+    mutable uint64_t _cached_end = 0;
 };

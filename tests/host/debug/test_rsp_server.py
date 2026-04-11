@@ -110,7 +110,7 @@ def main() -> int:
                 assert is_stop_reply(stop, "05"), stop
 
                 regs = send_cmd(sock, "g")
-                assert len(regs) == 272, len(regs)
+                assert len(regs) == 544, len(regs)
 
                 def read_reg_u64_le(payload: str, reg_index: int) -> int:
                     start = reg_index * 16

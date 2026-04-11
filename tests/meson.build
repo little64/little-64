@@ -90,6 +90,20 @@ test_paging = executable('test-paging',
 )
 test('paging', test_paging, suite : ['unit', 'paging', 'memory'], timeout : 60)
 
+test_tlb = executable('test-tlb',
+  ['host/test_tlb.cpp'],
+  link_with : [emulator_lib, linker_lib, project_lib],
+  include_directories : [
+    emulator_inc,
+    linker_inc,
+    project_inc,
+    arch_inc,
+    test_inc,
+  ],
+  install : false,
+)
+test('tlb', test_tlb, suite : ['unit', 'paging', 'memory'], timeout : 120)
+
 test_boot_frame = executable('test-boot-frame',
   ['host/test_boot_frame.cpp'],
   link_with : [project_lib],

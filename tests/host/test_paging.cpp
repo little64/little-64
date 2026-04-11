@@ -183,9 +183,10 @@ void test_not_present_l0_fault() {
                         aux_code(AUX_NO_VALID, 0));
 }
 
-void test_invalid_nonleaf_l2_fault() {
+void test_superpage_l2_permission_fault() {
     Little64CPU cpu = make_cpu();
     auto& bus = cpu.getMemoryBus();
+    // L2 leaf with R but no X — execute should produce permission fault.
     bus.write64(ROOT + (((KVA >> 30) & 0x1FFULL) * 8), leaf_pte(L1, true, false, false));
 
     enable_paging(cpu, ROOT);
@@ -193,16 +194,17 @@ void test_invalid_nonleaf_l2_fault() {
     cpu.cycle();
 
     expect_fault_common(cpu,
-                        AddressTranslator::TRAP_PAGE_FAULT_RESERVED,
+                        AddressTranslator::TRAP_PAGE_FAULT_PERMISSION,
                         2,
                         KVA,
-                        aux_code(AUX_INVALID_NONLEAF, 2));
+                        aux_code(AUX_PERMISSION, 2));
 }
 
-void test_invalid_nonleaf_l1_fault() {
+void test_superpage_l1_permission_fault() {
     Little64CPU cpu = make_cpu();
     auto& bus = cpu.getMemoryBus();
     bus.write64(ROOT + (((KVA >> 30) & 0x1FFULL) * 8), table_pte(L1));
+    // L1 leaf with R but no X — execute should produce permission fault.
     bus.write64(L1 + (((KVA >> 21) & 0x1FFULL) * 8), leaf_pte(L0, true, false, false));
 
     enable_paging(cpu, ROOT);
@@ -210,10 +212,10 @@ void test_invalid_nonleaf_l1_fault() {
     cpu.cycle();
 
     expect_fault_common(cpu,
-                        AddressTranslator::TRAP_PAGE_FAULT_RESERVED,
+                        AddressTranslator::TRAP_PAGE_FAULT_PERMISSION,
                         2,
                         KVA,
-                        aux_code(AUX_INVALID_NONLEAF, 1));
+                        aux_code(AUX_PERMISSION, 1));
 }
 
 void test_reserved_bit_l1_fault() {
@@ -351,8 +353,8 @@ int main() {
     test_not_present_l2_fault();
     test_not_present_l1_fault();
     test_not_present_l0_fault();
-    test_invalid_nonleaf_l2_fault();
-    test_invalid_nonleaf_l1_fault();
+    test_superpage_l2_permission_fault();
+    test_superpage_l1_permission_fault();
     test_reserved_bit_l1_fault();
     test_reserved_bit_leaf_fault();
     test_execute_permission_fault();

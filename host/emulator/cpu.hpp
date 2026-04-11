@@ -434,7 +434,37 @@ private:
     };
 
     TranslationResult _translateAddress(uint64_t virtual_addr, CpuAccessType access) const;
-    bool _mapAddress(uint64_t virtual_addr, CpuAccessType access, uint64_t operation_pc, uint64_t& physical_out);
+
+    // Inline fast-path: identity-maps when paging is off, checks TLB when paging
+    // is on.  Falls through to _mapAddressSlowPath for TLB misses and faults.
+    inline bool _mapAddress(uint64_t virtual_addr, CpuAccessType access,
+                            uint64_t operation_pc, uint64_t& physical_out) {
+        // Execute alignment check must happen before any shortcut.
+        if (__builtin_expect(access == CpuAccessType::Execute && (virtual_addr & 0x1ULL), 0)) {
+            return _mapAddressSlowPath(virtual_addr, access, operation_pc, physical_out);
+        }
+        if (__builtin_expect(!registers.isPagingEnabled(), 1)) {
+            physical_out = virtual_addr;
+            return true;
+        }
+        // TLB lookup
+        const uint64_t vpage = virtual_addr >> 12;
+        const size_t idx = vpage & kTLBMask;
+        const TLBEntry& entry = _tlb[idx];
+        if (__builtin_expect(entry.vpage == vpage, 1)) {
+            const uint8_t access_bit = 1u << static_cast<uint8_t>(access);
+            if (__builtin_expect((entry.perms & access_bit) != 0, 1)) {
+                if (!registers.isUserMode() || entry.user_accessible) {
+                    physical_out = entry.pbase | (virtual_addr & 0xFFFULL);
+                    return true;
+                }
+            }
+        }
+        return _mapAddressSlowPath(virtual_addr, access, operation_pc, physical_out);
+    }
+
+    bool _mapAddressSlowPath(uint64_t virtual_addr, CpuAccessType access,
+                             uint64_t operation_pc, uint64_t& physical_out);
 
     void _executeHypercall();
 
@@ -455,6 +485,18 @@ private:
     uint64_t _mem_size = 0;
     std::vector<uint8_t> _boot_source_bytes;
 
+    // Software TLB — direct-mapped, 64-entry, covers 4K pages.
+    struct TLBEntry {
+        uint64_t vpage = UINT64_MAX;   // virtual page number (addr >> 12)
+        uint64_t pbase = 0;            // physical page base (aligned)
+        uint8_t  perms = 0;            // bit 0=R, 1=W, 2=X
+        bool     user_accessible = false;
+    };
+    static constexpr size_t kTLBSize = 64;
+    static constexpr size_t kTLBMask = kTLBSize - 1;
+    std::array<TLBEntry, kTLBSize> _tlb{};
+    void _flushTLB();
+
     static constexpr size_t kBootEventCapacity = 128;
     std::array<BootEvent, kBootEventCapacity> _boot_events{};
     size_t _boot_event_head = 0;
@@ -474,4 +516,9 @@ private:
     uint64_t _trace_pc_probe1 = 0;
     uint64_t _trace_pc_probe_limit = UINT64_MAX;
     std::unique_ptr<std::ofstream> _boot_event_stream;
+
+    // Combined flag: true when any debug trace is active. Allows the hot loop
+    // to skip all trace checks with a single branch when tracing is off.
+    bool _any_trace_active = false;
+    void _updateAnyTraceActive();
 };

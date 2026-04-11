@@ -67,8 +67,14 @@ public:
     uint64_t cycles() const;
 
 private:
+    // Only query the wall clock every kClockSampleInterval cycles to avoid
+    // per-cycle syscall overhead from clock_gettime.
+    static constexpr uint64_t kClockSampleInterval = 4096;
+    static constexpr uint64_t kClockSampleMask = kClockSampleInterval - 1;
+
     std::chrono::steady_clock::time_point _run_start;
     uint64_t _accumulated_ns = 0;       // virtual nanoseconds accumulated so far
+    uint64_t _cached_virtual_ns = 0;    // last computed virtual nanoseconds (avoids clock_gettime per cycle)
     bool _paused = true;                // true when paused, false when running
     double _speed_ratio = 1.0;          // 1.0 = real time
     uint64_t _step_ns = 0;              // virtual nanoseconds advanced in current step (for single-step mode)

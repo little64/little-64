@@ -19,7 +19,10 @@ public:
     virtual void reset() {}
     virtual void tick() {}
 
-    virtual void setMmioTrace(bool enabled) { _trace_mmio = enabled; }
+    virtual void setMmioTrace(bool enabled) {
+        _trace_mmio = enabled;
+        setNotifyAccess(enabled);
+    }
 
     virtual void traceMmioRead(uint64_t addr, size_t width, uint64_t value) const {
         traceMmioAccess("R", addr, width, value);
@@ -27,6 +30,14 @@ public:
 
     virtual void traceMmioWrite(uint64_t addr, size_t width, uint64_t value) const {
         traceMmioAccess("W", addr, width, value);
+    }
+
+    // MemoryRegion notification hooks — forward to MMIO trace.
+    void notifyRead(uint64_t addr, size_t width, uint64_t value) const override {
+        traceMmioRead(addr, width, value);
+    }
+    void notifyWrite(uint64_t addr, size_t width, uint64_t value) const override {
+        traceMmioWrite(addr, width, value);
     }
 
     void connectInterruptSink(InterruptSink* sink) { _interrupt_sink = sink; }

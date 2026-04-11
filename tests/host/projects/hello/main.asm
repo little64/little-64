@@ -7,11 +7,11 @@
 ; EXPECT R1 = 42
 ; EXPECT R2 = 84
 
-.global start
+.global _start
 .global done
 .extern double_it
 
-start:
+_start:
     LDI #42, R1
     JUMP @double_it
 

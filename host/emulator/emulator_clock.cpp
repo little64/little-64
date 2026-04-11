@@ -12,12 +12,15 @@ void EmulatorClock::tick() {
         return;
     }
 
-    // Normal running mode: calculate elapsed wall clock time and scale by speed ratio
-    auto now = std::chrono::steady_clock::now();
-    auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(now - _run_start).count();
-    _accumulated_ns = uint64_t(elapsed * _speed_ratio);
-
     ++_cycles;
+
+    // Only query wall clock every kClockSampleInterval cycles to avoid
+    // per-cycle clock_gettime syscall overhead.
+    if ((_cycles & kClockSampleMask) == 0) {
+        auto now = std::chrono::steady_clock::now();
+        auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(now - _run_start).count();
+        _cached_virtual_ns = _accumulated_ns + uint64_t(elapsed * _speed_ratio);
+    }
 }
 
 void EmulatorClock::tickStep() {
@@ -63,6 +66,7 @@ void EmulatorClock::resume() {
     _is_stepping = false;
     _step_ns = 0;
     _run_start = std::chrono::steady_clock::now();
+    _cached_virtual_ns = _accumulated_ns;
 }
 
 void EmulatorClock::setSpeedRatio(double ratio) {
@@ -80,20 +84,13 @@ void EmulatorClock::setAssumedHz(uint64_t hz) {
 }
 
 uint64_t EmulatorClock::virtualNanoseconds() const {
-    if (_paused) {
-        // Paused: return accumulated or stepped nanoseconds
+    if (_paused || _is_stepping) {
         return _accumulated_ns + _step_ns;
     }
 
-    if (_is_stepping) {
-        // Stepping (which is a form of paused): return stepped nanoseconds
-        return _accumulated_ns + _step_ns;
-    }
-
-    // Running: calculate current elapsed time
-    auto now = std::chrono::steady_clock::now();
-    auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(now - _run_start).count();
-    return _accumulated_ns + uint64_t(elapsed * _speed_ratio);
+    // Running: return cached value (updated every kClockSampleInterval cycles
+    // in tick()) to avoid per-call clock_gettime overhead.
+    return _cached_virtual_ns;
 }
 
 uint64_t EmulatorClock::cycles() const {

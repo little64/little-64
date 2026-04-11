@@ -111,6 +111,7 @@ PagingTranslateResult AddressTranslator::translate(const MemoryBus& bus,
         }
 
         // Support superpage leaves at L2 (1 GiB) and L1 (2 MiB).
+        // Note: Little-64 permits non-aligned superpage bases (see paging-v1.md).
         if ((pte & (PTE_R | PTE_W | PTE_X)) != 0) {
             const uint64_t page_shift = (level == 2) ? 30ULL : 21ULL;
             return resolveLeaf(pte, level, page_shift);
@@ -131,6 +132,9 @@ PagingTranslateResult AddressTranslator::translate(const MemoryBus& bus,
 
     if ((leaf & PTE_V) == 0)
         return makeFault(TRAP_PAGE_FAULT_NOT_PRESENT, AUX_SUBTYPE_NO_VALID_PTE, 0);
+
+    if ((leaf & PTE_RESERVED_MASK) != 0)
+        return makeFault(TRAP_PAGE_FAULT_RESERVED, AUX_SUBTYPE_RESERVED_BIT, 0);
 
     return resolveLeaf(leaf, 0, 12);
 }

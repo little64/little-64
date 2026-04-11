@@ -286,6 +286,12 @@ static std::optional<std::vector<uint8_t>> linkObjectsWithLldElf(const std::vect
 }
 
 std::optional<std::vector<uint16_t>> Linker::linkObjects(const std::vector<std::vector<uint8_t>>& objects, LinkError* err) {
+    // When explicitly requested, use the internal linker directly.
+    const char* forceInternal = std::getenv("LITTLE64_USE_INTERNAL_LINKER");
+    if (forceInternal && forceInternal[0] == '1') {
+        return linkObjectsInternal(objects, err);
+    }
+
     // Prefer lld+binary output for final linker, while retaining the old internal
     // pinball linker as a fallback for compatibility.
     auto linked = linkObjectsWithLld(objects, err);
@@ -293,12 +299,7 @@ std::optional<std::vector<uint16_t>> Linker::linkObjects(const std::vector<std::
         return linked;
     }
 
-    const char* fallbackEnv = std::getenv("LITTLE64_USE_INTERNAL_LINKER");
-    if (!fallbackEnv || fallbackEnv[0] == '\0' || fallbackEnv[0] == '1') {
-        return linkObjectsInternal(objects, err);
-    }
-
-    return std::nullopt;
+    return linkObjectsInternal(objects, err);
 }
 
 std::optional<std::vector<uint8_t>> Linker::linkObjectsElf(const std::vector<std::vector<uint8_t>>& objects, LinkError* err) {
