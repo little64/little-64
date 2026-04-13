@@ -268,6 +268,19 @@ static void test_syscall() {
              "SYSCALL in user mode: trap_cause matches architectural constant");
 }
 
+static void test_invalid_opcode_trap() {
+    auto cpu = run_program(
+        ".short 0xC500\n"
+        "STOP\n"
+    );
+
+    CHECK_FALSE(cpu.isRunning, "Invalid opcode trap halts the CPU when no handler exists");
+    CHECK_EQ(cpu.registers.trap_cause, AddressTranslator::TRAP_INVALID_INSTRUCTION,
+             "Invalid opcode trap uses the architectural invalid-instruction exception code");
+    CHECK_EQ(cpu.registers.trap_pc, 0ULL,
+             "Invalid opcode trap records the faulting instruction PC");
+}
+
 // ---------------------------------------------------------------------------
 // User-bank special-register access rules
 // ---------------------------------------------------------------------------
@@ -354,6 +367,7 @@ int main() {
     std::printf("SSR\n");               test_ssr();
     std::printf("IRET\n");              test_iret();
     std::printf("SYSCALL\n");           test_syscall();
+    std::printf("Invalid opcode trap\n"); test_invalid_opcode_trap();
     std::printf("User-mode TP access\n"); test_user_mode_thread_pointer_access();
     std::printf("User-bank privilege\n"); test_user_mode_supervisor_bank_still_traps();
     std::printf("Selector masking\n"); test_special_register_selector_uses_low_16_bits();

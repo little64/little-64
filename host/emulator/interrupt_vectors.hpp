@@ -15,9 +15,10 @@ constexpr uint64_t kTrapPageFaultNotPresent = 5;
 constexpr uint64_t kTrapPageFaultPermission = 6;
 constexpr uint64_t kTrapPageFaultReserved = 7;
 constexpr uint64_t kTrapPageFaultCanonical = 8;
+constexpr uint64_t kTrapInvalidInstruction = 9;
 
 constexpr uint64_t kFirstExceptionVector = kTrapExecAlign;
-constexpr uint64_t kLastExceptionVector = kTrapPageFaultCanonical;
+constexpr uint64_t kLastExceptionVector = kTrapInvalidInstruction;
 
 constexpr uint64_t kReservedVector = 64;
 constexpr uint64_t kIrqVectorBase = 65;

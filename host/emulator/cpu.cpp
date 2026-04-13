@@ -873,6 +873,13 @@ void Little64CPU::_dispatchGP(const Instruction& instr) {
             _dumpBootEvents("STOP instruction");
             break;
         }
+        default: {
+            registers.trap_pc = registers.regs[15] - 2;
+            registers.trap_cause = AddressTranslator::TRAP_INVALID_INSTRUCTION;
+            _recordBootEvent("invalid-instruction", registers.trap_pc, instr.encode(), 0);
+            _raiseInterrupt(AddressTranslator::TRAP_INVALID_INSTRUCTION, true, registers.regs[15] - 2);
+            return;
+        }
     }
 }
 

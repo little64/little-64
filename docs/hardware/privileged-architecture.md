@@ -109,6 +109,7 @@ Unused bits are currently reserved. They SHOULD return zero on read, and SHOULD 
 | 6 | `TRAP_PAGE_FAULT_PERMISSION` |
 | 7 | `TRAP_PAGE_FAULT_RESERVED` |
 | 8 | `TRAP_PAGE_FAULT_CANONICAL` |
+| 9 | `TRAP_INVALID_INSTRUCTION` |
 | 64 | reserved |
 | `65..127` | platform-defined hardware IRQ space |
 

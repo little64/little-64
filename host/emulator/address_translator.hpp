@@ -37,6 +37,7 @@ public:
     static constexpr uint64_t TRAP_PAGE_FAULT_PERMISSION = Little64Vectors::kTrapPageFaultPermission;
     static constexpr uint64_t TRAP_PAGE_FAULT_RESERVED = Little64Vectors::kTrapPageFaultReserved;
     static constexpr uint64_t TRAP_PAGE_FAULT_CANONICAL = Little64Vectors::kTrapPageFaultCanonical;
+    static constexpr uint64_t TRAP_INVALID_INSTRUCTION = Little64Vectors::kTrapInvalidInstruction;
 
     static constexpr uint64_t AUX_SUBTYPE_NONE = 0;
     static constexpr uint64_t AUX_SUBTYPE_NO_VALID_PTE = 1;
