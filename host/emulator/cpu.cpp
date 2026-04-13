@@ -399,18 +399,24 @@ bool Little64CPU::_isInterruptUnmasked(uint64_t vector) const {
     return false;
 }
 
-void Little64CPU::_setInterruptPending(uint64_t vector) {
+bool Little64CPU::_setInterruptPending(uint64_t vector) {
     if (!Little64Vectors::isIrqVector(vector)) {
-        return;
+        return false;
     }
 
     const size_t bank = Little64Vectors::interruptBankForVector(vector);
     const uint64_t bit = Little64Vectors::interruptBitForVector(vector);
     if (bank == 0) {
+        const bool was_pending = (registers.interrupt_states & bit) != 0;
         registers.interrupt_states |= bit;
+        return !was_pending;
     } else if (bank == 1) {
+        const bool was_pending = (registers.interrupt_states_high & bit) != 0;
         registers.interrupt_states_high |= bit;
+        return !was_pending;
     }
+
+    return false;
 }
 
 void Little64CPU::_clearInterruptPending(uint64_t vector) {
@@ -428,7 +434,9 @@ void Little64CPU::_clearInterruptPending(uint64_t vector) {
 }
 
 void Little64CPU::assertInterrupt(uint64_t num) {
-    _setInterruptPending(num);
+    if (_setInterruptPending(num)) {
+        _recordBootEvent("irq-raise", num, registers.regs[15], registers.cpu_control);
+    }
 }
 
 void Little64CPU::clearInterrupt(uint64_t num) {
@@ -1472,7 +1480,9 @@ bool Little64CPU::dumpBootLogToFile(const char* reason, const std::string& path)
 }
 
 bool Little64CPU::_raiseInterrupt(uint64_t interrupt_number, bool exception, uint64_t epc) {
-    _recordBootEvent(exception ? "exception-raise" : "irq-raise", interrupt_number, epc, registers.regs[15]);
+    if (exception) {
+        _recordBootEvent("exception-raise", interrupt_number, epc, registers.regs[15]);
+    }
     if (!exception) {
         if (!Little64Vectors::isIrqVector(interrupt_number)) {
             return false;

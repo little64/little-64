@@ -57,6 +57,20 @@ static std::string capture_stderr(Fn&& fn) {
     return output;
 }
 
+static size_t count_occurrences(const std::string& haystack, const std::string& needle) {
+    if (needle.empty()) {
+        return 0;
+    }
+
+    size_t count = 0;
+    size_t pos = 0;
+    while ((pos = haystack.find(needle, pos)) != std::string::npos) {
+        ++count;
+        pos += needle.size();
+    }
+    return count;
+}
+
 static void test_machine_config_registration() {
     MemoryBus bus;
     std::vector<Device*> devices;
@@ -361,6 +375,34 @@ static void test_masked_irq_waits_until_reenabled() {
              "CPU jumps to the interrupt handler after IRQs are re-enabled");
 }
 
+static void test_pending_irq_logs_once_while_delivery_is_deferred() {
+    Little64CPU cpu;
+    constexpr uint16_t MOVE_R0_TO_R0 = 0x1000;
+    cpu.loadProgram(std::vector<uint16_t>{MOVE_R0_TO_R0, MOVE_R0_TO_R0, MOVE_R0_TO_R0, MOVE_R0_TO_R0});
+
+    constexpr uint64_t IRQ_LINE = Little64Vectors::kSerialIrqVector;
+    constexpr uint64_t IRQ_BIT = Little64Vectors::interruptBitForVector(IRQ_LINE);
+
+    cpu.registers.interrupt_mask_high = IRQ_BIT;
+    cpu.registers.setInterruptEnabled(true);
+    cpu.registers.setInInterrupt(true);
+    cpu.registers.setCurrentInterruptNumber(static_cast<uint8_t>(IRQ_LINE));
+
+    cpu.assertInterrupt(IRQ_LINE);
+    cpu.cycle();
+    cpu.cycle();
+    cpu.cycle();
+
+    const std::string trace = capture_stderr([&]() {
+        cpu.dumpBootLog("deferred irq trace test");
+    });
+
+    CHECK_EQ(count_occurrences(trace, "irq-raise"), 1ULL,
+             "A latched IRQ is recorded once even if delivery is retried across multiple cycles");
+    CHECK_EQ(count_occurrences(trace, "interrupt-enter"), 0ULL,
+             "Deferred IRQ retries do not spuriously enter a handler while the same vector is active");
+}
+
 static void test_mmio_trace_reaches_timer_device() {
     Little64CPU cpu;
     cpu.loadProgram(std::vector<uint16_t>{0xDF00}); // STOP
@@ -405,6 +447,7 @@ int main() {
     test_serial_rx_interrupt_line();
     test_serial_tx_interrupt_line();
     test_masked_irq_waits_until_reenabled();
+    test_pending_irq_logs_once_while_delivery_is_deferred();
     test_mmio_trace_reaches_timer_device();
     test_mmio_trace_preserves_serial_printable_format();
     return print_summary();

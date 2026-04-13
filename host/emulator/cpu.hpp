@@ -447,7 +447,7 @@ private:
 
     bool _selectHighestPriorityPendingInterrupt(uint64_t& out_vector) const;
     bool _isInterruptUnmasked(uint64_t vector) const;
-    void _setInterruptPending(uint64_t vector);
+    bool _setInterruptPending(uint64_t vector);
     void _clearInterruptPending(uint64_t vector);
 
     bool _raiseInterrupt(uint64_t interrupt_number, bool exception = false,
