@@ -2,8 +2,10 @@
 
 #include "../disassembler/disassembler.hpp"
 #include "../emulator/frontend_api.hpp"
+#include "../emulator/register_layout.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cstdint>
 #include <cstdio>
@@ -39,19 +41,48 @@ struct DebugRegionRow {
     std::string type;
 };
 
+struct DebugVisibleSpecialRegisterRow {
+    const char* name;
+    uint64_t special_register_id;
+};
+
+inline constexpr size_t kFirstSystemRegisterRowIndex = Little64RegisterLayout::kGeneralPurposeRegisterCount;
+inline constexpr size_t kProgramCounterRowIndex = kFirstSystemRegisterRowIndex;
+inline constexpr size_t kFlagsRowIndex = kProgramCounterRowIndex + 1;
+inline constexpr size_t kFirstSpecialRegisterRowIndex = kFlagsRowIndex + 1;
+inline constexpr size_t kCpuControlRowIndex = kFirstSpecialRegisterRowIndex;
+
+inline constexpr std::array<DebugVisibleSpecialRegisterRow, 15> kVisibleSpecialRegisterRows = {{
+    {"cpu_ctrl", Little64SpecialRegisters::kCpuControl},
+    {"int_table", Little64SpecialRegisters::kInterruptTableBase},
+    {"int_mask", Little64SpecialRegisters::kInterruptMask},
+    {"int_state", Little64SpecialRegisters::kInterruptStates},
+    {"int_mask_hi", Little64SpecialRegisters::kInterruptMaskHigh},
+    {"int_state_hi", Little64SpecialRegisters::kInterruptStatesHigh},
+    {"int_epc", Little64SpecialRegisters::kInterruptEpc},
+    {"int_eflg", Little64SpecialRegisters::kInterruptEflags},
+    {"int_cpu_ctl", Little64SpecialRegisters::kInterruptCpuControl},
+    {"trap_cau", Little64SpecialRegisters::kTrapCause},
+    {"trap_vadr", Little64SpecialRegisters::kTrapFaultAddr},
+    {"trap_acc", Little64SpecialRegisters::kTrapAccess},
+    {"trap_pc", Little64SpecialRegisters::kTrapPc},
+    {"trap_aux", Little64SpecialRegisters::kTrapAux},
+    {"usr_tp", Little64SpecialRegisters::kUserThreadPointer},
+}};
+
 inline std::vector<DebugRegisterRow> buildRegisterRows(const RegisterSnapshot& regs, uint64_t pc) {
     std::vector<DebugRegisterRow> rows;
-    rows.reserve(29);
+    rows.reserve(kFirstSpecialRegisterRowIndex + kVisibleSpecialRegisterRows.size());
 
-    for (int i = 0; i < 16; ++i) {
+    for (uint64_t i = 0; i < Little64RegisterLayout::kGeneralPurposeRegisterCount; ++i) {
         DebugRegisterRow row;
         switch (i) {
-            case 13: row.name = "SP"; break;
-            case 14: row.name = "LR"; break;
-            case 15: row.name = "PC"; break;
+            case Little64RegisterLayout::kStackPointerIndex: row.name = "SP"; break;
+            case Little64RegisterLayout::kLinkRegisterIndex: row.name = "LR"; break;
+            case Little64RegisterLayout::kProgramCounterIndex: row.name = "PC"; break;
             default: row.name = "R" + std::to_string(i); break;
         }
-        row.value = regs.gpr[i];
+        row.value = regs.gpr[static_cast<size_t>(i)];
         row.muted = (i == 0);
         rows.push_back(std::move(row));
     }
@@ -59,17 +90,9 @@ inline std::vector<DebugRegisterRow> buildRegisterRows(const RegisterSnapshot& r
     rows.push_back({"PC", pc, false});
     rows.push_back({"FLAGS", regs.flags, false});
 
-    rows.push_back({"cpu_ctrl", regs.cpu_control, false});
-    rows.push_back({"int_table", regs.interrupt_table_base, false});
-    rows.push_back({"int_mask", regs.interrupt_mask, false});
-    rows.push_back({"int_state", regs.interrupt_states, false});
-    rows.push_back({"int_epc", regs.interrupt_epc, false});
-    rows.push_back({"int_eflg", regs.interrupt_eflags, false});
-    rows.push_back({"trap_cau", regs.trap_cause, false});
-    rows.push_back({"trap_vadr", regs.trap_fault_addr, false});
-    rows.push_back({"trap_acc", regs.trap_access, false});
-    rows.push_back({"trap_pc", regs.trap_pc, false});
-    rows.push_back({"trap_aux", regs.trap_aux, false});
+    for (const auto& special_row : kVisibleSpecialRegisterRows) {
+        rows.push_back({special_row.name, regs.getSpecialRegisterBySelector(special_row.special_register_id), false});
+    }
 
     return rows;
 }

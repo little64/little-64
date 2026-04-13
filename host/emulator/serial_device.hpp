@@ -1,6 +1,7 @@
 #pragma once
 
 #include "device.hpp"
+#include "interrupt_vectors.hpp"
 #include <deque>
 #include <string>
 
@@ -10,9 +11,9 @@
 // Register map (offsets from base):
 //   +0  DLAB=0  RBR (read: pop RX FIFO or 0x00) / THR (write: push to TX buffer)
 //   +0  DLAB=1  DLL (divisor latch LSB, stored but not used for timing)
-//   +1  DLAB=0  IER (interrupt enable, stored but not acted upon)
+//   +1  DLAB=0  IER (bit0=RX ready irq enable, bit1=THRE irq enable)
 //   +1  DLAB=1  DLM (divisor latch MSB)
-//   +2          IIR (read: 0x01 = no interrupt pending) / FCR (write: ignored)
+//   +2          IIR (read: 0x04 = RX ready, 0x02 = THRE, 0x01 = no irq) / FCR (write: ignored)
 //   +3          LCR (bit7 = DLAB)
 //   +4          MCR (modem control, stored)
 //   +5          LSR (bit0=DR, bit5=THRE always 1, bit6=TEMT always 1)
@@ -20,7 +21,8 @@
 //   +7          SCR (scratch register, r/w)
 class SerialDevice : public Device {
 public:
-    explicit SerialDevice(uint64_t base, std::string_view name = "SERIAL", uint64_t irq_line = 4);
+    explicit SerialDevice(uint64_t base, std::string_view name = "SERIAL",
+                          uint64_t irq_line = Little64Vectors::kSerialIrqVector);
 
     uint8_t read8(uint64_t addr) override;
     void    write8(uint64_t addr, uint8_t val) override;

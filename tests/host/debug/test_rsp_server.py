@@ -12,6 +12,9 @@ LD = BIN / "ld.lld"
 DBG = ROOT / "builddir" / "little-64-debug"
 
 PORT = 9012
+BYTES_PER_U64 = 8
+HEX_CHARS_PER_REGISTER = BYTES_PER_U64 * 2
+REGISTER_INDEX_PC = 15
 
 
 def pkt(cmd: str) -> bytes:
@@ -42,6 +45,16 @@ def send_cmd(sock: socket.socket, cmd: str) -> str:
     if cmd == "k":
         return ""
     return recv_packet(sock)
+
+
+def discover_register_count(sock: socket.socket) -> int:
+    for reg_index in range(256):
+        reply = send_cmd(sock, f"qRegisterInfo{reg_index:x}")
+        if reply == "E45":
+            return reg_index
+        if not reply.startswith("name:"):
+            raise AssertionError(reply)
+    raise AssertionError("register count discovery did not terminate")
 
 
 def build_test_elf(tmpdir: pathlib.Path) -> pathlib.Path:
@@ -109,16 +122,19 @@ def main() -> int:
                 stop = send_cmd(sock, "?")
                 assert is_stop_reply(stop, "05"), stop
 
+                register_count = discover_register_count(sock)
+                assert register_count > REGISTER_INDEX_PC, register_count
+
                 regs = send_cmd(sock, "g")
-                assert len(regs) == 544, len(regs)
+                assert len(regs) == register_count * HEX_CHARS_PER_REGISTER, len(regs)
 
                 def read_reg_u64_le(payload: str, reg_index: int) -> int:
-                    start = reg_index * 16
-                    chunk = payload[start:start + 16]
+                    start = reg_index * HEX_CHARS_PER_REGISTER
+                    chunk = payload[start:start + HEX_CHARS_PER_REGISTER]
                     b = bytes.fromhex(chunk)
                     return int.from_bytes(b, byteorder="little", signed=False)
 
-                pc = read_reg_u64_le(regs, 15)
+                pc = read_reg_u64_le(regs, REGISTER_INDEX_PC)
                 bp_addr_hex = f"{pc:x}"
 
                 mem = send_cmd(sock, "m0,2")

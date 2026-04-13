@@ -5,19 +5,20 @@ This index is the entry point for project docs.
 ## Recommended Read Order
 
 1. `../README.md`
-2. `../CPU_ARCH.md`
-3. `assembly-syntax.md`
-4. `architecture-boundaries.md`
-5. `paging-v1.md`
+2. `hardware/README.md`
+3. `emulator/README.md`
+4. `assembly-syntax.md`
+5. `architecture-boundaries.md`
 6. `device-framework.md`
 7. `vscode-integration.md`
 8. `../GUI_DEBUGGER.md`
 
 ## Architecture & Behavior
 
-- `../CPU_ARCH.md` — instruction formats, opcode map, register/flag behavior
+- `hardware/README.md` — replacement entry point for the hardware architecture reference
+- `emulator/README.md` — implementation-specific emulator and virtual-platform behavior
+- `hardware/migration.md` — section-by-section map from the removed monolithic hardware docs
 - `architecture-boundaries.md` — layering and API boundaries
-- `paging-v1.md` — v1 paging, boot-mode, and minimal hypercall contract
 - `device-framework.md` — memory-region/device lifecycle model
 - `tracing.md` — binary trace subsystem, CLI flags, environment variables, events
 
@@ -42,6 +43,17 @@ Alternative entry points:
 - Meson target: `meson compile -C builddir docs`
 - VS Code task: `little64: docs all`
 
+## Linux Bring-up Helpers
+
+- Kernel build helper: `target/linux_port/build.sh`
+- Minimal rootfs image builder: `target/linux_port/rootfs/build.sh`
+- Direct-boot helper with rootfs attachment: `target/linux_port/boot_direct.sh`
+- Faster smoke helper without boot-event capture: `target/linux_port/boot_direct_no_event_logging.sh`
+- Dedicated Linux userspace-write smoke: `meson test -C builddir 'boot-linux-userspace-write' --print-errorlogs`
+  - Builds its own test-only init payload and rootfs image under `builddir/`, so it does not depend on `target/linux_port/rootfs/init.S`
+- Repeated fast-boot sampler and outcome clusterer: `target/linux_port/sample_fast_boots.sh`
+	- Supports parallel workers with `--jobs N` and optional explicit affinity selection via `--cpu-list LIST`
+
 ## Active Roadmaps
 
 - `lldb-arch-roadmap.md` — phased plan for LLDB-native Little64 architecture support
@@ -50,7 +62,9 @@ Alternative entry points:
 
 For each behavior change:
 
-- update at least one behavior doc (`CPU_ARCH.md`, `architecture-boundaries.md`, `device-framework.md`) when architecture/runtime semantics change,
+- update the relevant file under `hardware/` when core ISA semantics change,
+- update the relevant file under `emulator/` when implementation-specific behavior changes,
+- update `architecture-boundaries.md` or `device-framework.md` when layering or device-model semantics change,
 - update `assembly-syntax.md` if LLVM assembly behavior or compatibility rules changed,
 - update command examples in docs if CLI behavior changed,
 - keep `CLAUDE.md` synchronized with practical contributor steps.

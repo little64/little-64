@@ -5,25 +5,30 @@ SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
 REPO_ROOT=$(readlink -f "$SCRIPT_DIR/../..")
 EMULATOR_BIN="$REPO_ROOT/builddir/little-64"
 DEFAULT_KERNEL_ELF="$SCRIPT_DIR/build/vmlinux"
-DEFAULT_KERNEL_CMDLINE="console=ttyS0,115200 earlycon=uart8250,mmio,0x08000000,115200n8 ignore_loglevel loglevel=8"
+DEFAULT_ROOTFS_IMAGE="$SCRIPT_DIR/rootfs/build/rootfs.ext2"
 
 usage() {
     cat <<EOF
-Usage: $0 [--max-cycles N] [kernel-elf]
+Usage: $0 [--rootfs PATH | --no-rootfs] [--max-cycles N] [kernel-elf]
 
 If kernel-elf is omitted, $DEFAULT_KERNEL_ELF is used.
+If --rootfs is omitted, $DEFAULT_ROOTFS_IMAGE is used.
+Use --no-rootfs to boot without attaching a disk image.
 If --max-cycles is omitted, emulation runs indefinitely.
 
 Examples:
   $0
   $0 $DEFAULT_KERNEL_ELF
+  $0 --rootfs "$DEFAULT_ROOTFS_IMAGE"
+  $0 --no-rootfs
   $0 --max-cycles 10000000
   $0 $DEFAULT_KERNEL_ELF --max-cycles=10000000
 EOF
 }
 
 KERNEL_ELF="$DEFAULT_KERNEL_ELF"
-KERNEL_CMDLINE="${LITTLE64_KERNEL_CMDLINE:-$DEFAULT_KERNEL_CMDLINE}"
+ROOTFS_IMAGE="${LITTLE64_ROOTFS_IMAGE:-$DEFAULT_ROOTFS_IMAGE}"
+ATTACH_ROOTFS=1
 MAX_CYCLES=""
 POSITIONAL=()
 while [[ $# -gt 0 ]]; do
@@ -31,6 +36,29 @@ while [[ $# -gt 0 ]]; do
         -h|--help)
             usage
             exit 0
+            ;;
+        --rootfs)
+            shift
+            if [[ $# -eq 0 ]]; then
+                echo "error: --rootfs requires a value" >&2
+                exit 1
+            fi
+            ROOTFS_IMAGE="$1"
+            ATTACH_ROOTFS=1
+            shift
+            continue
+            ;;
+        --rootfs=*)
+            ROOTFS_IMAGE="${1#*=}"
+            ATTACH_ROOTFS=1
+            shift
+            continue
+            ;;
+        --no-rootfs)
+            ATTACH_ROOTFS=0
+            ROOTFS_IMAGE=""
+            shift
+            continue
             ;;
         --max-cycles)
             shift
@@ -100,13 +128,19 @@ if [[ ! -f "$KERNEL_ELF" ]]; then
     exit 1
 fi
 
+if [[ "$ATTACH_ROOTFS" == "1" && ! -f "$ROOTFS_IMAGE" ]]; then
+    echo "error: rootfs image not found at $ROOTFS_IMAGE" >&2
+    echo "hint: build it first with: $SCRIPT_DIR/rootfs/build.sh" >&2
+    echo "hint: or boot without a root disk via: $0 --no-rootfs" >&2
+    exit 1
+fi
+
 echo "[little64] direct boot: $KERNEL_ELF"
-if strings "$KERNEL_ELF" | grep -Fq "$KERNEL_CMDLINE"; then
-    echo "[little64] kernel cmdline signature present: $KERNEL_CMDLINE"
+echo "[little64] embedded DT source: $REPO_ROOT/host/emulator/little64.dts"
+if [[ "$ATTACH_ROOTFS" == "1" ]]; then
+    echo "[little64] rootfs image: $ROOTFS_IMAGE"
 else
-    echo "[little64] warning: expected kernel cmdline signature not found in $KERNEL_ELF" >&2
-    echo "[little64] warning: expected: $KERNEL_CMDLINE" >&2
-    echo "[little64] warning: rebuild kernel after updating arch/little64/boot/dts/little64.dts" >&2
+    echo "[little64] rootfs image: disabled (--no-rootfs)"
 fi
 
 # Optional targeted LR trace instrumentation for return-address debugging.
@@ -153,6 +187,9 @@ fi
 
 if [[ -n "$MAX_CYCLES" ]]; then
     EMULATOR_ARGS+=("--max-cycles=$MAX_CYCLES")
+fi
+if [[ "$ATTACH_ROOTFS" == "1" ]]; then
+    EMULATOR_ARGS+=("--disk=$ROOTFS_IMAGE" --disk-readonly)
 fi
 EMULATOR_ARGS+=("$KERNEL_ELF")
 "${EMULATOR_ARGS[@]}" 2> /tmp/little64_boot.log

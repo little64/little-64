@@ -1,6 +1,7 @@
 #include "main_window.hpp"
 
 #include "../frontend/debugger_views.hpp"
+#include "../emulator/interrupt_vectors.hpp"
 
 #include <QAction>
 #include <QDockWidget>
@@ -65,7 +66,8 @@ void MainWindow::buildUi() {
     auto* step_action = main_toolbar->addAction("Step");
     auto* live_toggle_action = main_toolbar->addAction("Start Live Run");
     auto* reset_action = main_toolbar->addAction("Reset");
-    auto* interrupt_action = main_toolbar->addAction("INT 63");
+    auto* interrupt_action = main_toolbar->addAction(
+        QString("IRQ %1").arg(static_cast<qulonglong>(Little64Vectors::kUiTestIrqVector)));
 
     run_speed_spin_ = new QSpinBox(this);
     run_speed_spin_->setRange(1, 100000);
@@ -176,7 +178,7 @@ void MainWindow::buildUi() {
     });
 
     connect(interrupt_action, &QAction::triggered, this, [this]() {
-        exec_.assertInterrupt(63);
+        exec_.assertInterrupt(Little64Vectors::kUiTestIrqVector);
         refreshAllViews();
     });
 

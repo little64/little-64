@@ -1,4 +1,5 @@
 #include "support/cpu_test_helpers.hpp"
+#include "address_translator.hpp"
 
 // Special instructions: LSR, SSR, IRET, STOP.
 // R0 always-zero invariant (must be tested through cycle(), not dispatchInstruction).
@@ -17,6 +18,46 @@ static void test_llr_scr() {
     );
 
     CHECK_FALSE(cpu.isRunning, "LLR/SCR program completes");
+}
+
+static Little64CPU run_llr_scr_invalidation_program(const std::string& interfering_write) {
+    return run_program(
+        "LDI #0x00, R14\n"
+        "LDI.S1 #0x10, R14\n"
+        "LDI64 #0x1122334455667788, R1\n"
+        "STORE [R14], R1\n"
+        "LLR R14, R3\n"
+        "LDI #0xAA, R2\n"
+        + interfering_write +
+        "LDI64 #0x0123456789ABCDEF, R2\n"
+        "SCR R14, R2\n"
+        "STOP\n");
+}
+
+static void test_llr_scr_reservation_invalidates_on_all_write_widths() {
+    auto cpu = run_llr_scr_invalidation_program("BYTE_STORE [R14+2], R2\n");
+    CHECK_EQ(cpu.registers.flags & FLAG_Z, 0ULL,
+             "BYTE_STORE overlapping the reserved 64-bit location invalidates the reservation");
+    CHECK_EQ(cpu.getMemoryBus().read8(RAM_BASE + 2), 0xAAULL,
+             "BYTE_STORE result remains visible after failed SCR");
+
+    cpu = run_llr_scr_invalidation_program("SHORT_STORE [R14+2], R2\n");
+    CHECK_EQ(cpu.registers.flags & FLAG_Z, 0ULL,
+             "SHORT_STORE overlapping the reserved 64-bit location invalidates the reservation");
+    CHECK_EQ(cpu.getMemoryBus().read16(RAM_BASE + 2), 0x00AAULL,
+             "SHORT_STORE result remains visible after failed SCR");
+
+    cpu = run_llr_scr_invalidation_program("WORD_STORE [R14+2], R2\n");
+    CHECK_EQ(cpu.registers.flags & FLAG_Z, 0ULL,
+             "WORD_STORE overlapping the reserved 64-bit location invalidates the reservation");
+    CHECK_EQ(cpu.getMemoryBus().read32(RAM_BASE + 2), 0x000000AAULL,
+             "WORD_STORE result remains visible after failed SCR");
+
+    cpu = run_llr_scr_invalidation_program("STORE [R14], R2\n");
+    CHECK_EQ(cpu.registers.flags & FLAG_Z, 0ULL,
+             "STORE to the reserved 64-bit location invalidates the reservation");
+    CHECK_EQ(cpu.getMemoryBus().read64(RAM_BASE), 0xAAULL,
+             "STORE result remains visible after failed SCR");
 }
 
 // ---------------------------------------------------------------------------
@@ -63,80 +104,90 @@ static void test_r0_always_zero() {
 // LSR — load special register (Rs1 = index, Rd = destination)
 // Uses SSR first to set known values, then LSR to read them back.
 // ---------------------------------------------------------------------------
+static Little64CPU run_special_register_round_trip(const std::string& value_setup,
+                                                   uint64_t special_register_id) {
+    return run_program(value_setup
+                       + ldi_special_register_index(special_register_id, 2)
+                       + "SSR R2, R1\n"
+                       + "LSR R2, R3\n"
+                       + "STOP\n");
+}
+
+static Little64CPU run_special_register_write(const std::string& value_setup,
+                                              uint64_t special_register_id) {
+    return run_program(value_setup
+                       + ldi_special_register_index(special_register_id, 2)
+                       + "SSR R2, R1\n"
+                       + "STOP\n");
+}
+
 static void test_lsr() {
-    // Round-trip cpu_control (index 0) — set via SSR, read via LSR
-    auto cpu = run_program(
-        "LDI #0x03, R1\n"    // value to write to cpu_control
-        "LDI #0, R2\n"       // index 0 = cpu_control
-        "SSR R2, R1\n"       // cpu_control = R1
-        "LSR R2, R3\n"       // R3 = cpu_control
-        "STOP\n"
-    );
-    CHECK_EQ(cpu.registers.regs[3], 0x03ULL, "LSR index 0 (cpu_control): round-trip");
+    auto cpu = run_special_register_round_trip(
+        "LDI #0x03, R1\n",
+        Little64SpecialRegisters::kCpuControl);
+    CHECK_EQ(cpu.registers.regs[3], 0x03ULL, "LSR cpu_control: round-trip");
 
-    // interrupt_table_base (index 1)
-    cpu = run_program(
-        "LDI64 #0xDEAD0000, R1\n"
-        "LDI #1, R2\n"
-        "SSR R2, R1\n"
-        "LSR R2, R3\n"
-        "STOP\n"
-    );
+    cpu = run_special_register_round_trip(
+        "LDI64 #0xDEAD0000, R1\n",
+        Little64SpecialRegisters::kInterruptTableBase);
     CHECK_EQ(cpu.registers.regs[3], UINT64_C(0xDEAD0000),
-             "LSR index 1 (interrupt_table_base): round-trip");
+             "LSR interrupt_table_base: round-trip");
 
-    // interrupt_mask (index 2)
-    cpu = run_program(
-        "LDI64 #0xFF, R1\n"
-        "LDI #2, R2\n"
-        "SSR R2, R1\n"
-        "LSR R2, R3\n"
-        "STOP\n"
-    );
-    CHECK_EQ(cpu.registers.regs[3], 0xFFULL, "LSR index 2 (interrupt_mask): round-trip");
+    cpu = run_special_register_round_trip(
+        "LDI64 #0xFF, R1\n",
+        Little64SpecialRegisters::kInterruptMask);
+    CHECK_EQ(cpu.registers.regs[3], 0xFFULL, "LSR interrupt_mask: round-trip");
 
-    // interrupt_states (index 3) — readable
-    cpu = run_program(
-        "LDI #0x07, R1\n"
-        "LDI #3, R2\n"
-        "SSR R2, R1\n"
-        "LSR R2, R3\n"
-        "STOP\n"
-    );
-    CHECK_EQ(cpu.registers.regs[3], 0x07ULL, "LSR index 3 (interrupt_states): round-trip");
+    cpu = run_special_register_round_trip(
+        "LDI #0x07, R1\n",
+        Little64SpecialRegisters::kInterruptStates);
+    CHECK_EQ(cpu.registers.regs[3], 0x07ULL, "LSR interrupt_states: round-trip");
 
-    // Out-of-range index: should return 0
+    cpu = run_special_register_round_trip(
+        "LDI #0x02, R1\n",
+        Little64SpecialRegisters::kInterruptMaskHigh);
+    CHECK_EQ(cpu.registers.regs[3], 0x02ULL, "LSR interrupt_mask_high: round-trip");
+
+    cpu = run_special_register_round_trip(
+        "LDI #0x04, R1\n",
+        Little64SpecialRegisters::kInterruptStatesHigh);
+    CHECK_EQ(cpu.registers.regs[3], 0x04ULL, "LSR interrupt_states_high: round-trip");
+
+    cpu = run_special_register_round_trip(
+        "LDI64 #0x123456789abcdef0, R1\n",
+        Little64SpecialRegisters::kUserThreadPointer);
+    CHECK_EQ(cpu.registers.regs[3], UINT64_C(0x123456789abcdef0),
+             "LSR user-bank thread_pointer: round-trip");
+
+    constexpr uint64_t kInvalidSpecialRegisterIndex = 63;
     cpu = run_program(
-        "LDI #63, R2\n"
+        ldi_special_register_index(kInvalidSpecialRegisterIndex, 2) +
         "LSR R2, R3\n"
-        "STOP\n"
-    );
-    CHECK_EQ(cpu.registers.regs[3], 0ULL, "LSR out-of-range index: returns 0");
+        "STOP\n");
+    CHECK_EQ(cpu.registers.regs[3], 0ULL, "LSR out-of-range special register: returns 0");
 }
 
 // ---------------------------------------------------------------------------
 // SSR — store special register (Rs1 = index, Rd = value to write)
 // ---------------------------------------------------------------------------
 static void test_ssr() {
-    // interrupt_table_base (index 1): write then verify via registers struct
-    auto cpu = run_program(
-        "LDI64 #0xCAFEBABE00000000, R1\n"
-        "LDI #1, R2\n"
-        "SSR R2, R1\n"
-        "STOP\n"
-    );
+    auto cpu = run_special_register_write(
+        "LDI64 #0xCAFEBABE00000000, R1\n",
+        Little64SpecialRegisters::kInterruptTableBase);
     CHECK_EQ(cpu.registers.interrupt_table_base, UINT64_C(0xCAFEBABE00000000),
-             "SSR index 1: interrupt_table_base updated");
+             "SSR interrupt_table_base: updated");
 
-    // interrupt_mask (index 2)
-    cpu = run_program(
-        "LDI64 #0xABCDEF0123456789, R1\n"
-        "LDI #2, R2\n"
-        "SSR R2, R1\n"
-        "STOP\n"
-    );
+    cpu = run_special_register_write(
+        "LDI64 #0xABCDEF0123456789, R1\n",
+        Little64SpecialRegisters::kInterruptMask);
     CHECK_EQ(cpu.registers.interrupt_mask, UINT64_C(0xABCDEF0123456789),
-             "SSR index 2: interrupt_mask updated");
+             "SSR interrupt_mask: updated");
+
+    cpu = run_special_register_write(
+        "LDI64 #0x0123456789ABCDEF, R1\n",
+        Little64SpecialRegisters::kUserThreadPointer);
+    CHECK_EQ(cpu.registers.thread_pointer, UINT64_C(0x0123456789ABCDEF),
+             "SSR user-bank thread_pointer: updated");
 
     // SSR does NOT update flags
     cpu = run_program(
@@ -144,10 +195,9 @@ static void test_ssr() {
         "LDI #5, R2\n"
         "SUB R2, R1\n"      // Z=1
         "LDI #0x42, R1\n"
-        "LDI #1, R2\n"
+        + ldi_special_register_index(Little64SpecialRegisters::kInterruptTableBase, 2) +
         "SSR R2, R1\n"      // SSR must not change flags
-        "STOP\n"
-    );
+        "STOP\n");
     CHECK_EQ(cpu.registers.flags & FLAG_Z, FLAG_Z, "SSR does not clear flags");
 }
 
@@ -193,16 +243,17 @@ static void test_iret() {
 // SYSCALL — system call instruction (opcode 27)
 // ---------------------------------------------------------------------------
 static void test_syscall() {
-    // SYSCALL in supervisor mode: fires TRAP_SYSCALL_FROM_SUPERVISOR (65)
+    // SYSCALL in supervisor mode: fires TRAP_SYSCALL_FROM_SUPERVISOR
     // (default CPU state is supervisor mode)
     auto cpu = run_program(
         "SYSCALL\n"
         "STOP\n"
     );
     CHECK_FALSE(cpu.isRunning, "SYSCALL in supervisor mode halts CPU (exception not handled)");
-    CHECK_EQ(cpu.registers.trap_cause, 65ULL, "SYSCALL in supervisor mode: trap_cause = 65");
+    CHECK_EQ(cpu.registers.trap_cause, AddressTranslator::TRAP_SYSCALL_FROM_SUPERVISOR,
+             "SYSCALL in supervisor mode: trap_cause matches architectural constant");
 
-    // SYSCALL in user mode: fires TRAP_SYSCALL (64)
+    // SYSCALL in user mode: fires TRAP_SYSCALL
     // We need to manually set up user mode since run_program doesn't support it easily
     Little64CPU cpu_user;
     cpu_user.loadProgram(std::vector<uint16_t>{
@@ -213,7 +264,63 @@ static void test_syscall() {
     cpu_user.dispatchInstruction(make_instr("SYSCALL"));
 
     CHECK_FALSE(cpu_user.isRunning, "SYSCALL in user mode halts CPU (exception not handled)");
-    CHECK_EQ(cpu_user.registers.trap_cause, 64ULL, "SYSCALL in user mode: trap_cause = 64");
+    CHECK_EQ(cpu_user.registers.trap_cause, AddressTranslator::TRAP_SYSCALL,
+             "SYSCALL in user mode: trap_cause matches architectural constant");
+}
+
+// ---------------------------------------------------------------------------
+// User-bank special-register access rules
+// ---------------------------------------------------------------------------
+static void test_user_mode_thread_pointer_access() {
+    Little64CPU cpu;
+    cpu.loadProgram(std::vector<uint16_t>{0xDF00});
+
+    cpu.registers.setUserMode(true);
+    cpu.registers.regs[1] = Little64SpecialRegisters::kUserThreadPointer;
+    cpu.registers.regs[2] = UINT64_C(0xFACEB00C12345678);
+
+    cpu.dispatchInstruction(make_instr("SSR R1, R2"));
+    CHECK_EQ(cpu.registers.thread_pointer, UINT64_C(0xFACEB00C12345678),
+             "User mode may write the TP special register");
+    CHECK_EQ(cpu.registers.trap_cause, 0ULL,
+             "User-mode TP write does not raise a privileged instruction trap");
+
+    cpu.registers.regs[3] = 0;
+    cpu.dispatchInstruction(make_instr("LSR R1, R3"));
+    CHECK_EQ(cpu.registers.regs[3], UINT64_C(0xFACEB00C12345678),
+             "User mode may read the TP special register");
+    CHECK_EQ(cpu.registers.trap_cause, 0ULL,
+             "User-mode TP read does not raise a privileged instruction trap");
+}
+
+static void test_user_mode_supervisor_bank_still_traps() {
+    Little64CPU cpu;
+    cpu.loadProgram(std::vector<uint16_t>{0xDF00});
+
+    cpu.registers.setUserMode(true);
+    cpu.registers.regs[1] = Little64SpecialRegisters::kCpuControl;
+    cpu.dispatchInstruction(make_instr("LSR R1, R2"));
+
+    CHECK_FALSE(cpu.isRunning, "User-mode supervisor-bank LSR still traps");
+    CHECK_EQ(cpu.registers.trap_cause, AddressTranslator::TRAP_PRIVILEGED_INSTRUCTION,
+             "Supervisor-bank special registers remain privileged in user mode");
+}
+
+static void test_special_register_selector_uses_low_16_bits() {
+    Little64CPU cpu;
+    cpu.loadProgram(std::vector<uint16_t>{0xDF00});
+
+    cpu.registers.regs[1] = UINT64_C(0xFFFF000000008000);
+    cpu.registers.regs[2] = UINT64_C(0x1122334455667788);
+    cpu.dispatchInstruction(make_instr("SSR R1, R2"));
+
+    CHECK_EQ(cpu.registers.thread_pointer, UINT64_C(0x1122334455667788),
+             "SSR only uses the low 16 selector bits");
+
+    cpu.registers.regs[3] = 0;
+    cpu.dispatchInstruction(make_instr("LSR R1, R3"));
+    CHECK_EQ(cpu.registers.regs[3], UINT64_C(0x1122334455667788),
+             "LSR only uses the low 16 selector bits");
 }
 
 // ---------------------------------------------------------------------------
@@ -227,7 +334,8 @@ static void test_execute_alignment_fault_trap_record() {
     cpu.cycle();
 
     CHECK_FALSE(cpu.isRunning, "Execute alignment fault halts when exceptions cannot be handled");
-    CHECK_EQ(cpu.registers.trap_cause, 62ULL, "Trap cause records execute alignment exception");
+    CHECK_EQ(cpu.registers.trap_cause, AddressTranslator::TRAP_EXEC_ALIGN,
+             "Trap cause records execute alignment exception");
     CHECK_EQ(cpu.registers.trap_fault_addr, 1ULL, "Trap fault address stores offending virtual address");
     CHECK_EQ(cpu.registers.trap_access, 2ULL, "Trap access stores execute access kind");
     CHECK_EQ(cpu.registers.trap_pc, 1ULL, "Trap PC stores faulting PC");
@@ -239,12 +347,16 @@ static void test_execute_alignment_fault_trap_record() {
 int main() {
     std::printf("=== Little-64 CPU special instruction tests ===\n\n");
     std::printf("LLR/SCR\n");           test_llr_scr();
+    std::printf("LLR/SCR invalidation\n"); test_llr_scr_reservation_invalidates_on_all_write_widths();
     std::printf("STOP\n");              test_stop();
     std::printf("R0 always zero\n");    test_r0_always_zero();
     std::printf("LSR\n");               test_lsr();
     std::printf("SSR\n");               test_ssr();
     std::printf("IRET\n");              test_iret();
     std::printf("SYSCALL\n");           test_syscall();
+    std::printf("User-mode TP access\n"); test_user_mode_thread_pointer_access();
+    std::printf("User-bank privilege\n"); test_user_mode_supervisor_bank_still_traps();
+    std::printf("Selector masking\n"); test_special_register_selector_uses_low_16_bits();
     std::printf("Execute alignment trap\n"); test_execute_alignment_fault_trap_record();
     return print_summary();
 }

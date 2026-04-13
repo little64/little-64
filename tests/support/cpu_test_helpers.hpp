@@ -4,6 +4,7 @@
 #include "cpu.hpp"
 #include "linker.hpp"
 #include "llvm_assembler.hpp"
+#include "special_register_layout.hpp"
 #include <cstdint>
 #include <iomanip>
 #include <regex>
@@ -147,6 +148,10 @@ struct ExecResult {
     cpu.registers.regs[rd] = initial;
     cpu.dispatchInstruction(make_instr(src));
     return { cpu.registers.regs[rd], cpu.registers.flags };
+}
+
+[[maybe_unused]] static std::string ldi_special_register_index(uint64_t special_register_id, int rd) {
+    return "LDI64 #" + std::to_string(special_register_id) + ", R" + std::to_string(rd) + "\n";
 }
 
 [[maybe_unused]] static Little64CPU run_program(const std::string& src, int max_cycles = 10000) {

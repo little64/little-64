@@ -1,6 +1,7 @@
 #pragma once
 
 #include "cpu.hpp"
+#include "disk_image.hpp"
 #include "trace_writer.hpp"
 #include "frontend_api.hpp"
 #include <cstdint>
@@ -32,6 +33,7 @@ public:
 
     void setMmioTrace(bool enabled);
     void setControlFlowTrace(bool enabled);
+    void setDiskImage(std::unique_ptr<DiskImage> image);
     void dumpBootLog(const char* reason);
     bool setBootEventOutputFile(const std::string& path);
     bool setTraceWriter(std::unique_ptr<TraceWriter> writer);

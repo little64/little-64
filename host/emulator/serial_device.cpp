@@ -24,8 +24,12 @@ void SerialDevice::tick() {
 
 void SerialDevice::updateInterruptState() {
     const bool rx_ready_irq_enabled = (_ier & 0x01) != 0;
+    const bool tx_empty_irq_enabled = (_ier & 0x02) != 0;
     const bool has_rx_data = !_rx_buffer.empty();
-    if (rx_ready_irq_enabled && has_rx_data) {
+
+    // The emulator models TX as completing immediately, so THRE is pending
+    // whenever the guest enables that interrupt source.
+    if ((rx_ready_irq_enabled && has_rx_data) || tx_empty_irq_enabled) {
         assertInterruptLine();
     } else {
         clearInterruptLine();
@@ -104,7 +108,13 @@ uint8_t SerialDevice::read8(uint64_t addr) {
             result = dlab ? _dlm : _ier;
             break;
         case 2:
-            result = (((_ier & 0x01) != 0) && !_rx_buffer.empty()) ? 0x04 : 0x01;
+            if (((_ier & 0x01) != 0) && !_rx_buffer.empty()) {
+                result = 0x04;
+            } else if ((_ier & 0x02) != 0) {
+                result = 0x02;
+            } else {
+                result = 0x01;
+            }
             break;
         case 3:  result = _lcr;  break;
         case 4:  result = _mcr;  break;
@@ -128,6 +138,7 @@ void SerialDevice::write8(uint64_t addr, uint8_t val) {
         case 0:
             if (dlab) { _dll = val; return; }
             _tx_buffer += static_cast<char>(val);
+            updateInterruptState();
             return;
         case 1:
             if (dlab) { _dlm = val; return; }

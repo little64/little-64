@@ -172,10 +172,10 @@ These tags are emitted unconditionally (no env var or flag required):
 |-----|-------------|
 | `reset` | CPU reset event |
 | `fetch-failed` | Instruction fetch failed (trap raised) |
-| `irq-raise` | Hardware interrupt raised |
-| `exception-raise` | Exception raised |
-| `exception-lockup` | Exception while interrupts disabled |
-| `interrupt-no-handler` | No handler for interrupt number |
+| `irq-raise` | Hardware IRQ vector raised (device IRQ vectors currently start at 65) |
+| `exception-raise` | Exception vector raised (current exception vectors occupy 1..8) |
+| `exception-lockup` | Exception could not safely enter a handler |
+| `interrupt-no-handler` | No handler for the recorded vector number |
 | `self-loop-lockup` | Infinite loop with interrupts disabled |
 | `uart-tx` | Character written to UART |
 

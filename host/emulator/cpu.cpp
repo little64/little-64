@@ -118,6 +118,7 @@ constexpr uint64_t HYPERCALL_CAP_MINIMAL_BOOT = 1;
 // Keep MMIO out of RAM but in low physical space for early Linux/device access.
 constexpr uint64_t SERIAL_BASE = 0x08000000ULL;
 constexpr uint64_t TIMER_BASE = 0x08001000ULL;
+constexpr uint64_t PVBLK_BASE = 0x08002000ULL;
 
 } // namespace
 
@@ -272,6 +273,10 @@ void Little64CPU::reset() {
     }
 }
 
+void Little64CPU::setDiskImage(std::unique_ptr<DiskImage> image) {
+    _disk_image = std::move(image);
+}
+
 void Little64CPU::cycle() {
     if (!isRunning)
         return;
@@ -338,10 +343,13 @@ void Little64CPU::cycle() {
 
     registers.regs[0] = 0;  // enforce R0=0 after any write
 
-    // Poll for pending interrupts each cycle
-    uint64_t pending = registers.interrupt_states & registers.interrupt_mask;
-    if (pending) {
-        _raiseInterrupt(__builtin_ctzll(pending));
+    // Hardware IRQs stay latched while IRQs are disabled and are delivered
+    // in vector priority order once the CPU can accept a maskable interrupt.
+    if (registers.isInterruptEnabled()) {
+        uint64_t pending_vector = Little64Vectors::kNoTrap;
+        if (_selectHighestPriorityPendingInterrupt(pending_vector)) {
+            _raiseInterrupt(pending_vector);
+        }
     }
 
     for (Device* device : _devices) {
@@ -353,16 +361,78 @@ void Little64CPU::cycle() {
     _clock.tick();  // Advance virtual clock after all CPU and device activity
 }
 
-void Little64CPU::assertInterrupt(uint64_t num) {
-    if (num < 64) {
-        registers.interrupt_states |= (1ULL << num);
+bool Little64CPU::_selectHighestPriorityPendingInterrupt(uint64_t& out_vector) const {
+    const uint64_t pending_low = registers.interrupt_states & registers.interrupt_mask &
+                                 Little64Vectors::validIrqMaskForBank(0);
+    if (pending_low != 0) {
+        out_vector = static_cast<uint64_t>(__builtin_ctzll(pending_low));
+        return true;
+    }
+
+    const uint64_t pending_high = registers.interrupt_states_high & registers.interrupt_mask_high &
+                                  Little64Vectors::validIrqMaskForBank(1);
+    if (pending_high != 0) {
+        out_vector = 64ULL + static_cast<uint64_t>(__builtin_ctzll(pending_high));
+        return true;
+    }
+
+    return false;
+}
+
+bool Little64CPU::_isInterruptUnmasked(uint64_t vector) const {
+    if (!Little64Vectors::isIrqVector(vector)) {
+        return false;
+    }
+
+    const size_t bank = Little64Vectors::interruptBankForVector(vector);
+    const uint64_t bit = Little64Vectors::interruptBitForVector(vector);
+    if ((Little64Vectors::validIrqMaskForBank(bank) & bit) == 0) {
+        return false;
+    }
+
+    if (bank == 0) {
+        return (registers.interrupt_mask & bit) != 0;
+    }
+    if (bank == 1) {
+        return (registers.interrupt_mask_high & bit) != 0;
+    }
+    return false;
+}
+
+void Little64CPU::_setInterruptPending(uint64_t vector) {
+    if (!Little64Vectors::isIrqVector(vector)) {
+        return;
+    }
+
+    const size_t bank = Little64Vectors::interruptBankForVector(vector);
+    const uint64_t bit = Little64Vectors::interruptBitForVector(vector);
+    if (bank == 0) {
+        registers.interrupt_states |= bit;
+    } else if (bank == 1) {
+        registers.interrupt_states_high |= bit;
     }
 }
 
-void Little64CPU::clearInterrupt(uint64_t num) {
-    if (num < 64) {
-        registers.interrupt_states &= ~(1ULL << num);
+void Little64CPU::_clearInterruptPending(uint64_t vector) {
+    if (!Little64Vectors::isIrqVector(vector)) {
+        return;
     }
+
+    const size_t bank = Little64Vectors::interruptBankForVector(vector);
+    const uint64_t bit = Little64Vectors::interruptBitForVector(vector);
+    if (bank == 0) {
+        registers.interrupt_states &= ~bit;
+    } else if (bank == 1) {
+        registers.interrupt_states_high &= ~bit;
+    }
+}
+
+void Little64CPU::assertInterrupt(uint64_t num) {
+    _setInterruptPending(num);
+}
+
+void Little64CPU::clearInterrupt(uint64_t num) {
+    _clearInterruptPending(num);
 }
 
 void Little64CPU::dispatchInstruction(const Instruction& instr) {
@@ -731,7 +801,7 @@ void Little64CPU::_dispatchGP(const Instruction& instr) {
         }
 
         case GP::Opcode::SYSCALL: {
-            // System call: user mode fires TRAP_SYSCALL (64), supervisor fires TRAP_SYSCALL_FROM_SUPERVISOR (65)
+            // System call: user mode fires TRAP_SYSCALL, supervisor mode fires TRAP_SYSCALL_FROM_SUPERVISOR.
             uint64_t trap_num = registers.isUserMode()
                 ? AddressTranslator::TRAP_SYSCALL
                 : AddressTranslator::TRAP_SYSCALL_FROM_SUPERVISOR;
@@ -742,31 +812,32 @@ void Little64CPU::_dispatchGP(const Instruction& instr) {
         }
 
         case GP::Opcode::LSR: {
-            if (registers.isUserMode()) {
+            const uint64_t selector = Little64SpecialRegisters::normalizeSelector(b);
+            if (registers.isUserMode() && !Little64SpecialRegisters::isUserAccessibleSelector(selector)) {
                 registers.trap_pc = registers.regs[15] - 2;
                 registers.trap_cause = AddressTranslator::TRAP_PRIVILEGED_INSTRUCTION;
                 _raiseInterrupt(AddressTranslator::TRAP_PRIVILEGED_INSTRUCTION, true, registers.regs[15] - 2);
                 return;
             }
-            // Load special register, e.g. for CPU control and interrupt table base
-            registers.regs[instr.rd] = registers.getSpecialRegister(b);
+            registers.regs[instr.rd] = registers.getSpecialRegister(selector);
             break;
         }
 
         case GP::Opcode::SSR: {
-            if (registers.isUserMode()) {
+            const uint64_t selector = Little64SpecialRegisters::normalizeSelector(b);
+            if (registers.isUserMode() && !Little64SpecialRegisters::isUserAccessibleSelector(selector)) {
                 registers.trap_pc = registers.regs[15] - 2;
                 registers.trap_cause = AddressTranslator::TRAP_PRIVILEGED_INSTRUCTION;
                 _raiseInterrupt(AddressTranslator::TRAP_PRIVILEGED_INSTRUCTION, true, registers.regs[15] - 2);
                 return;
             }
-            // Store special register
-            registers.setSpecialRegister(b, a);
+            registers.setSpecialRegister(selector, a);
             // Flush TLB when paging config changes (page table root or cpu_control).
-            if (b == 0 || b == 11) {
+            if (selector == Little64SpecialRegisters::kCpuControl ||
+                selector == Little64SpecialRegisters::kPageTableRootPhysical) {
                 _flushTLB();
             }
-            if (b == 15) {
+            if (selector == Little64SpecialRegisters::kHypercallCaps) {
                 _executeHypercall();
             }
             break;
@@ -954,6 +1025,25 @@ void Little64CPU::_executeHypercall() {
     }
 }
 
+void Little64CPU::_invalidateReservationOnWrite(uint64_t addr, size_t width) {
+    if (!registers.ll_reservation_valid || width == 0) {
+        return;
+    }
+
+    constexpr uint64_t kReservationWidth = 8;
+    const uint64_t reservation_start = registers.ll_reservation_addr;
+    const uint64_t reservation_end = reservation_start > UINT64_MAX - (kReservationWidth - 1)
+        ? UINT64_MAX
+        : reservation_start + (kReservationWidth - 1);
+    const uint64_t write_end = addr > UINT64_MAX - (static_cast<uint64_t>(width) - 1)
+        ? UINT64_MAX
+        : addr + (static_cast<uint64_t>(width) - 1);
+
+    if (addr <= reservation_end && reservation_start <= write_end) {
+        registers.ll_reservation_valid = false;
+    }
+}
+
 uint8_t Little64CPU::_readMemory8(uint64_t addr, uint64_t operation_pc, CpuAccessType access) {
     uint64_t physical = 0;
     if (!_mapAddress(addr, access, operation_pc, physical)) {
@@ -972,6 +1062,7 @@ void Little64CPU::_writeMemory8(uint64_t addr, uint8_t v, uint64_t operation_pc)
         _recordBootEvent("watch-regs", registers.regs[11], registers.regs[12], registers.regs[13]);
     }
     _bus.write8(physical, v, MemoryAccessType::Write);
+    _invalidateReservationOnWrite(addr, 1);
     if (physical == SERIAL_BASE) {
         _recordBootEvent("uart-tx", static_cast<uint64_t>(v), addr, operation_pc);
     }
@@ -995,6 +1086,7 @@ void Little64CPU::_writeMemory16(uint64_t addr, uint16_t v, uint64_t operation_p
         _recordBootEvent("watch-regs", registers.regs[11], registers.regs[12], registers.regs[13]);
     }
     _bus.write16(physical, v, MemoryAccessType::Write);
+    _invalidateReservationOnWrite(addr, 2);
 }
 
 uint32_t Little64CPU::_readMemory32(uint64_t addr, uint64_t operation_pc, CpuAccessType access) {
@@ -1015,6 +1107,7 @@ void Little64CPU::_writeMemory32(uint64_t addr, uint32_t v, uint64_t operation_p
         _recordBootEvent("watch-regs", registers.regs[11], registers.regs[12], registers.regs[13]);
     }
     _bus.write32(physical, v, MemoryAccessType::Write);
+    _invalidateReservationOnWrite(addr, 4);
 }
 
 uint64_t Little64CPU::_readMemory64(uint64_t addr, uint64_t operation_pc, CpuAccessType access) {
@@ -1035,11 +1128,7 @@ void Little64CPU::_writeMemory64(uint64_t addr, uint64_t v, uint64_t operation_p
         _recordBootEvent("watch-regs", registers.regs[11], registers.regs[12], registers.regs[13]);
     }
     _bus.write64(physical, v, MemoryAccessType::Write);
-
-    // Invalidate LL/SC reservation if any write happens to the reserved address
-    if (registers.ll_reservation_valid && registers.ll_reservation_addr == addr) {
-        registers.ll_reservation_valid = false;
-    }
+    _invalidateReservationOnWrite(addr, 8);
 }
 
 bool Little64CPU::loadProgramElf(const std::vector<uint8_t>& elf_bytes, uint64_t /*base_unused*/) {
@@ -1103,6 +1192,9 @@ bool Little64CPU::loadProgramElf(const std::vector<uint8_t>& elf_bytes, uint64_t
      cfg.addPreloadedRam(base_addr, std::move(ram_bytes), total_ram, "MEM")
          .addSerial(SERIAL_BASE, "SERIAL")
          .addTimer(TIMER_BASE, "TIMER");
+     if (_disk_image && _disk_image->isValid()) {
+         cfg.addPvBlock(PVBLK_BASE, _disk_image->path(), _disk_image->isReadOnly(), "PVBLK");
+     }
      cfg.applyTo(_bus, _devices, this, &_clock);
 
     _mem_base = base_addr;
@@ -1150,6 +1242,9 @@ void Little64CPU::loadProgram(const std::vector<uint16_t>& words, uint64_t base,
      cfg.addPreloadedRam(base, std::move(bytes), total_size, "MEM")
          .addSerial(SERIAL_BASE, "SERIAL")
          .addTimer(TIMER_BASE, "TIMER");
+     if (_disk_image && _disk_image->isValid()) {
+         cfg.addPvBlock(PVBLK_BASE, _disk_image->path(), _disk_image->isReadOnly(), "PVBLK");
+     }
      cfg.applyTo(_bus, _devices, this, &_clock);
 
     _mem_base = base;
@@ -1235,6 +1330,9 @@ bool Little64CPU::loadProgramElfDirectPaged(const std::vector<uint8_t>& elf_byte
     cfg.addPreloadedRam(kernel_physical_base, std::move(ram_bytes), total_ram, "MEM")
         .addSerial(SERIAL_BASE, "SERIAL")
         .addTimer(TIMER_BASE, "TIMER");
+    if (_disk_image && _disk_image->isValid()) {
+        cfg.addPvBlock(PVBLK_BASE, _disk_image->path(), _disk_image->isReadOnly(), "PVBLK");
+    }
     cfg.applyTo(_bus, _devices, this, &_clock);
 
     _mem_base = kernel_physical_base;
@@ -1368,52 +1466,84 @@ bool Little64CPU::dumpBootLogToFile(const char* reason, const std::string& path)
 
 bool Little64CPU::_raiseInterrupt(uint64_t interrupt_number, bool exception, uint64_t epc) {
     _recordBootEvent(exception ? "exception-raise" : "irq-raise", interrupt_number, epc, registers.regs[15]);
-    if(!registers.isInterruptEnabled()) {
-        // interrupts disabled; interrupts are ignored, but exceptions cause lockup
-        if (exception) {
-            isRunning = false;
-            _recordBootEvent("exception-lockup", interrupt_number, epc, registers.regs[15]);
-            _dumpBootEvents("exception while interrupts disabled");
+    if (!exception) {
+        if (!Little64Vectors::isIrqVector(interrupt_number)) {
+            return false;
         }
-        return false;
+        if (!registers.isInterruptEnabled()) {
+            return false;
+        }
+        if (!_isInterruptUnmasked(interrupt_number)) {
+            return false;
+        }
     }
 
-    // Non-exception interrupts must have their mask bit set
-    if (!exception && !(registers.interrupt_mask & (1ULL << interrupt_number)))
-        return false;
-
-    // Check if we are currently in an interrupt.
-    // Only a strictly higher-priority (lower-numbered) exception can preempt.
-    // Regular interrupts cannot preempt at all; same-number exceptions are also blocked.
-    if(registers.isInInterrupt() && ((registers.getCurrentInterruptNumber() <= interrupt_number) || !exception)) {
-        // Already in an interrupt
-        // The CPU will automatically check each cycle if it can re-raise this interrupt as long as it remains asserted
-        return false;
+    // Delivery is numeric-priority based: a lower-numbered vector can preempt a
+    // higher-numbered in-flight handler. Exceptions that cannot preempt another
+    // exception remain fatal because forward progress is ambiguous.
+    if (registers.isInInterrupt()) {
+        const uint64_t current_interrupt = registers.getCurrentInterruptNumber();
+        if (current_interrupt != Little64Vectors::kNoTrap && current_interrupt <= interrupt_number) {
+            if (exception && Little64Vectors::isExceptionVector(current_interrupt)) {
+                isRunning = false;
+                _recordBootEvent("exception-lockup", interrupt_number, epc, registers.regs[15]);
+                _dumpBootEvents("exception could not preempt current handler");
+            }
+            return false;
+        }
     }
+
+    const uint64_t saved_cpu_control = registers.cpu_control;
+    const uint64_t saved_interrupt_cpu_control = registers.interrupt_cpu_control;
+    const uint64_t saved_trap_cause = registers.trap_cause;
+    const uint64_t saved_trap_fault_addr = registers.trap_fault_addr;
+    const uint64_t saved_trap_access = registers.trap_access;
+    const uint64_t saved_trap_pc = registers.trap_pc;
+    const uint64_t saved_trap_aux = registers.trap_aux;
+
+    // Interrupt entry first snapshots cpu_control and forces supervisor mode.
+    // This ensures interrupt table fetches are performed with kernel privilege.
+    registers.interrupt_cpu_control = saved_cpu_control;
+    registers.setUserMode(false);
+    registers.setInInterrupt(true);
+    registers.setInterruptEnabled(false);
+    registers.setCurrentInterruptNumber(interrupt_number);
 
     uint64_t handler_addr = registers.interrupt_table_base + (interrupt_number * 8);
-    uint64_t handler = _readMemory64(handler_addr, registers.regs[15]);
+    const TranslationResult handler_translation = _translateAddress(handler_addr, CpuAccessType::Read);
+    if (!handler_translation.valid) {
+        if (exception && !isRunning) {
+            registers.cpu_control = saved_cpu_control;
+            registers.interrupt_cpu_control = saved_interrupt_cpu_control;
+            registers.trap_cause = saved_trap_cause;
+            registers.trap_fault_addr = saved_trap_fault_addr;
+            registers.trap_access = saved_trap_access;
+            registers.trap_pc = saved_trap_pc;
+            registers.trap_aux = saved_trap_aux;
+        }
+        isRunning = false;
+        _recordBootEvent("exception-lockup", interrupt_number, epc, handler_addr);
+        _dumpBootEvents("handler fetch failed");
+        return false;
+    }
+    uint64_t handler = _bus.read64(handler_translation.physical, MemoryAccessType::Read);
     if (handler == 0) {
-        _recordBootEvent("interrupt-no-handler", interrupt_number, handler_addr, 0);
+        registers.cpu_control = saved_cpu_control;
+        registers.interrupt_cpu_control = saved_interrupt_cpu_control;
+        isRunning = false;
+        _recordBootEvent("interrupt-lockup", interrupt_number, epc, handler_addr);
+        _dumpBootEvents("interrupt or exception with no handler");
         return false;  // no handler registered
     }
 
-    // Save full CPU control state (including privilege level) and force supervisor mode on interrupt entry
-    registers.interrupt_cpu_control = registers.cpu_control;
-    registers.setUserMode(false);
-
-    // Set interrupt state and disable further interrupts
-    registers.interrupt_states |= (1ULL << (interrupt_number));
-    registers.setInInterrupt(true);
-    registers.setInterruptEnabled(false);
-
-    // Set the currently handled interrupt number in cpu_control, to avoid re-raising the same interrupt while we're still handling it
-    registers.setCurrentInterruptNumber(interrupt_number);
+    if (!exception) {
+        _setInterruptPending(interrupt_number);
+    }
 
     registers.interrupt_epc = (epc != UINT64_MAX) ? epc : registers.regs[15];  // save return address
     registers.interrupt_eflags = registers.flags;   // save flags
     if (exception) {
-        if (registers.trap_cause == 0) {
+        if (registers.trap_cause == Little64Vectors::kNoTrap) {
             registers.trap_cause = interrupt_number;
         }
     }

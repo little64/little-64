@@ -7,6 +7,9 @@
 #include <memory>
 #include <fstream>
 #include "device.hpp"
+#include "disk_image.hpp"
+#include "interrupt_vectors.hpp"
+#include "special_register_layout.hpp"
 #include "trace_writer.hpp"
 #include "memory_bus.hpp"
 #include "serial_device.hpp"
@@ -23,8 +26,10 @@ public:
     struct Registers {
         // R0 is defined to always be zero, and writes to it are ignored.
         //  This is implemented by just setting regs[0] to zero at the beginning of every instruction execution.
-        // R1-R10 are general-purpose registers.
-        // R11 and R12 are reserved for now.
+        // R1-R12 are general-purpose registers.
+        // R11 is conventionally used as a frame pointer and R12 as scratch by
+        // the current backend/OS ABI, but neither register has architectural
+        // special behavior.
         // R13 is the stack pointer (SP) used for function calls and local variable storage.
         // R14 is the link register (LR) used for function calls.
         // R15 is the program counter (PC) and is updated automatically by the CPU when instructions are executed.
@@ -40,7 +45,7 @@ public:
         // Special register space and helper methods
         //   bit 0: Interrupt enable
         //   bit 1: In interrupt
-        //   bits 2..8: currently handled interrupt number (if in interrupt)
+        //   bits 2..8: currently handled interrupt/trap number (7 bits)
         //   bit 16: Paging enable
         //   bit 17: User mode
         uint64_t cpu_control;
@@ -68,10 +73,10 @@ public:
         }
 
         constexpr uint8_t getCurrentInterruptNumber() const {
-            return (cpu_control >> 2) & 0x3F;
+            return (cpu_control >> 2) & 0x7F;
         }
         constexpr void setCurrentInterruptNumber(uint8_t num) {
-            cpu_control = (cpu_control & ~0xFC) | ((num & 0x3F) << 2);
+            cpu_control = (cpu_control & ~0x1FCULL) | ((static_cast<uint64_t>(num) & 0x7FULL) << 2);
         }
 
         static constexpr uint64_t CPU_CONTROL_PAGING_ENABLE = 1ULL << 16;
@@ -103,11 +108,14 @@ public:
 
         // Stores pointer to interrupt handler table (base address of an array of 64-bit handler addresses)
         uint64_t interrupt_table_base;
-        // Each bit corresponds to an interrupt number; if set, the corresponding interrupt is unmasked and can be triggered.
+        // SR17: interrupt mask bits for vectors 0..63.
         uint64_t interrupt_mask;
-        // Each bit corresponds to an interrupt number; if set, the corresponding interrupt is currently active/pending.
-        // The CPU will set/clear bits automatically; setting bits from software causes an interrupt.
+        // SR19: pending hardware IRQ bits for vectors 0..63.
         uint64_t interrupt_states;
+        // SR18: interrupt mask bits for vectors 64..127.
+        uint64_t interrupt_mask_high;
+        // SR20: pending hardware IRQ bits for vectors 64..127.
+        uint64_t interrupt_states_high;
 
         // Trap information register block.
         // These are populated by the CPU when an exception is raised.
@@ -126,6 +134,7 @@ public:
         uint64_t trap_access;
         uint64_t trap_pc;
         uint64_t trap_aux;
+        uint64_t thread_pointer;
         uint64_t page_table_root_physical;
         uint64_t boot_info_frame_physical;
         uint64_t boot_source_page_size;
@@ -137,48 +146,56 @@ public:
         uint64_t ll_reservation_addr = 0;    // address of the reserved location
         bool ll_reservation_valid = false;   // is the reservation still valid?
 
-        uint64_t getSpecialRegister(uint64_t index) const {
-            switch (index) {
-                case 0: return cpu_control;
-                case 1: return interrupt_table_base;
-                case 2: return interrupt_mask;
-                case 3: return interrupt_states;
-                case 4: return interrupt_epc;
-                case 5: return interrupt_eflags;
-                case 6: return trap_cause;
-                case 7: return trap_fault_addr;
-                case 8: return trap_access;
-                case 9: return trap_pc;
-                case 10: return trap_aux;
-                case 11: return page_table_root_physical;
-                case 12: return boot_info_frame_physical;
-                case 13: return boot_source_page_size;
-                case 14: return boot_source_page_count;
-                case 15: return hypercall_caps;
-                case 16: return interrupt_cpu_control;
+        static constexpr uint64_t kSpecialRegisterCount = Little64SpecialRegisters::kCount;
+
+        uint64_t getSpecialRegister(uint64_t selector) const {
+            switch (Little64SpecialRegisters::normalizeSelector(selector)) {
+                case Little64SpecialRegisters::kCpuControl: return cpu_control;
+                case Little64SpecialRegisters::kUserThreadPointer: return thread_pointer;
+                case Little64SpecialRegisters::kPageTableRootPhysical: return page_table_root_physical;
+                case Little64SpecialRegisters::kBootInfoFramePhysical: return boot_info_frame_physical;
+                case Little64SpecialRegisters::kBootSourcePageSize: return boot_source_page_size;
+                case Little64SpecialRegisters::kBootSourcePageCount: return boot_source_page_count;
+                case Little64SpecialRegisters::kHypercallCaps: return hypercall_caps;
+                case Little64SpecialRegisters::kInterruptTableBase: return interrupt_table_base;
+                case Little64SpecialRegisters::kInterruptMask: return interrupt_mask;
+                case Little64SpecialRegisters::kInterruptMaskHigh: return interrupt_mask_high;
+                case Little64SpecialRegisters::kInterruptStates: return interrupt_states;
+                case Little64SpecialRegisters::kInterruptStatesHigh: return interrupt_states_high;
+                case Little64SpecialRegisters::kInterruptEpc: return interrupt_epc;
+                case Little64SpecialRegisters::kInterruptEflags: return interrupt_eflags;
+                case Little64SpecialRegisters::kInterruptCpuControl: return interrupt_cpu_control;
+                case Little64SpecialRegisters::kTrapCause: return trap_cause;
+                case Little64SpecialRegisters::kTrapFaultAddr: return trap_fault_addr;
+                case Little64SpecialRegisters::kTrapAccess: return trap_access;
+                case Little64SpecialRegisters::kTrapPc: return trap_pc;
+                case Little64SpecialRegisters::kTrapAux: return trap_aux;
                 default: return 0;
             }
         }
 
-        void setSpecialRegister(uint64_t index, uint64_t value) {
-            switch (index) {
-                case 0: cpu_control = value; break;
-                case 1: interrupt_table_base = value; break;
-                case 2: interrupt_mask = value; break;
-                case 3: interrupt_states = value; break;
-                case 4: interrupt_epc = value; break;
-                case 5: interrupt_eflags = value; break;
-                case 6: trap_cause = value; break;
-                case 7: trap_fault_addr = value; break;
-                case 8: trap_access = value; break;
-                case 9: trap_pc = value; break;
-                case 10: trap_aux = value; break;
-                case 11: page_table_root_physical = value; break;
-                case 12: boot_info_frame_physical = value; break;
-                case 13: boot_source_page_size = value; break;
-                case 14: boot_source_page_count = value; break;
-                case 15: hypercall_caps = value; break;
-                case 16: interrupt_cpu_control = value; break;
+        void setSpecialRegister(uint64_t selector, uint64_t value) {
+            switch (Little64SpecialRegisters::normalizeSelector(selector)) {
+                case Little64SpecialRegisters::kCpuControl: cpu_control = value; break;
+                case Little64SpecialRegisters::kUserThreadPointer: thread_pointer = value; break;
+                case Little64SpecialRegisters::kPageTableRootPhysical: page_table_root_physical = value; break;
+                case Little64SpecialRegisters::kBootInfoFramePhysical: boot_info_frame_physical = value; break;
+                case Little64SpecialRegisters::kBootSourcePageSize: boot_source_page_size = value; break;
+                case Little64SpecialRegisters::kBootSourcePageCount: boot_source_page_count = value; break;
+                case Little64SpecialRegisters::kHypercallCaps: hypercall_caps = value; break;
+                case Little64SpecialRegisters::kInterruptTableBase: interrupt_table_base = value; break;
+                case Little64SpecialRegisters::kInterruptMask: interrupt_mask = value; break;
+                case Little64SpecialRegisters::kInterruptMaskHigh: interrupt_mask_high = value; break;
+                case Little64SpecialRegisters::kInterruptStates: interrupt_states = value; break;
+                case Little64SpecialRegisters::kInterruptStatesHigh: interrupt_states_high = value; break;
+                case Little64SpecialRegisters::kInterruptEpc: interrupt_epc = value; break;
+                case Little64SpecialRegisters::kInterruptEflags: interrupt_eflags = value; break;
+                case Little64SpecialRegisters::kInterruptCpuControl: interrupt_cpu_control = value; break;
+                case Little64SpecialRegisters::kTrapCause: trap_cause = value; break;
+                case Little64SpecialRegisters::kTrapFaultAddr: trap_fault_addr = value; break;
+                case Little64SpecialRegisters::kTrapAccess: trap_access = value; break;
+                case Little64SpecialRegisters::kTrapPc: trap_pc = value; break;
+                case Little64SpecialRegisters::kTrapAux: trap_aux = value; break;
             }
         }
 
@@ -192,6 +209,8 @@ public:
             interrupt_table_base = 0;
             interrupt_mask = 0;
             interrupt_states = 0;
+            interrupt_mask_high = 0;
+            interrupt_states_high = 0;
             interrupt_epc = 0;
             interrupt_eflags = 0;
             interrupt_cpu_control = 0;
@@ -200,6 +219,7 @@ public:
             trap_access = 0;
             trap_pc = 0;
             trap_aux = 0;
+            thread_pointer = 0;
             page_table_root_physical = 0;
             boot_info_frame_physical = 0;
             boot_source_page_size = 0;
@@ -343,6 +363,8 @@ public:
                                    uint64_t kernel_physical_base = 0x100000,
                                    uint64_t direct_map_virtual_base = 0xFFFFFFC000000000ULL);
 
+    void setDiskImage(std::unique_ptr<DiskImage> image);
+
     void setBootSourcePages(std::vector<uint8_t> bytes, uint64_t page_size);
 
     bool _allocatePageTablePage(uint64_t& out_page);
@@ -380,7 +402,7 @@ public:
     // Dump the boot event log to a file path. Returns false on file I/O errors.
     bool dumpBootLogToFile(const char* reason, const std::string& path) const;
 
-    // Assert a hardware interrupt line (sets the bit in interrupt_states).
+    // Assert a hardware interrupt vector in the pending IRQ banks.
     // The interrupt will be serviced on the next cycle if enabled and unmasked.
     void assertInterrupt(uint64_t num) override;
     void clearInterrupt(uint64_t num) override;
@@ -422,6 +444,11 @@ private:
     void _dispatchUJMP(const Instruction& instr);
 
     void _updateFlags(uint64_t result, bool carry = false);
+
+    bool _selectHighestPriorityPendingInterrupt(uint64_t& out_vector) const;
+    bool _isInterruptUnmasked(uint64_t vector) const;
+    void _setInterruptPending(uint64_t vector);
+    void _clearInterruptPending(uint64_t vector);
 
     bool _raiseInterrupt(uint64_t interrupt_number, bool exception = false,
                          uint64_t epc = UINT64_MAX);
@@ -482,6 +509,7 @@ private:
     void     _writeMemory32(uint64_t addr, uint32_t v, uint64_t operation_pc);
     uint64_t _readMemory64(uint64_t addr, uint64_t operation_pc, CpuAccessType access = CpuAccessType::Read);
     void     _writeMemory64(uint64_t addr, uint64_t v, uint64_t operation_pc);
+    void     _invalidateReservationOnWrite(uint64_t addr, size_t width);
 
     MemoryBus _bus;
     std::vector<Device*> _devices;
@@ -490,6 +518,7 @@ private:
     uint64_t _mem_base = 0;
     uint64_t _mem_size = 0;
     std::vector<uint8_t> _boot_source_bytes;
+    std::unique_ptr<DiskImage> _disk_image;
 
     // Software TLB — direct-mapped, 64-entry, covers 4K pages.
     struct TLBEntry {

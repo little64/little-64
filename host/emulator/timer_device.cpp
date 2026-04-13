@@ -1,8 +1,10 @@
 #include "timer_device.hpp"
 
+#include "interrupt_vectors.hpp"
+
 TimerDevice::TimerDevice(uint64_t base)
     : Device(base, 32), _clock(nullptr) {
-    setInterruptLine(5);  // IRQ 5
+    setInterruptLine(static_cast<int>(Little64Vectors::kTimerIrqVector));
     reset();
 }
 

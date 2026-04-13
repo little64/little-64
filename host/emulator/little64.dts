@@ -30,7 +30,7 @@
     };
 
     chosen {
-        bootargs = "console=ttyS0,115200 earlycon=uart8250,mmio,0x08000000,115200n8 ignore_loglevel loglevel=8";
+        bootargs = "console=ttyS0,115200 earlycon=uart8250,mmio,0x08000000,115200n8 ignore_loglevel loglevel=8 root=/dev/l64blk0 rootfstype=ext2 ro rootwait init=/init";
         stdout-path = "/uart@8000000";
     };
 
@@ -38,7 +38,7 @@
         compatible = "ns16550a";
         reg = <0x0 0x08000000  0x0 0x8>;
         interrupt-parent = <&intc>;
-        interrupts = <4>;
+        interrupts = <65>;
         clock-frequency = <1843200>;
     };
 
@@ -46,6 +46,13 @@
         compatible = "little64,timer";
         reg = <0x0 0x08001000  0x0 0x20>;
         interrupt-parent = <&intc>;
-        interrupts = <5>;
+        interrupts = <66>;
+    };
+
+    block@8002000 {
+        compatible = "little64,pvblk";
+        reg = <0x0 0x08002000  0x0 0x100>;
+        interrupt-parent = <&intc>;
+        interrupts = <67>;
     };
 };

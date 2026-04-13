@@ -1,5 +1,6 @@
 #include "emulator_session.hpp"
 #include "headless_runtime.hpp"
+#include "disk_image.hpp"
 #include "trace_writer.hpp"
 #include <csignal>
 #include <iomanip>
@@ -32,8 +33,11 @@ void dumpFinalRegisters(EmulatorSession& runtime, const char* reason) {
     print_hex("interrupt_table_base", regs.interrupt_table_base);
     print_hex("interrupt_mask", regs.interrupt_mask);
     print_hex("interrupt_states", regs.interrupt_states);
+    print_hex("interrupt_mask_high", regs.interrupt_mask_high);
+    print_hex("interrupt_states_high", regs.interrupt_states_high);
     print_hex("interrupt_epc", regs.interrupt_epc);
     print_hex("interrupt_eflags", regs.interrupt_eflags);
+    print_hex("interrupt_cpu_ctrl", regs.interrupt_cpu_control);
     print_hex("trap_cause", regs.trap_cause);
     print_hex("trap_fault_addr", regs.trap_fault_addr);
     print_hex("trap_access", regs.trap_access);
@@ -49,10 +53,12 @@ void dumpFinalRegisters(EmulatorSession& runtime, const char* reason) {
 
 static void printUsage(const char* argv0) {
     std::cerr << "Usage: " << argv0
-              << " [-h | --help] [--boot-mode=auto|bios|direct] [--max-cycles=N] [--trace-mmio] [--trace-control-flow] [--boot-events] [--boot-events-file=PATH] [--boot-events-max-mb=N] [--trace-start-cycle=N] [--trace-end-cycle=N] [--final-registers]"
+              << " [-h | --help] [--boot-mode=auto|bios|direct] [--disk=PATH] [--disk-readonly] [--max-cycles=N] [--trace-mmio] [--trace-control-flow] [--boot-events] [--boot-events-file=PATH] [--boot-events-max-mb=N] [--trace-start-cycle=N] [--trace-end-cycle=N] [--final-registers]"
               << " <binary.bin|object.o>\n"
               << "  Runs the assembled binary/ELF object and prints any serial (UART) output to stdout.\n"
               << "  --max-cycles=N   Stop after N cycles and dump boot event log.\n"
+              << "  --disk=PATH      Attach PATH as the paravirtual block root disk.\n"
+              << "  --disk-readonly  Expose the attached disk as read-only.\n"
               << "  --trace-mmio     Log mapped device MMIO reads/writes to stderr.\n"
               << "  --trace-control-flow  Record non-fallthrough PC changes into boot events.\n"
               << "  --boot-events    Always dump boot event log to stderr on exit.\n"
@@ -78,6 +84,8 @@ int main(int argc, char* argv[]) {
     bool trace_control_flow = false;
     bool boot_events  = false;
     bool final_registers = false;
+    std::string disk_path;
+    bool disk_read_only = false;
     std::string boot_events_file;
     uint64_t boot_events_max_mb = 0;
     uint64_t trace_start_cycle = 0;
@@ -106,6 +114,18 @@ int main(int argc, char* argv[]) {
             }
             boot_events = true;  // always dump events when a cycle limit is set
             final_registers = true; // emit final state on forced stop paths
+            continue;
+        }
+        if (arg.rfind("--disk=", 0) == 0) {
+            disk_path = arg.substr(std::string("--disk=").size());
+            if (disk_path.empty()) {
+                std::cerr << "Error: --disk requires a non-empty path\n";
+                return 1;
+            }
+            continue;
+        }
+        if (arg == "--disk-readonly") {
+            disk_read_only = true;
             continue;
         }
         if (arg.rfind("--boot-events-file=", 0) == 0) {
@@ -166,6 +186,15 @@ int main(int argc, char* argv[]) {
     }
 
     EmulatorSession runtime;
+    if (!disk_path.empty()) {
+        auto disk = DiskImage::open(disk_path, disk_read_only);
+        if (!disk || !disk->isValid() || !disk->lastError().empty()) {
+            std::cerr << "Error: failed to attach disk image: "
+                      << (disk ? disk->lastError() : std::string("unknown error")) << "\n";
+            return 1;
+        }
+        runtime.setDiskImage(std::move(disk));
+    }
     std::string error;
     if (!loadRuntimeImageFromPath(runtime, image_path, error, load_options)) {
         std::cerr << error << "\n";

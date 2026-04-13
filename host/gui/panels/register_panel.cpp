@@ -17,7 +17,7 @@ void RegisterPanel::render() {
             ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch);
             ImGui::TableHeadersRow();
 
-            for (int i = 0; i < 16; ++i) {
+            for (size_t i = 0; i < kFirstSystemRegisterRowIndex; ++i) {
                 ImGui::TableNextRow();
                 ImGui::TableSetColumnIndex(0);
 
@@ -40,7 +40,7 @@ void RegisterPanel::render() {
                 ImGui::Text("%s", oss.str().c_str());
             }
 
-            for (int i = 16; i < 18; ++i) {
+            for (size_t i = kFirstSystemRegisterRowIndex; i < kFirstSpecialRegisterRowIndex; ++i) {
                 ImGui::TableNextRow();
                 ImGui::TableSetColumnIndex(0);
                 ImGui::Text("%s", rows[i].name.c_str());
@@ -70,10 +70,10 @@ void RegisterPanel::render() {
                 oss << "0x" << std::hex << std::setfill('0') << std::setw(16) << e.value;
 
                 // Decode cpu_control bits inline
-                if (e.name == "cpu_ctrl") {
+                if (i == kCpuControlRowIndex) {
                     bool ie    = e.value & 1;
                     bool in_i  = (e.value >> 1) & 1;
-                    uint8_t cn = (e.value >> 2) & 0x3F;
+                    uint8_t cn = (e.value >> 2) & 0x7F;
                     oss << "  IE=" << ie << " IN=" << in_i << " N=" << (int)cn;
                 }
 

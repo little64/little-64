@@ -1,5 +1,6 @@
 #include "debug_server.hpp"
 #include "debug_transport.hpp"
+#include "disk_image.hpp"
 #include "emulator_session.hpp"
 #include "headless_runtime.hpp"
 
@@ -10,6 +11,8 @@
 int main(int argc, char** argv) {
     uint16_t port = 9000;
     std::string image_path;
+    std::string disk_path;
+    bool disk_read_only = false;
     HeadlessLoadOptions load_options;
 
     // Parse optional flags, then positional: [port] [image]
@@ -25,6 +28,18 @@ int main(int argc, char** argv) {
                 std::cerr << "Error: invalid --boot-mode value '" << mode << "'\n";
                 return 2;
             }
+            continue;
+        }
+        if (arg.rfind("--disk=", 0) == 0) {
+            disk_path = arg.substr(std::string("--disk=").size());
+            if (disk_path.empty()) {
+                std::cerr << "Error: --disk requires a non-empty path\n";
+                return 2;
+            }
+            continue;
+        }
+        if (arg == "--disk-readonly") {
+            disk_read_only = true;
             continue;
         }
         if (positional == 0) {
@@ -44,6 +59,15 @@ int main(int argc, char** argv) {
     }
 
     EmulatorSession runtime;
+    if (!disk_path.empty()) {
+        auto disk = DiskImage::open(disk_path, disk_read_only);
+        if (!disk || !disk->isValid() || !disk->lastError().empty()) {
+            std::cerr << "Error: failed to attach disk image: "
+                      << (disk ? disk->lastError() : std::string("unknown error")) << '\n';
+            return 2;
+        }
+        runtime.setDiskImage(std::move(disk));
+    }
     if (!image_path.empty()) {
         std::string error;
         if (!loadRuntimeImageFromPath(runtime, image_path, error, load_options)) {

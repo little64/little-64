@@ -5,23 +5,30 @@ SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
 REPO_ROOT=$(readlink -f "$SCRIPT_DIR/../..")
 EMULATOR_BIN="$REPO_ROOT/builddir/little-64"
 DEFAULT_KERNEL_ELF="$SCRIPT_DIR/build/vmlinux"
+DEFAULT_ROOTFS_IMAGE="$SCRIPT_DIR/rootfs/build/rootfs.ext2"
 
 usage() {
     cat <<EOM
-Usage: $0 [--max-cycles N] [kernel-elf]
+Usage: $0 [--rootfs PATH | --no-rootfs] [--max-cycles N] [kernel-elf]
 
 If kernel-elf is omitted, $DEFAULT_KERNEL_ELF is used.
+If --rootfs is omitted, $DEFAULT_ROOTFS_IMAGE is used.
+Use --no-rootfs to boot without attaching a disk image.
 If --max-cycles is omitted, emulation runs indefinitely.
 
 Examples:
   $0
   $0 $DEFAULT_KERNEL_ELF
+  $0 --rootfs "$DEFAULT_ROOTFS_IMAGE"
+  $0 --no-rootfs
   $0 --max-cycles 10000000
   $0 $DEFAULT_KERNEL_ELF --max-cycles=10000000
 EOM
 }
 
 KERNEL_ELF="$DEFAULT_KERNEL_ELF"
+ROOTFS_IMAGE="${LITTLE64_ROOTFS_IMAGE:-$DEFAULT_ROOTFS_IMAGE}"
+ATTACH_ROOTFS=1
 MAX_CYCLES=""
 POSITIONAL=()
 while [[ $# -gt 0 ]]; do
@@ -29,6 +36,29 @@ while [[ $# -gt 0 ]]; do
         -h|--help)
             usage
             exit 0
+            ;;
+        --rootfs)
+            shift
+            if [[ $# -eq 0 ]]; then
+                echo "error: --rootfs requires a value" >&2
+                exit 1
+            fi
+            ROOTFS_IMAGE="$1"
+            ATTACH_ROOTFS=1
+            shift
+            continue
+            ;;
+        --rootfs=*)
+            ROOTFS_IMAGE="${1#*=}"
+            ATTACH_ROOTFS=1
+            shift
+            continue
+            ;;
+        --no-rootfs)
+            ATTACH_ROOTFS=0
+            ROOTFS_IMAGE=""
+            shift
+            continue
             ;;
         --max-cycles)
             shift
@@ -98,6 +128,13 @@ if [[ ! -f "$KERNEL_ELF" ]]; then
     exit 1
 fi
 
+if [[ "$ATTACH_ROOTFS" == "1" && ! -f "$ROOTFS_IMAGE" ]]; then
+    echo "error: rootfs image not found at $ROOTFS_IMAGE" >&2
+    echo "hint: build it first with: $SCRIPT_DIR/rootfs/build.sh" >&2
+    echo "hint: or boot without a root disk via: $0 --no-rootfs" >&2
+    exit 1
+fi
+
 if [[ "${LITTLE64_TRACE_LR:-0}" == "1" ]]; then
     : "${LITTLE64_TRACE_LR_START:=0xffffffc0000ad000}"
     : "${LITTLE64_TRACE_LR_END:=0xffffffc0000b4700}"
@@ -113,6 +150,9 @@ fi
 EMULATOR_ARGS=("$EMULATOR_BIN" --boot-mode=direct)
 if [[ -n "$MAX_CYCLES" ]]; then
     EMULATOR_ARGS+=("--max-cycles=$MAX_CYCLES")
+fi
+if [[ "$ATTACH_ROOTFS" == "1" ]]; then
+    EMULATOR_ARGS+=("--disk=$ROOTFS_IMAGE" --disk-readonly)
 fi
 EMULATOR_ARGS+=("$KERNEL_ELF")
 

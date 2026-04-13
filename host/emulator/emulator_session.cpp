@@ -16,6 +16,10 @@ bool EmulatorSession::loadProgramElfDirectPaged(const std::vector<uint8_t>& elf_
     return _cpu.loadProgramElfDirectPaged(elf_bytes, kernel_physical_base, direct_map_virtual_base);
 }
 
+void EmulatorSession::setDiskImage(std::unique_ptr<DiskImage> image) {
+    _cpu.setDiskImage(std::move(image));
+}
+
 void EmulatorSession::cycle() {
     _cpu.cycle();
 }
@@ -45,11 +49,13 @@ RegisterSnapshot EmulatorSession::registers() const {
     std::memcpy(snapshot.gpr, _cpu.registers.regs, sizeof(snapshot.gpr));
     snapshot.flags = _cpu.registers.flags;
     snapshot.cpu_control = _cpu.registers.cpu_control;
+    snapshot.thread_pointer = _cpu.registers.thread_pointer;
     snapshot.interrupt_table_base = _cpu.registers.interrupt_table_base;
     snapshot.interrupt_mask = _cpu.registers.interrupt_mask;
     snapshot.interrupt_states = _cpu.registers.interrupt_states;
     snapshot.interrupt_epc = _cpu.registers.interrupt_epc;
     snapshot.interrupt_eflags = _cpu.registers.interrupt_eflags;
+    snapshot.interrupt_cpu_control = _cpu.registers.interrupt_cpu_control;
     snapshot.trap_cause = _cpu.registers.trap_cause;
     snapshot.trap_fault_addr = _cpu.registers.trap_fault_addr;
     snapshot.trap_access = _cpu.registers.trap_access;
@@ -60,6 +66,8 @@ RegisterSnapshot EmulatorSession::registers() const {
     snapshot.boot_source_page_size = _cpu.registers.boot_source_page_size;
     snapshot.boot_source_page_count = _cpu.registers.boot_source_page_count;
     snapshot.hypercall_caps = _cpu.registers.hypercall_caps;
+    snapshot.interrupt_mask_high = _cpu.registers.interrupt_mask_high;
+    snapshot.interrupt_states_high = _cpu.registers.interrupt_states_high;
     return snapshot;
 }
 

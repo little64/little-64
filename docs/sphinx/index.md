@@ -5,11 +5,11 @@
 :caption: Core
 
 pages/overview_readme
-pages/cpu_arch
+pages/hardware
+pages/emulator
 pages/docs_index
 pages/assembly_syntax
 pages/architecture_boundaries
-pages/paging_v1
 pages/device_framework
 pages/vscode_integration
 pages/gui_debugger

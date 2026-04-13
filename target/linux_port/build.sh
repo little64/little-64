@@ -2,6 +2,9 @@ SCRIPT_FOLDER=$(dirname "$(readlink -f "$0")")
 cd "$SCRIPT_FOLDER" || exit 1
 COMPILER_BIN=$SCRIPT_FOLDER/../../compilers/bin
 CC_CMD="$COMPILER_BIN/clang"
+BUILD_DIR="$SCRIPT_FOLDER/build"
+DEFCONFIG_PATH="$SCRIPT_FOLDER/linux/arch/little64/configs/little64_defconfig"
+DEFCONFIG_STAMP="$BUILD_DIR/.little64_defconfig.sha256"
 
 # Get the target we want if arguments are provided, else default to vmlinux
 if [ $# -eq 0 ]; then
@@ -54,13 +57,37 @@ else
 fi
 echo "-----------------------------------"
 
+mkdir -p "$BUILD_DIR"
+
+CURRENT_DEFCONFIG_SHA=$(sha256sum "$DEFCONFIG_PATH" | awk '{print $1}')
+PREVIOUS_DEFCONFIG_SHA=""
+if [ -f "$DEFCONFIG_STAMP" ]; then
+    PREVIOUS_DEFCONFIG_SHA=$(cat "$DEFCONFIG_STAMP")
+fi
+
+if [[ "$TARGET" != "clean" && "$TARGET" != "mrproper" && \
+      (! -f "$BUILD_DIR/.config" || "$CURRENT_DEFCONFIG_SHA" != "$PREVIOUS_DEFCONFIG_SHA") ]]; then
+    echo "Syncing kernel config from arch/little64/configs/little64_defconfig"
+    nice -n 19 make -C linux ARCH=little64 \
+        LLVM=1 \
+        CC="$CC_CMD" \
+        LD="$COMPILER_BIN/ld.lld" \
+        AR="$COMPILER_BIN/llvm-ar" \
+        OBJCOPY="$COMPILER_BIN/llvm-objcopy" \
+        O="$BUILD_DIR" \
+        HOSTCC=gcc \
+        HOSTCXX=g++ \
+        little64_defconfig
+    printf '%s\n' "$CURRENT_DEFCONFIG_SHA" > "$DEFCONFIG_STAMP"
+fi
+
 nice -n 19 make -C linux ARCH=little64 \
     LLVM=1 \
     CC="$CC_CMD" \
     LD="$COMPILER_BIN/ld.lld" \
     AR="$COMPILER_BIN/llvm-ar" \
     OBJCOPY="$COMPILER_BIN/llvm-objcopy" \
-    O=$SCRIPT_FOLDER/build \
+    O="$BUILD_DIR" \
     HOSTCC=gcc \
     HOSTCXX=g++ \
     "${MAKE_ARGS[@]}" \

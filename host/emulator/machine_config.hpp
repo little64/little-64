@@ -1,6 +1,7 @@
 #pragma once
 
 #include "device.hpp"
+#include "disk_image.hpp"
 #include "memory_bus.hpp"
 #include <cstdint>
 #include <functional>
@@ -23,6 +24,9 @@ public:
     MachineConfig& addRom(uint64_t base, std::vector<uint8_t> data, std::string_view name = "ROM");
     MachineConfig& addSerial(uint64_t base, std::string_view name = "SERIAL");
     MachineConfig& addTimer(uint64_t base, std::string_view name = "TIMER");
+    MachineConfig& addPvBlock(uint64_t base, std::string_view image_path,
+                              bool force_read_only = false,
+                              std::string_view name = "PVBLK");
     MachineConfig& addDevice(DeviceFactory factory);
 
     void applyTo(MemoryBus& bus, std::vector<Device*>& devices, InterruptSink* interrupt_sink = nullptr,

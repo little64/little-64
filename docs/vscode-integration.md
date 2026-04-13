@@ -20,6 +20,9 @@ Implemented baseline in `little-64-debug`:
 - `Z0`/`z0`
 - LLDB compatibility helpers (`qXfer:features:read:target.xml`, thread queries, `vCont?` variants)
 
+Current register exposure over RSP includes 16 GPRs, flags, and 30 special registers.
+The visible special-register list still exposes the supervisor-bank selectors `0..28`, including the reserved holes at `1..10`, and now appends the user-bank thread pointer selector (`0x8000`) as a dedicated debugger-visible register.
+
 ## Build/Test Loop
 
 ```bash
@@ -31,7 +34,7 @@ meson test -C builddir --print-errorlogs
 
 ```bash
 meson compile -C builddir little-64-debug
-./builddir/little-64-debug 9000 [optional-image.elf]
+./builddir/little-64-debug [--disk=PATH --disk-readonly] 9000 [optional-image.elf]
 ```
 
 ## LLDB Toolchain Preparation

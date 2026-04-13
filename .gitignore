@@ -1,4 +1,6 @@
 builddir/
+target/linux_port/rootfs/*
+!target/linux_port/rootfs/build.sh
 .~lock*
 *.bin
 *.o
@@ -16,9 +18,12 @@ compile_commands.json
 # Compiled compiler binaries
 compilers/bin/*
 !compilers/bin/.keep
-compilers/llvm/build
+compilers/llvm/build*
+compilers/lib/*
 
 *.elf
 .venv/
 .venv-docs/
 docs/_build/
+
+tmp/

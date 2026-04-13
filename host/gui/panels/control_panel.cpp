@@ -1,4 +1,5 @@
 #include "control_panel.hpp"
+#include "../../emulator/interrupt_vectors.hpp"
 #include <imgui.h>
 
 ControlPanel::ControlPanel(ControlPanelContext& state)
@@ -35,8 +36,8 @@ void ControlPanel::render() {
 
         ImGui::SameLine();
 
-        if (ImGui::Button("Fire Interrupt (63)")) {
-            exec.assertInterrupt(63);
+        if (ImGui::Button("Fire IRQ (65)")) {
+            exec.assertInterrupt(Little64Vectors::kUiTestIrqVector);
         }
 
         if (ImGui::SliderInt("Running Speed (instr/frame)", &running_speed, 1, 10000)) {

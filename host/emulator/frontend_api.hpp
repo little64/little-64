@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cstdint>
+
+#include "special_register_layout.hpp"
 #include <string>
 #include <vector>
 
@@ -11,15 +13,19 @@ struct MemoryRegionView {
 };
 
 struct RegisterSnapshot {
+    static constexpr uint64_t kSpecialRegisterCount = Little64SpecialRegisters::kVisibleDebugRegisterCount;
+
     uint64_t gpr[16]{};
     uint64_t flags = 0;
 
     uint64_t cpu_control = 0;
+    uint64_t thread_pointer = 0;
     uint64_t interrupt_table_base = 0;
     uint64_t interrupt_mask = 0;
     uint64_t interrupt_states = 0;
     uint64_t interrupt_epc = 0;
     uint64_t interrupt_eflags = 0;
+    uint64_t interrupt_cpu_control = 0;
     uint64_t trap_cause = 0;
     uint64_t trap_fault_addr = 0;
     uint64_t trap_access = 0;
@@ -30,27 +36,37 @@ struct RegisterSnapshot {
     uint64_t boot_source_page_size = 0;
     uint64_t boot_source_page_count = 0;
     uint64_t hypercall_caps = 0;
+    uint64_t interrupt_mask_high = 0;
+    uint64_t interrupt_states_high = 0;
 
-    constexpr uint64_t getSpecialRegisterByID(uint64_t id) const {
-        switch(id) {
-            case 0: return cpu_control;
-            case 1: return interrupt_table_base;
-            case 2: return interrupt_mask;
-            case 3: return interrupt_states;
-            case 4: return interrupt_epc;
-            case 5: return interrupt_eflags;
-            case 6: return trap_cause;
-            case 7: return trap_fault_addr;
-            case 8: return trap_access;
-            case 9: return trap_pc;
-            case 10: return trap_aux;
-            case 11: return page_table_root_physical;
-            case 12: return boot_info_frame_physical;
-            case 13: return boot_source_page_size;
-            case 14: return boot_source_page_count;
-            case 15: return hypercall_caps;
+    constexpr uint64_t getSpecialRegisterBySelector(uint64_t selector) const {
+        switch (Little64SpecialRegisters::normalizeSelector(selector)) {
+            case Little64SpecialRegisters::kCpuControl: return cpu_control;
+            case Little64SpecialRegisters::kUserThreadPointer: return thread_pointer;
+            case Little64SpecialRegisters::kPageTableRootPhysical: return page_table_root_physical;
+            case Little64SpecialRegisters::kBootInfoFramePhysical: return boot_info_frame_physical;
+            case Little64SpecialRegisters::kBootSourcePageSize: return boot_source_page_size;
+            case Little64SpecialRegisters::kBootSourcePageCount: return boot_source_page_count;
+            case Little64SpecialRegisters::kHypercallCaps: return hypercall_caps;
+            case Little64SpecialRegisters::kInterruptTableBase: return interrupt_table_base;
+            case Little64SpecialRegisters::kInterruptMask: return interrupt_mask;
+            case Little64SpecialRegisters::kInterruptMaskHigh: return interrupt_mask_high;
+            case Little64SpecialRegisters::kInterruptStates: return interrupt_states;
+            case Little64SpecialRegisters::kInterruptStatesHigh: return interrupt_states_high;
+            case Little64SpecialRegisters::kInterruptEpc: return interrupt_epc;
+            case Little64SpecialRegisters::kInterruptEflags: return interrupt_eflags;
+            case Little64SpecialRegisters::kInterruptCpuControl: return interrupt_cpu_control;
+            case Little64SpecialRegisters::kTrapCause: return trap_cause;
+            case Little64SpecialRegisters::kTrapFaultAddr: return trap_fault_addr;
+            case Little64SpecialRegisters::kTrapAccess: return trap_access;
+            case Little64SpecialRegisters::kTrapPc: return trap_pc;
+            case Little64SpecialRegisters::kTrapAux: return trap_aux;
             default: return 0;
         }
+    }
+
+    constexpr uint64_t getSpecialRegisterByID(uint64_t ordinal) const {
+        return getSpecialRegisterBySelector(Little64SpecialRegisters::selectorForDebugOrdinal(ordinal));
     }
 };
 

@@ -60,7 +60,7 @@ Top-level orchestration in `meson.build`, per-subsystem ownership in:
 2. Tool CLIs should use subsystem library APIs instead of duplicating logic.
 3. Device registration/wiring must flow through `MachineConfig`.
 4. Tests may reach internal APIs when needed but should prefer public surfaces first.
-5. Translation internals (TLB/radix walker choices) must remain behind CPU translation boundaries defined in `docs/paging-v1.md`.
+5. Translation internals (TLB/radix walker choices) must remain behind CPU translation boundaries defined in `hardware/memory-translation-and-boot.md`.
 
 ## Compatibility Rule
 

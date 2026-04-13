@@ -2,6 +2,7 @@
 
 #include "ram_region.hpp"
 #include "rom_region.hpp"
+#include "pv_block_device.hpp"
 #include "serial_device.hpp"
 #include "timer_device.hpp"
 #include "emulator_clock.hpp"
@@ -52,6 +53,15 @@ MachineConfig& MachineConfig::addTimer(uint64_t base, std::string_view name) {
     });
 }
 
+MachineConfig& MachineConfig::addPvBlock(uint64_t base, std::string_view image_path,
+                                         bool force_read_only, std::string_view name) {
+    std::string path(image_path);
+    std::string region_name(name);
+    return addDevice([base, path, force_read_only, region_name]() {
+        return std::make_unique<PvBlockDevice>(base, DiskImage::open(path, force_read_only), region_name);
+    });
+}
+
 void MachineConfig::applyTo(MemoryBus& bus, std::vector<Device*>& devices, InterruptSink* interrupt_sink,
                             const EmulatorClock* clock) const {
     bus.clearRegions();
@@ -66,6 +76,9 @@ void MachineConfig::applyTo(MemoryBus& bus, std::vector<Device*>& devices, Inter
         std::unique_ptr<Device> device = factory();
         if (interrupt_sink) {
             device->connectInterruptSink(interrupt_sink);
+        }
+        if (auto* pvblk = dynamic_cast<PvBlockDevice*>(device.get())) {
+            pvblk->setMemoryBus(&bus);
         }
         // Set clock on TimerDevice if present
         if (clock) {

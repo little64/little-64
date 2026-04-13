@@ -7,7 +7,7 @@ This document defines the Little-64 assembly workflow.
 - Primary assembler: `compilers/bin/llvm-mc -triple=little64`
 - Runtime loader expectations: `host/linker/linker.cpp`, `host/emulator/cpu.cpp`
 - Project assembly wrapper: `host/project/llvm_assembler.cpp`
-- ISA semantics: `../CPU_ARCH.md`
+- ISA semantics entry point: `hardware/README.md`
 
 If this document and `llvm-mc` behavior differ, `llvm-mc` is authoritative.
 
@@ -40,13 +40,21 @@ The LLVM Little-64 backend supports the core ISA forms used by runtime and linke
 - Branch/jump forms (`JUMP`, `JUMP.Z`, `JUMP.C`, `JUMP.S`, `JUMP.GT`, `JUMP.LT`)
 - directives used by linker/object workflows (`.global`, `.extern`, `.byte`, `.short`, `.long`)
 
-## Legacy Compatibility Notes
+## Compatibility Notes
 
-Legacy pseudo-forms such as `LDI64`, `CALL`, `JAL`, `RET`, textual `PUSH`/`POP`, and `MOVE Rn+imm` are not guaranteed as direct `llvm-mc` syntax.
+The LLVM Little-64 backend accepts some project-specific pseudo or convenience
+forms directly today, most notably `LDI64`. Project-owned boot and userspace
+images assemble that form with `llvm-mc` directly.
 
-CPU tests preserve legacy readability via compatibility preprocessing in `tests/support/cpu_test_helpers.hpp`, which rewrites these forms into LLVM-compatible code before assembly.
+Older compatibility forms such as `CALL`, `JAL`, `RET`, textual `PUSH`/`POP`,
+and `MOVE Rn+imm` are still not a stable direct `llvm-mc` contract.
 
-That compatibility path is test-only and not a CLI contract.
+CPU tests preserve legacy readability via compatibility preprocessing in
+`tests/support/cpu_test_helpers.hpp`, which rewrites those forms into
+LLVM-compatible code before assembly.
+
+That compatibility path is test-only and should not be treated as a general CLI
+guarantee.
 
 ## Validation Checklist
 

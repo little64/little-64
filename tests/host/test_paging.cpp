@@ -10,6 +10,7 @@ constexpr uint64_t PTE_V = 1ULL << 0;
 constexpr uint64_t PTE_R = 1ULL << 1;
 constexpr uint64_t PTE_W = 1ULL << 2;
 constexpr uint64_t PTE_X = 1ULL << 3;
+constexpr uint64_t PTE_U = 1ULL << 4;
 constexpr uint64_t PTE_RESERVED63 = 1ULL << 63;
 
 constexpr uint64_t ROOT = 0x4000;
@@ -38,11 +39,12 @@ uint64_t table_pte(uint64_t table_page) {
     return ((table_page >> 12) << 10) | PTE_V;
 }
 
-uint64_t leaf_pte(uint64_t phys_page, bool r, bool w, bool x) {
+uint64_t leaf_pte(uint64_t phys_page, bool r, bool w, bool x, bool user = false) {
     uint64_t pte = ((phys_page >> 12) << 10) | PTE_V;
     if (r) pte |= PTE_R;
     if (w) pte |= PTE_W;
     if (x) pte |= PTE_X;
+    if (user) pte |= PTE_U;
     return pte;
 }
 
@@ -54,11 +56,12 @@ void build_mapping(Little64CPU& cpu,
                    uint64_t pa,
                    bool r,
                    bool w,
-                   bool x) {
+                   bool x,
+                   bool user = false) {
     auto& bus = cpu.getMemoryBus();
     bus.write64(root + (((va >> 30) & 0x1FFULL) * 8), table_pte(l1));
     bus.write64(l1 + (((va >> 21) & 0x1FFULL) * 8), table_pte(l0));
-    bus.write64(l0 + (((va >> 12) & 0x1FFULL) * 8), leaf_pte(pa, r, w, x));
+    bus.write64(l0 + (((va >> 12) & 0x1FFULL) * 8), leaf_pte(pa, r, w, x, user));
 }
 
 void enable_paging(Little64CPU& cpu, uint64_t root) {
@@ -341,6 +344,109 @@ void test_store_translation_success() {
     CHECK_EQ(cpu.registers.trap_cause, 0ULL, "no trap on valid write mapping");
 }
 
+void test_user_mode_syscall_fetches_interrupt_vector_in_supervisor_mode() {
+    Little64CPU cpu = make_cpu();
+    constexpr uint64_t ITVA = KVA + 0x7000;
+    constexpr uint64_t ITPA = 0x7000;
+    constexpr uint64_t HANDLER_VA = KVA + 0x8000;
+    constexpr uint64_t HANDLER_PA = 0x8000;
+    constexpr uint64_t SYSCALL_TRAP = AddressTranslator::TRAP_SYSCALL;
+
+    build_mapping(cpu, ROOT, L1, L0, ITVA, ITPA, true, false, false, false);
+    build_mapping(cpu, ROOT, L1, L0, HANDLER_VA, HANDLER_PA, true, false, true, false);
+    enable_paging(cpu, ROOT);
+
+    cpu.getMemoryBus().write64(ITPA + (SYSCALL_TRAP * 8), HANDLER_VA);
+    cpu.registers.regs[15] = KVA;
+    cpu.registers.interrupt_table_base = ITVA;
+    cpu.registers.setInterruptEnabled(true);
+    cpu.registers.setUserMode(true);
+
+    cpu.dispatchInstruction(make_instr("SYSCALL"));
+
+    CHECK_TRUE(cpu.isRunning, "handled user-mode syscall does not halt CPU");
+    CHECK_EQ(cpu.registers.regs[15], HANDLER_VA, "interrupt entry jumps to handler from supervisor-only vector table");
+    CHECK_FALSE(cpu.registers.isUserMode(), "interrupt entry forces supervisor mode before handler fetch");
+    CHECK_TRUE(cpu.registers.isInInterrupt(), "interrupt entry sets in-interrupt state");
+    CHECK_FALSE(cpu.registers.isInterruptEnabled(), "interrupt entry disables nested interrupts");
+    CHECK_EQ(cpu.registers.interrupt_cpu_control & Little64CPU::Registers::CPU_CONTROL_USER_MODE,
+             Little64CPU::Registers::CPU_CONTROL_USER_MODE,
+             "interrupt entry preserves prior user-mode state in interrupt_cpu_control");
+}
+
+void test_exec_align_fault_vectors_with_interrupts_disabled() {
+    Little64CPU cpu = make_cpu();
+    constexpr uint64_t VECTOR_BASE = 0x7000;
+    constexpr uint64_t HANDLER = 0x8000;
+    constexpr uint64_t TRAP = AddressTranslator::TRAP_EXEC_ALIGN;
+
+    cpu.getMemoryBus().write64(VECTOR_BASE + (TRAP * 8), HANDLER);
+    cpu.registers.interrupt_table_base = VECTOR_BASE;
+    cpu.registers.regs[15] = 1;
+    cpu.registers.setInterruptEnabled(false);
+
+    cpu.cycle();
+
+    CHECK_TRUE(cpu.isRunning, "exec alignment fault vectors even when IRQs are disabled");
+    CHECK_EQ(cpu.registers.regs[15], HANDLER, "exception handler PC loaded from vector table");
+    CHECK_TRUE(cpu.registers.isInInterrupt(), "exception entry sets in-interrupt state");
+    CHECK_FALSE(cpu.registers.isInterruptEnabled(), "exception entry keeps IRQ delivery disabled in handler context");
+    CHECK_EQ(cpu.registers.interrupt_epc, 1ULL, "faulting PC saved to interrupt_epc");
+    CHECK_EQ(cpu.registers.interrupt_cpu_control, 0ULL, "pre-exception cpu_control preserved");
+    CHECK_EQ(cpu.registers.getCurrentInterruptNumber(), TRAP, "current interrupt number keeps full exception code");
+    CHECK_EQ(cpu.registers.interrupt_states, 0ULL, "exceptions do not alias into low-bank hardware IRQ state");
+    CHECK_EQ(cpu.registers.interrupt_states_high, 0ULL, "exceptions do not alias into high-bank hardware IRQ state");
+}
+
+void test_exception_preempts_device_irq_handler() {
+    Little64CPU cpu = make_cpu();
+    constexpr uint64_t VECTOR_BASE = 0x7000;
+    constexpr uint64_t HANDLER = 0x8000;
+    constexpr uint64_t TRAP = AddressTranslator::TRAP_EXEC_ALIGN;
+    constexpr uint64_t OUTER_IRQ = Little64Vectors::kTimerIrqVector;
+
+    cpu.getMemoryBus().write64(VECTOR_BASE + (TRAP * 8), HANDLER);
+    cpu.registers.interrupt_table_base = VECTOR_BASE;
+    cpu.registers.regs[15] = 1;
+    cpu.registers.setInInterrupt(true);
+    cpu.registers.setInterruptEnabled(false);
+    cpu.registers.setCurrentInterruptNumber(OUTER_IRQ);
+    const uint64_t outer_cpu_control = cpu.registers.cpu_control;
+
+    cpu.cycle();
+
+    CHECK_TRUE(cpu.isRunning, "exception can preempt an in-flight device IRQ handler");
+    CHECK_EQ(cpu.registers.regs[15], HANDLER, "nested exception vectors to its handler");
+    CHECK_EQ(cpu.registers.interrupt_epc, 1ULL, "nested exception saves its own EPC");
+    CHECK_EQ(cpu.registers.interrupt_cpu_control, outer_cpu_control,
+             "nested exception preserves the outer IRQ handler cpu_control state");
+    CHECK_TRUE(cpu.registers.isInInterrupt(), "nested exception remains in interrupt context");
+    CHECK_FALSE(cpu.registers.isInterruptEnabled(), "nested exception runs with IRQ delivery disabled");
+    CHECK_EQ(cpu.registers.getCurrentInterruptNumber(), TRAP, "nested exception overrides current interrupt number");
+    CHECK_EQ(cpu.registers.interrupt_states, 0ULL, "nested exception leaves low-bank hardware IRQ state unchanged");
+    CHECK_EQ(cpu.registers.interrupt_states_high, 0ULL, "nested exception leaves high-bank hardware IRQ state unchanged");
+}
+
+static void test_irq_with_zero_handler_enters_lockup() {
+    Little64CPU cpu = make_cpu();
+    const auto program = assemble_words("MOVE R0, R0\nMOVE R0, R0\n");
+    cpu.loadProgram(program);
+
+    constexpr uint64_t VECTOR_BASE = 0x1000;
+    constexpr uint64_t IRQ_LINE = Little64Vectors::kSerialIrqVector;
+    constexpr uint64_t IRQ_BIT = Little64Vectors::interruptBitForVector(IRQ_LINE);
+
+    cpu.registers.interrupt_table_base = VECTOR_BASE;
+    cpu.getMemoryBus().write64(VECTOR_BASE + (IRQ_LINE * 8), 0);
+    cpu.registers.interrupt_mask_high = IRQ_BIT;
+    cpu.registers.setInterruptEnabled(true);
+    cpu.assertInterrupt(IRQ_LINE);
+
+    cpu.cycle();
+
+    CHECK_FALSE(cpu.isRunning, "CPU enters lockup when a pending IRQ has zero handler");
+}
+
 } // namespace
 
 int main() {
@@ -362,5 +468,9 @@ int main() {
     test_store_permission_fault();
     test_read_translation_success();
     test_store_translation_success();
+    test_user_mode_syscall_fetches_interrupt_vector_in_supervisor_mode();
+    test_exec_align_fault_vectors_with_interrupts_disabled();
+    test_exception_preempts_device_irq_handler();
+    test_irq_with_zero_handler_enters_lockup();
     return print_summary();
 }

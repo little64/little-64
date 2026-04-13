@@ -186,6 +186,15 @@ test('boot-direct-physical-run',
   timeout : 60,
 )
 
+test('boot-linux-userspace-write',
+  python3,
+  args : [
+    meson.project_source_root() / 'tests/host/boot/test_linux_userspace_write.py',
+  ],
+  suite : ['boot', 'integration', 'linux'],
+  timeout : 300,
+)
+
 llvm_report_path = meson.project_build_root() / 'meson-logs' / 'llvm-integration-report.json'
 test('llvm-integration',
   python3,

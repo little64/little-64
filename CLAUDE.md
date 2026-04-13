@@ -15,6 +15,7 @@ This file documents practical update paths and maintenance rules for common proj
 - A temporary Linux kernel build helper exists at `target/linux_port/build.sh`.
 - It invokes the Linux kernel `make` target with the Little64 LLVM toolchain from `compilers/bin`.
 - The script is currently not part of the Meson graph and is meant for local Linux port experimentation only.
+- It auto-syncs `target/linux_port/linux/arch/little64/configs/little64_defconfig` into `target/linux_port/build/.config` when the canonical defconfig changes or the build config is missing.
 - Usage: `target/linux_port/build.sh [target]` where the default target is `vmlinux`.
 - The script normally passes `-j$(nproc)` to `make` unless a `-j` argument is already provided.
 - Optional guarded-clang mode can be enabled to catch backend non-termination/memory blowups:
@@ -24,12 +25,23 @@ This file documents practical update paths and maintenance rules for common proj
   - `LITTLE64_CLANG_GUARD_LOG_DIR` sets log directory (default `/tmp/little64-clang-guard`).
 - Direct ELF boot helper for first Linux bring-up exists at `target/linux_port/boot_direct.sh`:
   - Default image path: `target/linux_port/build/vmlinux`.
-  - Usage: `target/linux_port/boot_direct.sh [optional-path-to-vmlinux]`.
+  - Default rootfs path: `target/linux_port/rootfs/build/rootfs.ext2`.
+  - Usage: `target/linux_port/boot_direct.sh [--rootfs PATH | --no-rootfs] [optional-path-to-vmlinux]`.
   - It launches the headless emulator in direct mode (`--boot-mode=direct`).
+  - It attaches the default PV block rootfs image read-only unless `--no-rootfs` is used.
   - It always streams full boot events to `/tmp/little64_boot_events.l64t` via `--boot-events-file`.
   - It also always enables control flow tracing.
   - Default file size cap: 500 MB (override with `LITTLE64_BOOT_EVENTS_MAX_MB`).
   - Supports cycle-window tracing: `LITTLE64_TRACE_START_CYCLE=N LITTLE64_TRACE_END_CYCLE=N`.
+- Lower-overhead smoke helper exists at `target/linux_port/boot_direct_no_event_logging.sh`:
+  - Usage: `target/linux_port/boot_direct_no_event_logging.sh [--rootfs PATH | --no-rootfs] [--max-cycles N] [optional-path-to-vmlinux]`.
+  - It launches the same direct boot flow without boot-event file capture or stderr event dumping, which makes it the better choice for validating whether the kernel still reaches `/init`.
+- Minimal Linux rootfs build helper exists at `target/linux_port/rootfs/build.sh`:
+  - Output directory: `target/linux_port/rootfs/build/`.
+  - Default image path: `target/linux_port/rootfs/build/rootfs.ext2`.
+  - Usage: `target/linux_port/rootfs/build.sh` or `target/linux_port/rootfs/build.sh clean`.
+  - It builds a minimal `/init` ELF using the Little64 LLVM tools and packs it into an ext2 image for the PV block device.
+  - This is the main bring-up rootfs path and should remain independent of targeted boot regressions; the dedicated Linux userspace-write smoke test builds its own test-only init/rootfs under `tests/host/boot/`.
 - Boot-event analysis helper exists at `target/linux_port/analyze_lockup_flow.py`:
   - Usage: `target/linux_port/analyze_lockup_flow.py --log /tmp/little64_boot_events.l64t [--tail N] [--elf <path>]`.
   - Reads binary `.l64t` trace files.
@@ -45,6 +57,12 @@ This file documents practical update paths and maintenance rules for common proj
   - Default image path: `target/linux_port/build/vmlinux`.
   - Usage: `target/linux_port/pc_to_line.sh [--elf <path>] [--context-bytes N] [--no-disasm] <pc>`.
   - It resolves a PC to function/file/line using LLVM tools from `compilers/bin` and can show nearby disassembly.
+- Repeated fast-boot outcome sampler exists at `target/linux_port/sample_fast_boots.py`:
+  - Shell wrapper: `target/linux_port/sample_fast_boots.sh`.
+  - Usage: `target/linux_port/sample_fast_boots.sh [--runs N] [--max-cycles N] [--rootfs PATH | --no-rootfs] [--kernel PATH] [--output-dir PATH] [--jobs N] [--cpu-list LIST]`.
+  - It runs `boot_direct_no_event_logging.sh` repeatedly, stores per-run stdout/stderr logs, and clusters recurring outcomes by normalized serial output plus warning/BUG marker lines.
+  - It can run multiple samples concurrently and pins each worker to a distinct CPU from the current affinity set (or `--cpu-list`).
+  - Default output directory is under `/tmp/little64-fastboot-samples/<timestamp>/`.
 - To override core count or pass custom `make` arguments, add them after the target, for example:
   - `target/linux_port/build.sh vmlinux -j4`
   - `target/linux_port/build.sh vmlinux LOCALVERSION=-custom CONFIG_DEBUG_INFO=y`
@@ -64,7 +82,7 @@ This file documents practical update paths and maintenance rules for common proj
 | `host/emulator/cpu.cpp` | Update handling in both `_dispatchLSReg(...)` and `_dispatchLSPCRel(...)` |
 | `host/project/llvm_assembler.cpp` | Update only if assembly wrapper/tool invocation behavior changes |
 | `host/disassembler/disassembler.cpp` | Update only if text output differs from defaults |
-| `CPU_ARCH.md` | Update opcode and semantics reference |
+| `docs/hardware/instruction-set.md` | Update the instruction-set hardware chapter plan/reference |
 | `docs/assembly-syntax.md` | Update syntax and examples if affected |
 | tests | Add/update targeted instruction tests |
 
@@ -78,7 +96,7 @@ LS opcodes are shared between format 00 and 01. Behavior can differ by format an
 | `host/emulator/cpu.cpp` | Update `_dispatchGP(...)` |
 | `host/project/llvm_assembler.cpp` | Usually unnecessary unless wrapper behavior/toolchain pathing changes |
 | `host/disassembler/disassembler.cpp` | Update if text output differs from defaults |
-| `CPU_ARCH.md` | Update opcode and semantics reference |
+| `docs/hardware/instruction-set.md` | Update the instruction-set hardware chapter plan/reference |
 | `docs/assembly-syntax.md` | Update syntax and examples if affected |
 | tests | Add/update targeted instruction tests |
 
@@ -118,7 +136,7 @@ When adding CPU tests, prefer including `tests/support/cpu_test_helpers.hpp` dir
 
 When behavior changes, update docs in the same change:
 
-1. `CPU_ARCH.md` for ISA/semantic changes.
+1. The relevant file under `docs/hardware/` for ISA, privilege, memory, boot, or platform changes.
 2. `docs/assembly-syntax.md` for assembler syntax/directive changes.
 3. `docs/architecture-boundaries.md` for layering/API changes.
 4. `docs/device-framework.md` for machine/device model changes.
@@ -135,6 +153,9 @@ meson compile -C builddir
 
 # Full test suite
 meson test -C builddir --print-errorlogs
+
+# Dedicated Linux userspace-write boot smoke
+meson test -C builddir 'boot-linux-userspace-write' --print-errorlogs
 
 # LLVM Little64 backend tests (MUST run after LLVM backend changes)
 cd compilers && ./build.sh llvm

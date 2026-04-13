@@ -79,12 +79,28 @@ Start with `docs/README.md` for the full index.
 
 Key docs:
 
-- `CPU_ARCH.md` — ISA and execution architecture reference
+- `docs/hardware/README.md` — hardware architecture reference and replacement entry point for the old monolithic architecture docs
+- `docs/emulator/README.md` — emulator runtime, boot, and virtual-platform documentation
 - `docs/assembly-syntax.md` — LLVM-targeted assembly language notes and compatibility guidance
 - `docs/architecture-boundaries.md` — module/API boundaries
 - `docs/device-framework.md` — MMIO/device model and extension path
 - `docs/vscode-integration.md` — editor/debug workflow integration
 - `GUI_DEBUGGER.md` — frontend behavior and usage
+
+## Linux Direct Boot
+
+The Linux bring-up flow lives under `target/linux_port/` and is intentionally outside the Meson graph.
+
+Typical direct-boot flow with the paravirtual block rootfs:
+
+```bash
+target/linux_port/build.sh vmlinux -j1
+target/linux_port/rootfs/build.sh
+target/linux_port/boot_direct.sh
+```
+
+The default direct-boot rootfs image is `target/linux_port/rootfs/build/rootfs.ext2`.
+Use `target/linux_port/boot_direct.sh --no-rootfs` to boot the kernel without attaching the PV block disk.
 
 ## Toolchain Separation Policy
 
@@ -96,7 +112,7 @@ Do not merge or restructure these trees as part of normal project cleanup.
 
 When behavior changes, update docs in the same change:
 
-1. Update architecture/runtime docs for behavior changes.
+1. Update hardware docs for core ISA changes and emulator docs for implementation-specific behavior changes.
 2. Update syntax docs for LLVM assembly behavior changes.
 3. Update `CLAUDE.md` when contributor workflows or touched-file rules change.
 4. Run `meson test -C builddir --print-errorlogs` before finalizing documentation that includes command examples.
