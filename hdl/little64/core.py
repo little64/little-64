@@ -114,6 +114,8 @@ class Little64Core(Elaboratable):
         self.fetch_phys_addr = Signal(64)
         self.commit_valid = Signal()
         self.commit_pc = Signal(64)
+        self.boot_r1 = Signal(64)
+        self.boot_r13 = Signal(64)
         self.pending_addr = Signal(64)
         self.pending_virtual_addr = Signal(64)
         self.pending_width_bytes = Signal(4)
@@ -185,6 +187,20 @@ class Little64Core(Elaboratable):
         walk_page_base = Signal(64)
         walk_result_phys = Signal(64)
         special_write_active = Signal()
+        core_cpu_control_write = Signal()
+        core_cpu_control_data = Signal(64)
+        core_interrupt_cpu_control_write = Signal()
+        core_interrupt_cpu_control_data = Signal(64)
+        core_interrupt_epc_write = Signal()
+        core_interrupt_epc_data = Signal(64)
+        core_interrupt_eflags_write = Signal()
+        core_interrupt_eflags_data = Signal(64)
+        core_trap_write = Signal()
+        core_trap_cause_data = Signal(64)
+        core_trap_fault_addr_data = Signal(64)
+        core_trap_access_data = Signal(64)
+        core_trap_pc_data = Signal(64)
+        core_trap_aux_data = Signal(64)
         current_interrupt_vector = Signal(64)
         irq_line_pending_mask = Signal(64)
         pending_irq_high = Signal(64)
@@ -214,10 +230,16 @@ class Little64Core(Elaboratable):
         ls_opcode = self.current_instruction[10:14]
         ls_offset2 = self.current_instruction[8:10]
 
+        ls_rd_value = Signal(64)
+        ls_rs1_value = Signal(64)
         ls_addr = Signal(64)
         ls_push_addr = Signal(64)
-        m.d.comb += ls_addr.eq(b + (ls_offset2 << 1))
-        m.d.comb += ls_push_addr.eq(a - 8)
+        m.d.comb += [
+            ls_rd_value.eq(Mux(rd == 15, post_increment_pc, a)),
+            ls_rs1_value.eq(Mux(rs1 == 15, post_increment_pc, b)),
+            ls_addr.eq(ls_rs1_value + (ls_offset2 << 1)),
+            ls_push_addr.eq(ls_rd_value - 8),
+        ]
 
         ls_pc_rel6 = _sign_extend(self.current_instruction[4:10], 6, 64)
         ls_pc_rel10 = _sign_extend(self.current_instruction[:10], 10, 64)
@@ -359,7 +381,7 @@ class Little64Core(Elaboratable):
                                Mux(self.walk_level == 1, 21, 12))),
             walk_page_mask.eq((Const(1, 64) << walk_page_shift) - 1),
             walk_page_base.eq((walk_pte >> 10) << 12),
-            walk_result_phys.eq(walk_page_base | (self.walk_virtual_addr & walk_page_mask)),
+            walk_result_phys.eq(walk_page_base + (self.walk_virtual_addr & walk_page_mask)),
             reservation_end.eq(self.ll_reservation_addr + 7),
             write_end.eq(self.pending_virtual_addr + self.pending_width_bytes - 1),
             store_overlaps_reservation.eq(
@@ -376,6 +398,39 @@ class Little64Core(Elaboratable):
             self.special_regs.write_stb.eq(special_write_active),
             self.special_regs.write_selector.eq(b[:16]),
             self.special_regs.write_data.eq(a),
+            self.special_regs.core_cpu_control_write.eq(core_cpu_control_write),
+            self.special_regs.core_cpu_control_data.eq(core_cpu_control_data),
+            self.special_regs.core_interrupt_cpu_control_write.eq(core_interrupt_cpu_control_write),
+            self.special_regs.core_interrupt_cpu_control_data.eq(core_interrupt_cpu_control_data),
+            self.special_regs.core_interrupt_epc_write.eq(core_interrupt_epc_write),
+            self.special_regs.core_interrupt_epc_data.eq(core_interrupt_epc_data),
+            self.special_regs.core_interrupt_eflags_write.eq(core_interrupt_eflags_write),
+            self.special_regs.core_interrupt_eflags_data.eq(core_interrupt_eflags_data),
+            self.special_regs.core_trap_write.eq(core_trap_write),
+            self.special_regs.core_trap_cause_data.eq(core_trap_cause_data),
+            self.special_regs.core_trap_fault_addr_data.eq(core_trap_fault_addr_data),
+            self.special_regs.core_trap_access_data.eq(core_trap_access_data),
+            self.special_regs.core_trap_pc_data.eq(core_trap_pc_data),
+            self.special_regs.core_trap_aux_data.eq(core_trap_aux_data),
+            self.special_regs.interrupt_states_high_set.eq(Mux(
+                (irq_line_pending_mask != 0) & ~(special_write_active & (b[:16] == SpecialRegister.INTERRUPT_STATES_HIGH)),
+                irq_line_pending_mask,
+                0,
+            )),
+            core_cpu_control_write.eq(0),
+            core_cpu_control_data.eq(0),
+            core_interrupt_cpu_control_write.eq(0),
+            core_interrupt_cpu_control_data.eq(0),
+            core_interrupt_epc_write.eq(0),
+            core_interrupt_epc_data.eq(0),
+            core_interrupt_eflags_write.eq(0),
+            core_interrupt_eflags_data.eq(0),
+            core_trap_write.eq(0),
+            core_trap_cause_data.eq(0),
+            core_trap_fault_addr_data.eq(0),
+            core_trap_access_data.eq(0),
+            core_trap_pc_data.eq(0),
+            core_trap_aux_data.eq(0),
             self.commit_valid.eq(0),
             self.commit_pc.eq(self.fetch_pc),
             self.i_bus.adr.eq(self.fetch_phys_addr & Const(~0x7 & ((1 << self.config.address_width) - 1), self.config.address_width)),
@@ -408,9 +463,6 @@ class Little64Core(Elaboratable):
                     pending_irq_vector.eq(64 + bit_index),
                 ]
 
-        with m.If((irq_line_pending_mask != 0) & ~(special_write_active & (b[:16] == SpecialRegister.INTERRUPT_STATES_HIGH))):
-            m.d.sync += self.special_regs.interrupt_states_high.eq(self.special_regs.interrupt_states_high | irq_line_pending_mask)
-
         m.d.sync += self.register_file[0].eq(0)
 
         def write_reg(index_signal, value):
@@ -426,15 +478,19 @@ class Little64Core(Elaboratable):
             ]
 
         def begin_interrupt_entry(vector, epc):
-            m.d.sync += [
-                self.interrupt_entry_vector.eq(vector),
-                self.interrupt_entry_epc.eq(epc),
-                self.special_regs.interrupt_cpu_control.eq(self.special_regs.cpu_control),
-                self.special_regs.cpu_control.eq(
+            m.d.comb += [
+                core_interrupt_cpu_control_write.eq(1),
+                core_interrupt_cpu_control_data.eq(self.special_regs.cpu_control),
+                core_cpu_control_write.eq(1),
+                core_cpu_control_data.eq(
                     (self.special_regs.cpu_control & Const((1 << 64) - 1 - cpu_control_entry_clear_mask, 64)) |
                     Const(CPU_CONTROL_IN_INTERRUPT, 64) |
                     (vector << CPU_CONTROL_CUR_INT_SHIFT)
                 ),
+            ]
+            m.d.sync += [
+                self.interrupt_entry_vector.eq(vector),
+                self.interrupt_entry_epc.eq(epc),
                 self.state.eq(CoreState.INTERRUPT_VECTOR_TRANSLATE),
             ]
 
@@ -442,30 +498,36 @@ class Little64Core(Elaboratable):
             with m.If(self.special_regs.cpu_control[1] & (current_interrupt_vector != 0) & (current_interrupt_vector < TrapVector.FIRST_HW_IRQ) & (current_interrupt_vector <= vector)):
                 enter_lockup()
             with m.Else():
-                m.d.sync += [
-                    self.special_regs.trap_cause.eq(Mux(self.special_regs.trap_cause == 0, vector, self.special_regs.trap_cause)),
-                    self.special_regs.trap_fault_addr.eq(fault_addr),
-                    self.special_regs.trap_access.eq(access),
-                    self.special_regs.trap_pc.eq(trap_pc),
-                    self.special_regs.trap_aux.eq(aux),
+                m.d.comb += [
+                    core_trap_write.eq(1),
+                    core_trap_cause_data.eq(Mux(self.special_regs.trap_cause == 0, vector, self.special_regs.trap_cause)),
+                    core_trap_fault_addr_data.eq(fault_addr),
+                    core_trap_access_data.eq(access),
+                    core_trap_pc_data.eq(trap_pc),
+                    core_trap_aux_data.eq(aux),
                 ]
                 begin_interrupt_entry(vector, trap_pc)
 
         with m.Switch(self.state):
             with m.Case(CoreState.RESET):
                 m.d.sync += [
+                    self.register_file[1].eq(self.boot_r1),
+                    self.register_file[13].eq(self.boot_r13),
                     self.register_file[15].eq(self.config.reset_vector),
                     self.flags.eq(0),
                     self.ll_reservation_addr.eq(0),
                     self.ll_reservation_valid.eq(0),
                     self.halted.eq(0),
                     self.locked_up.eq(0),
-                    self.special_regs.trap_cause.eq(0),
-                    self.special_regs.trap_fault_addr.eq(0),
-                    self.special_regs.trap_access.eq(0),
-                    self.special_regs.trap_pc.eq(0),
-                    self.special_regs.trap_aux.eq(0),
                     self.state.eq(CoreState.FETCH_TRANSLATE),
+                ]
+                m.d.comb += [
+                    core_trap_write.eq(1),
+                    core_trap_cause_data.eq(0),
+                    core_trap_fault_addr_data.eq(0),
+                    core_trap_access_data.eq(0),
+                    core_trap_pc_data.eq(0),
+                    core_trap_aux_data.eq(0),
                 ]
 
             with m.Case(CoreState.FETCH_TRANSLATE):
@@ -584,7 +646,7 @@ class Little64Core(Elaboratable):
                                 self.pending_addr.eq(ls_addr),
                                 self.pending_virtual_addr.eq(ls_addr),
                                 self.pending_width_bytes.eq(store_width),
-                                self.pending_store_value.eq(a),
+                                self.pending_store_value.eq(ls_rd_value),
                                 self.pending_next_pc.eq(post_increment_pc),
                                 self.pending_fault_pc.eq(self.fetch_pc),
                                 self.pending_mem_write.eq(1),
@@ -603,7 +665,7 @@ class Little64Core(Elaboratable):
                                 self.pending_addr.eq(ls_push_addr),
                                 self.pending_virtual_addr.eq(ls_push_addr),
                                 self.pending_width_bytes.eq(8),
-                                self.pending_store_value.eq(b),
+                                self.pending_store_value.eq(ls_rs1_value),
                                 self.pending_next_pc.eq(post_increment_pc),
                                 self.pending_fault_pc.eq(self.fetch_pc),
                                 self.pending_mem_write.eq(1),
@@ -618,8 +680,8 @@ class Little64Core(Elaboratable):
                             ]
                         with m.Case(LSOpcode.POP):
                             m.d.sync += [
-                                self.pending_addr.eq(a),
-                                self.pending_virtual_addr.eq(a),
+                                self.pending_addr.eq(ls_rd_value),
+                                self.pending_virtual_addr.eq(ls_rd_value),
                                 self.pending_width_bytes.eq(8),
                                 self.pending_rd.eq(rs1),
                                 self.pending_next_pc.eq(post_increment_pc),
@@ -627,7 +689,7 @@ class Little64Core(Elaboratable):
                                 self.pending_mem_write.eq(0),
                                 self.pending_set_reservation.eq(0),
                                 self.pending_post_mem_reg.eq(rd),
-                                self.pending_post_mem_value.eq(a + 8),
+                                self.pending_post_mem_value.eq(ls_rd_value + 8),
                                 self.pending_post_mem_delta.eq(8),
                                 self.pending_post_mem_write.eq(1),
                                 self.pending_post_mem_use_load_result.eq(rd == rs1),
@@ -639,14 +701,14 @@ class Little64Core(Elaboratable):
                         with m.Case(LSOpcode.MOVE):
                             write_reg(rd, ls_addr)
                             m.d.sync += [
-                                self.register_file[15].eq(post_increment_pc),
+                                self.register_file[15].eq(Mux(rd == 15, ls_addr, post_increment_pc)),
                                 self.state.eq(CoreState.FETCH_TRANSLATE),
                             ]
                         with m.Case(LSOpcode.JUMP_Z, LSOpcode.JUMP_C, LSOpcode.JUMP_S, LSOpcode.JUMP_GT, LSOpcode.JUMP_LT):
                             with m.If(_ls_condition(self.flags, ls_opcode)):
                                 write_reg(rd, ls_addr)
                             m.d.sync += [
-                                self.register_file[15].eq(post_increment_pc),
+                                self.register_file[15].eq(Mux(_ls_condition(self.flags, ls_opcode) & (rd == 15), ls_addr, post_increment_pc)),
                                 self.state.eq(CoreState.FETCH_TRANSLATE),
                             ]
                         with m.Default():
@@ -745,7 +807,7 @@ class Little64Core(Elaboratable):
                         with m.Case(LSOpcode.MOVE):
                             write_reg(rd, ls_pc_effective)
                             m.d.sync += [
-                                self.register_file[15].eq(post_increment_pc),
+                                self.register_file[15].eq(Mux(rd == 15, ls_pc_effective, post_increment_pc)),
                                 self.state.eq(CoreState.FETCH_TRANSLATE),
                             ]
                         with m.Case(LSOpcode.JUMP_Z, LSOpcode.JUMP_C, LSOpcode.JUMP_S, LSOpcode.JUMP_GT, LSOpcode.JUMP_LT):
@@ -940,10 +1002,13 @@ class Little64Core(Elaboratable):
                             with m.If(self.special_regs.cpu_control[17]):
                                 raise_sync_trap(TrapVector.PRIVILEGED_INSTRUCTION, self.fetch_pc)
                             with m.Else():
+                                m.d.comb += [
+                                    core_cpu_control_write.eq(1),
+                                    core_cpu_control_data.eq(self.special_regs.interrupt_cpu_control),
+                                ]
                                 m.d.sync += [
                                     self.register_file[15].eq(self.special_regs.interrupt_epc),
                                     self.flags.eq(self.special_regs.interrupt_eflags[:3]),
-                                    self.special_regs.cpu_control.eq(self.special_regs.interrupt_cpu_control),
                                     self.state.eq(CoreState.FETCH_TRANSLATE),
                                 ]
                         with m.Case(GPOpcode.STOP):
@@ -1015,6 +1080,7 @@ class Little64Core(Elaboratable):
                 with m.Elif(self.d_bus.ack):
                     load_result = Signal(64)
                     post_mem_value = Signal(64)
+                    next_pc_after_load = Signal(64)
                     m.d.comb += load_result.eq(Mux(self.pending_width_bytes == 1, self.d_bus.dat_r & 0xFF,
                                                Mux(self.pending_width_bytes == 2, self.d_bus.dat_r & 0xFFFF,
                                                Mux(self.pending_width_bytes == 4, self.d_bus.dat_r & 0xFFFFFFFF,
@@ -1022,6 +1088,11 @@ class Little64Core(Elaboratable):
                     m.d.comb += post_mem_value.eq(Mux(self.pending_post_mem_use_load_result,
                                                   load_result + self.pending_post_mem_delta,
                                                   self.pending_post_mem_value))
+                    m.d.comb += next_pc_after_load.eq(
+                        Mux(self.pending_post_mem_write & (self.pending_post_mem_reg == 15),
+                            post_mem_value,
+                            Mux(self.pending_rd == 15, load_result, self.pending_next_pc))
+                    )
                     write_reg(self.pending_rd, load_result)
                     with m.If(self.pending_post_mem_write):
                         write_reg(self.pending_post_mem_reg, post_mem_value)
@@ -1048,7 +1119,7 @@ class Little64Core(Elaboratable):
                         ]
                     with m.Else():
                         m.d.sync += [
-                            self.register_file[15].eq(self.pending_next_pc),
+                            self.register_file[15].eq(next_pc_after_load),
                             self.state.eq(CoreState.FETCH_TRANSLATE),
                         ]
 
@@ -1061,7 +1132,7 @@ class Little64Core(Elaboratable):
                     with m.If(self.pending_post_mem_write):
                         write_reg(self.pending_post_mem_reg, self.pending_post_mem_value)
                     m.d.sync += [
-                        self.register_file[15].eq(self.pending_next_pc),
+                        self.register_file[15].eq(Mux(self.pending_post_mem_write & (self.pending_post_mem_reg == 15), self.pending_post_mem_value, self.pending_next_pc)),
                         self.state.eq(CoreState.FETCH_TRANSLATE),
                     ]
 
@@ -1109,9 +1180,13 @@ class Little64Core(Elaboratable):
                     with m.If(self.d_bus.dat_r == 0):
                         enter_lockup()
                     with m.Else():
+                        m.d.comb += [
+                            core_interrupt_epc_write.eq(1),
+                            core_interrupt_epc_data.eq(self.interrupt_entry_epc),
+                            core_interrupt_eflags_write.eq(1),
+                            core_interrupt_eflags_data.eq(self.flags),
+                        ]
                         m.d.sync += [
-                            self.special_regs.interrupt_epc.eq(self.interrupt_entry_epc),
-                            self.special_regs.interrupt_eflags.eq(self.flags),
                             self.register_file[15].eq(self.d_bus.dat_r),
                             self.state.eq(CoreState.FETCH_TRANSLATE),
                         ]

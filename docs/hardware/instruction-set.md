@@ -144,6 +144,11 @@ Current reserved GP opcode values are the holes not listed above.
 `MOVE` in LS register format is not a register-to-register move. It writes the
 computed effective address into `Rd`.
 
+When `Rs1` is `R15`, the base address is the already incremented PC. This is
+the same `post_increment_pc` value used by PC-relative LS forms, which lets
+code sequences such as `MOVE R15, R14+2` materialize a return address after the
+following instruction.
+
 `PUSH` / `POP` in LS register format use `Rd` as the stack-pointer register:
 
 - `PUSH`: decrement `Rd` by 8, then store `regs[Rs1]` to `[Rd]`

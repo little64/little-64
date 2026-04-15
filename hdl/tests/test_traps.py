@@ -8,7 +8,7 @@ from little64.isa import (
     CPU_CONTROL_USER_MODE,
     TrapVector,
 )
-from shared_program import assemble_source, run_program_source, run_program_words
+from shared_program import assemble_source, encode_gp_imm, encode_ls_reg, run_program_source, run_program_words
 
 
 PTE_V = 1 << 0
@@ -86,6 +86,114 @@ def test_invalid_gp_opcode_raises_invalid_instruction_trap() -> None:
     assert observed['trap_fault_addr'] == 0
     assert observed['trap_access'] == 0
     assert observed['trap_aux'] == 0
+
+
+def test_load_into_r15_redirects_control_flow() -> None:
+    target = 0x20
+    stop = encode_gp_imm('STOP', 0, 0)
+
+    observed = run_program_words(
+        [encode_ls_reg('LOAD', 0, 5, 15), stop],
+        initial_registers={5: 0x80},
+        extra_code_words={target: stop},
+        initial_data_memory={
+            0x80 + byte_index: (target >> (8 * byte_index)) & 0xFF
+            for byte_index in range(8)
+        },
+        max_cycles=32,
+    )
+
+    assert observed['locked_up'] == 0
+    assert observed['halted'] == 1
+    assert observed['trap_cause'] == 0
+    assert observed['registers'][15] == target + 2
+
+
+def test_ls_register_form_reads_r15_as_post_incremented_pc() -> None:
+    stop = encode_gp_imm('STOP', 0, 0)
+
+    observed = run_program_words(
+        [
+            encode_ls_reg('MOVE', 2, 15, 14),
+            encode_ls_reg('MOVE', 0, 14, 15),
+            stop,
+            stop,
+        ],
+        max_cycles=32,
+    )
+
+    assert observed['locked_up'] == 0
+    assert observed['halted'] == 1
+    assert observed['trap_cause'] == 0
+    assert observed['registers'][14] == 0x6
+    assert observed['registers'][15] == 0x8
+
+
+def test_move_into_r15_reaches_higher_half_target_when_paging_enabled() -> None:
+    root = 0x4000
+    l1_low = 0x5000
+    l0_low = 0x6000
+    l1_high = 0x7000
+    l0_high = 0x8000
+    high_target_va = 0xFFFF_FFC0_0000_0100
+    stop = encode_gp_imm('STOP', 0, 0)
+
+    memory: dict[int, int] = {}
+    _write_u64(memory, root + (((0x0 >> 30) & 0x1FF) * 8), _table_pte(l1_low))
+    _write_u64(memory, l1_low + (((0x0 >> 21) & 0x1FF) * 8), _table_pte(l0_low))
+    _write_u64(memory, l0_low + (((0x0 >> 12) & 0x1FF) * 8), _leaf_pte(0x0, r=True, w=True, x=True))
+
+    _write_u64(memory, root + (((high_target_va >> 30) & 0x1FF) * 8), _table_pte(l1_high))
+    _write_u64(memory, l1_high + (((high_target_va >> 21) & 0x1FF) * 8), _table_pte(l0_high))
+    _write_u64(memory, l0_high + (((high_target_va >> 12) & 0x1FF) * 8), _leaf_pte(0x100, r=True, w=True, x=True))
+
+    observed = run_program_words(
+        [encode_ls_reg('MOVE', 0, 3, 15), stop],
+        extra_code_words={0x100: stop},
+        initial_registers={3: high_target_va, 15: 0},
+        initial_special_registers={
+            'cpu_control': CPU_CONTROL_PAGING_ENABLE,
+            'page_table_root_physical': root,
+        },
+        initial_data_memory=memory,
+        max_cycles=32,
+    )
+
+    assert observed['locked_up'] == 0
+    assert observed['halted'] == 1
+    assert observed['trap_cause'] == 0
+    assert observed['registers'][15] == high_target_va + 2
+
+
+def test_l2_superpage_translation_preserves_non_aligned_phys_base() -> None:
+    root = 0x4000
+    program_va = 0xFFFF_FFC0_0052_A100
+    program_pa = 0x0062_A100
+    stop = encode_gp_imm('STOP', 0, 0)
+
+    memory: dict[int, int] = {}
+    _write_u64(
+        memory,
+        root + (((program_va >> 30) & 0x1FF) * 8),
+        _leaf_pte(0x0010_0000, r=True, w=True, x=True),
+    )
+
+    observed = run_program_words(
+        [],
+        extra_code_words={program_pa: stop},
+        initial_registers={15: program_va},
+        initial_special_registers={
+            'cpu_control': CPU_CONTROL_PAGING_ENABLE,
+            'page_table_root_physical': root,
+        },
+        initial_data_memory=memory,
+        max_cycles=32,
+    )
+
+    assert observed['locked_up'] == 0
+    assert observed['halted'] == 1
+    assert observed['trap_cause'] == 0
+    assert observed['registers'][15] == program_va + 2
 
 
 def test_noncanonical_fetch_raises_canonical_page_fault() -> None:

@@ -77,3 +77,13 @@ test('hdl-shared-memory',
   is_parallel : false,
   timeout : 60,
 )
+
+test('hdl-linux-boot-smoke',
+  hdl_python,
+  args : [
+    meson.project_source_root() / 'hdl/tools/run_verilator_linux_boot_smoke.py',
+  ],
+  suite : ['hdl', 'linux', 'boot'],
+  is_parallel : false,
+  timeout : 600,
+)

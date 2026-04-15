@@ -50,6 +50,8 @@ Alternative entry points:
 - Minimal rootfs image builder: `target/linux_port/rootfs/build.sh`
 - Direct-boot helper with rootfs attachment: `target/linux_port/boot_direct.sh`
 - Faster smoke helper without boot-event capture: `target/linux_port/boot_direct_no_event_logging.sh`
+- HDL Verilator Linux smoke wrapper: `./.venv/bin/python hdl/tools/run_verilator_linux_boot_smoke.py`
+	- See `hdl.md` for the HDL-specific prerequisites, environment overrides, and direct-binary workflow.
 - Dedicated Linux userspace-write smoke: `meson test -C builddir 'boot-linux-userspace-write' --print-errorlogs`
   - Builds its own test-only init payload and rootfs image under `builddir/`, so it does not depend on `target/linux_port/rootfs/init.S`
 - Repeated fast-boot sampler and outcome clusterer: `target/linux_port/sample_fast_boots.sh`

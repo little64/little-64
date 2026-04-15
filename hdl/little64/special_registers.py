@@ -21,6 +21,21 @@ class Little64SpecialRegisterFile(Elaboratable):
         self.write_access_fault = Signal()
         self.tlb_flush = Signal()
 
+        self.core_cpu_control_write = Signal()
+        self.core_cpu_control_data = Signal(64)
+        self.core_interrupt_cpu_control_write = Signal()
+        self.core_interrupt_cpu_control_data = Signal(64)
+        self.core_interrupt_epc_write = Signal()
+        self.core_interrupt_epc_data = Signal(64)
+        self.core_interrupt_eflags_write = Signal()
+        self.core_interrupt_eflags_data = Signal(64)
+        self.core_trap_write = Signal()
+        self.core_trap_cause_data = Signal(64)
+        self.core_trap_fault_addr_data = Signal(64)
+        self.core_trap_access_data = Signal(64)
+        self.core_trap_pc_data = Signal(64)
+        self.core_trap_aux_data = Signal(64)
+
         self.cpu_control = Signal(64)
         self.page_table_root_physical = Signal(64)
         self.boot_info_frame_physical = Signal(64)
@@ -32,6 +47,7 @@ class Little64SpecialRegisterFile(Elaboratable):
         self.interrupt_mask_high = Signal(64)
         self.interrupt_states = Signal(64)
         self.interrupt_states_high = Signal(64)
+        self.interrupt_states_high_set = Signal(64)
         self.interrupt_epc = Signal(64)
         self.interrupt_eflags = Signal(64)
         self.interrupt_cpu_control = Signal(64)
@@ -52,12 +68,14 @@ class Little64SpecialRegisterFile(Elaboratable):
         cpu_control_mask = Const(CPU_CONTROL_WRITABLE_MASK, 64)
         user_selector_allowed = read_selector == SpecialRegister.THREAD_POINTER
         user_write_selector_allowed = write_selector == SpecialRegister.THREAD_POINTER
+        pending_interrupt_states_high = Signal(64)
 
         m.d.comb += [
             self.read_data.eq(0),
             self.read_access_fault.eq(self.user_mode & ~user_selector_allowed),
             self.write_access_fault.eq(self.user_mode & ~user_write_selector_allowed & self.write_stb),
             self.tlb_flush.eq(0),
+            pending_interrupt_states_high.eq(self.interrupt_states_high | self.interrupt_states_high_set),
         ]
 
         with m.Switch(read_selector):
@@ -107,11 +125,30 @@ class Little64SpecialRegisterFile(Elaboratable):
             with m.Case(SpecialRegister.THREAD_POINTER):
                 m.d.comb += self.read_data.eq(self.thread_pointer)
 
+        with m.If(self.core_cpu_control_write):
+            m.d.sync += self.cpu_control.eq(self.core_cpu_control_data & cpu_control_mask)
+            m.d.comb += self.tlb_flush.eq(1)
+        with m.If(self.core_interrupt_cpu_control_write):
+            m.d.sync += self.interrupt_cpu_control.eq(self.core_interrupt_cpu_control_data & cpu_control_mask)
+        with m.If(self.core_interrupt_epc_write):
+            m.d.sync += self.interrupt_epc.eq(self.core_interrupt_epc_data)
+        with m.If(self.core_interrupt_eflags_write):
+            m.d.sync += self.interrupt_eflags.eq(self.core_interrupt_eflags_data)
+        with m.If(self.core_trap_write):
+            m.d.sync += [
+                self.trap_cause.eq(self.core_trap_cause_data),
+                self.trap_fault_addr.eq(self.core_trap_fault_addr_data),
+                self.trap_access.eq(self.core_trap_access_data),
+                self.trap_pc.eq(self.core_trap_pc_data),
+                self.trap_aux.eq(self.core_trap_aux_data),
+            ]
+
         with m.If(self.write_stb & ~self.write_access_fault):
             with m.Switch(write_selector):
                 with m.Case(SpecialRegister.CPU_CONTROL):
-                    m.d.sync += self.cpu_control.eq(self.write_data & cpu_control_mask)
-                    m.d.comb += self.tlb_flush.eq(1)
+                    with m.If(~self.core_cpu_control_write):
+                        m.d.sync += self.cpu_control.eq(self.write_data & cpu_control_mask)
+                        m.d.comb += self.tlb_flush.eq(1)
                 with m.Case(SpecialRegister.PAGE_TABLE_ROOT_PHYSICAL):
                     if mmu_enabled:
                         m.d.sync += self.page_table_root_physical.eq(self.write_data)
@@ -137,24 +174,33 @@ class Little64SpecialRegisterFile(Elaboratable):
                 with m.Case(SpecialRegister.INTERRUPT_STATES):
                     m.d.sync += self.interrupt_states.eq(self.write_data)
                 with m.Case(SpecialRegister.INTERRUPT_STATES_HIGH):
-                    m.d.sync += self.interrupt_states_high.eq(self.write_data)
+                    m.d.sync += self.interrupt_states_high.eq(self.write_data | self.interrupt_states_high_set)
                 with m.Case(SpecialRegister.INTERRUPT_EPC):
                     m.d.sync += self.interrupt_epc.eq(self.write_data)
                 with m.Case(SpecialRegister.INTERRUPT_EFLAGS):
-                    m.d.sync += self.interrupt_eflags.eq(self.write_data)
+                    with m.If(~self.core_interrupt_eflags_write):
+                        m.d.sync += self.interrupt_eflags.eq(self.write_data)
                 with m.Case(SpecialRegister.INTERRUPT_CPU_CONTROL):
-                    m.d.sync += self.interrupt_cpu_control.eq(self.write_data & cpu_control_mask)
+                    with m.If(~self.core_interrupt_cpu_control_write):
+                        m.d.sync += self.interrupt_cpu_control.eq(self.write_data & cpu_control_mask)
                 with m.Case(SpecialRegister.TRAP_CAUSE):
-                    m.d.sync += self.trap_cause.eq(self.write_data)
+                    with m.If(~self.core_trap_write):
+                        m.d.sync += self.trap_cause.eq(self.write_data)
                 with m.Case(SpecialRegister.TRAP_FAULT_ADDR):
-                    m.d.sync += self.trap_fault_addr.eq(self.write_data)
+                    with m.If(~self.core_trap_write):
+                        m.d.sync += self.trap_fault_addr.eq(self.write_data)
                 with m.Case(SpecialRegister.TRAP_ACCESS):
-                    m.d.sync += self.trap_access.eq(self.write_data)
+                    with m.If(~self.core_trap_write):
+                        m.d.sync += self.trap_access.eq(self.write_data)
                 with m.Case(SpecialRegister.TRAP_PC):
-                    m.d.sync += self.trap_pc.eq(self.write_data)
+                    with m.If(~self.core_trap_write):
+                        m.d.sync += self.trap_pc.eq(self.write_data)
                 with m.Case(SpecialRegister.TRAP_AUX):
-                    m.d.sync += self.trap_aux.eq(self.write_data)
+                    with m.If(~self.core_trap_write):
+                        m.d.sync += self.trap_aux.eq(self.write_data)
                 with m.Case(SpecialRegister.THREAD_POINTER):
                     m.d.sync += self.thread_pointer.eq(self.write_data)
+        with m.Elif(self.interrupt_states_high_set != 0):
+            m.d.sync += self.interrupt_states_high.eq(pending_interrupt_states_high)
 
         return m
