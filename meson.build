@@ -26,6 +26,10 @@ subdir('tests')
 subdir('host/gui')
 subdir('host/qt')
 
+if not get_option('hdl').disabled()
+  subdir('hdl')
+endif
+
 ln_prog = find_program('ln')
 
 custom_target('compat-little-64-root',

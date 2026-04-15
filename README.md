@@ -3,6 +3,7 @@
 Little-64 is a 64-bit ISA project with:
 
 - a C++ emulator/runtime,
+- an Amaranth HDL implementation subtree,
 - an LLVM-based assembler + custom disassembler/linker toolchain,
 - project-runner workflows,
 - debug-server support (GDB RSP subset),
@@ -12,7 +13,7 @@ Little-64 is a 64-bit ISA project with:
 
 Clone the `llvm-project` submodule as well. There is a wired-up `lily-cc` submodule as well, but I haven't written any working backend for it yet, and to be honest, will be using LLVM mostly anyway.
 
-LLVM is required for the tests as well. Compile it with `bash compilers/build.sh llvm` first. This will take a while.
+LLVM is required for the tests as well. Compile it with `bash compilers/build.sh llvm` first. This will take a while and use a lot of RAM.
 
 ## Quick Start
 
@@ -52,6 +53,7 @@ Assembly to object code uses `compilers/bin/llvm-mc` (see `host/project/llvm_ass
 ## Repository Layout
 
 - `host/` — host-side runtime/tools/frontends (`host/emulator/`, `host/disassembler/`, `host/linker/`, `host/project/`, `host/gui/`, `host/qt/`, ...)
+- `hdl/` — Amaranth soft-core CPU implementation and HDL tests
 - `target/` — target-side code/images (`target/asm/`, `target/c_boot/`)
 - `tests/host/` — host tool/runtime/integration tests
 - `tests/target/` — CPU/ISA-focused tests
@@ -80,6 +82,7 @@ Start with `docs/README.md` for the full index.
 Key docs:
 
 - `docs/hardware/README.md` — hardware architecture reference and replacement entry point for the old monolithic architecture docs
+- `docs/hdl.md` — HDL subsystem scope, layout, and test entry points
 - `docs/emulator/README.md` — emulator runtime, boot, and virtual-platform documentation
 - `docs/assembly-syntax.md` — LLVM-targeted assembly language notes and compatibility guidance
 - `docs/architecture-boundaries.md` — module/API boundaries

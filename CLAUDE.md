@@ -9,6 +9,22 @@ This file documents practical update paths and maintenance rules for common proj
 - Build graph is modularized:
   - `meson.build` (top-level orchestration)
   - subsystem build files in `host/emulator/`, `host/disassembler/`, `host/linker/`, `host/project/`, `tests/`, `host/gui/`, `host/qt/`
+  - optional HDL subtree in `hdl/`
+
+## compiler-rt Builtins
+
+- The LLVM build script (`compilers/llvm/build.sh`) cross-builds compiler-rt builtins for Little64 after the main toolchain build.
+- Build directory: `compilers/llvm/build-builtins-little64/`
+- Output library: `libclang_rt.builtins-little64.a`
+- Installed into the clang resource directory (`lib/clang/<version>/lib/` and `lib/clang/<version>/lib/baremetal/`) so the BareMetal driver finds it automatically.
+- Also exported alongside `compilers/bin/` at `compilers/lib/clang/<version>/lib/`.
+- Architecture registration files:
+  - `compiler-rt/cmake/builtin-config-ix.cmake` — `LITTLE64` arch family
+  - `compiler-rt/cmake/Modules/AllSupportedArchDefs.cmake` — `LITTLE64` variable
+  - `compiler-rt/lib/builtins/CMakeLists.txt` — `little64_SOURCES` set
+  - `compiler-rt/lib/builtins/little64/fp_mode.c` — FP rounding mode stubs (no FPU)
+- Clang driver integration: Little64 is handled by the BareMetal toolchain (`clang/lib/Driver/ToolChains/BareMetal.cpp`), which defaults to `--rtlib=compiler-rt`.
+- The Linux kernel does **not** use this library; it has its own stubs in `arch/little64/lib/`.
 
 ## Temporary Linux Build Script
 
@@ -150,6 +166,10 @@ When behavior changes, update docs in the same change:
 # Reconfigure + build
 meson setup --reconfigure builddir
 meson compile -C builddir
+
+# Optional HDL subtree + HDL tests
+meson setup --reconfigure builddir -Dhdl=enabled
+meson test -C builddir --suite hdl --print-errorlogs
 
 # Full test suite
 meson test -C builddir --print-errorlogs

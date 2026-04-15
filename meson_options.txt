@@ -4,3 +4,10 @@ option(
   value : 'enabled',
   description : 'Build the Qt frontend (little-64-qt) when Qt is available'
 )
+
+option(
+  'hdl',
+  type : 'feature',
+  value : 'disabled',
+  description : 'Build the optional Amaranth HDL subsystem and HDL tests'
+)

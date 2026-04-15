@@ -16,6 +16,7 @@ This index is the entry point for project docs.
 ## Architecture & Behavior
 
 - `hardware/README.md` — replacement entry point for the hardware architecture reference
+- `hdl.md` — HDL subsystem scope, layout, and verification entry points
 - `emulator/README.md` — implementation-specific emulator and virtual-platform behavior
 - `hardware/migration.md` — section-by-section map from the removed monolithic hardware docs
 - `architecture-boundaries.md` — layering and API boundaries

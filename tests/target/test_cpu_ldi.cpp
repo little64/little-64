@@ -1,108 +1,26 @@
 #include "support/cpu_test_helpers.hpp"
 
-// LDI — Load Immediate (Format 2)
-//
-// Encoding: bits[13:12] = shift (0-3), bits[11:4] = imm8, bits[3:0] = Rd
-//   shift=0: Rd  = imm8          (replace entire register)
-//   shift=1: Rd |= imm8 << 8     (OR into byte 1)
-//   shift=2: Rd |= imm8 << 16    (OR into byte 2)
-//   shift=3: Rd |= imm8 << 24    (OR into byte 3; sign-extends if imm8 bit 7 set)
-//
-// No flags are updated by LDI.
-
-// ---------------------------------------------------------------------------
-// shift = 0 — whole-register replace
-// ---------------------------------------------------------------------------
-static void test_ldi_shift0() {
-    ExecResult r;
-
-    r = exec("LDI #0, R1", 1, 0xFFFFFFFFFFFFFFFF);
-    CHECK_EQ(r.rd_value, 0ULL,   "LDI #0: clears register");
-
-    r = exec("LDI #1, R1", 1, 0xFFFF);
-    CHECK_EQ(r.rd_value, 1ULL,   "LDI #1: replaces (not ORs) register");
-
-    r = exec("LDI #255, R1", 1, 0);
-    CHECK_EQ(r.rd_value, 255ULL, "LDI #255: max 8-bit value");
-
-    r = exec("LDI #0x42, R1", 1, 0xDEAD);
-    CHECK_EQ(r.rd_value, 0x42ULL, "LDI #0x42: replaces old value");
+static void run_ldi_case(int shift,
+                         int imm8,
+                         int rd,
+                         uint64_t initial,
+                         uint64_t expected_rd,
+                         uint64_t initial_flags,
+                         uint64_t expected_flags,
+                         const char* desc) {
+    const auto result = exec(encode_ldi(static_cast<uint8_t>(shift), static_cast<uint8_t>(imm8), static_cast<uint8_t>(rd)),
+                             rd,
+                             initial,
+                             initial_flags);
+    CHECK_EQ(result.rd_value, expected_rd, desc);
+    CHECK_EQ(result.flags & (FLAG_Z | FLAG_C | FLAG_S), expected_flags, desc);
 }
 
-// ---------------------------------------------------------------------------
-// shift = 1 — OR into bits[15:8]
-// ---------------------------------------------------------------------------
-static void test_ldi_shift1() {
-    Little64CPU cpu;
-    auto instr = make_instr("LDI.S1 #0xAB, R1");
-
-    // From zero: bits[15:8] = 0xAB
-    cpu.registers.regs[1] = 0;
-    cpu.dispatchInstruction(instr);
-    CHECK_EQ(cpu.registers.regs[1], UINT64_C(0xAB00), "LDI.S1: OR into byte 1");
-
-    // Preserves low byte, sets byte 1
-    cpu.registers.regs[1] = 0x55;
-    cpu.dispatchInstruction(instr);
-    CHECK_EQ(cpu.registers.regs[1], UINT64_C(0xAB55), "LDI.S1: preserves low byte");
-
-    // OR semantics (doesn't clear existing bits in byte 1)
-    cpu.registers.regs[1] = UINT64_C(0xFF00);
-    cpu.dispatchInstruction(instr);
-    CHECK_EQ(cpu.registers.regs[1], UINT64_C(0xFF00) | UINT64_C(0xAB00),
-             "LDI.S1: OR (doesn't clear existing bits)");
-}
-
-// ---------------------------------------------------------------------------
-// shift = 2 — OR into bits[23:16]
-// ---------------------------------------------------------------------------
-static void test_ldi_shift2() {
-    Little64CPU cpu;
-    auto instr = make_instr("LDI.S2 #0xCD, R1");
-
-    cpu.registers.regs[1] = 0;
-    cpu.dispatchInstruction(instr);
-    CHECK_EQ(cpu.registers.regs[1], UINT64_C(0xCD0000), "LDI.S2: OR into byte 2");
-
-    // Preserves lower two bytes
-    cpu.registers.regs[1] = UINT64_C(0x1234);
-    cpu.dispatchInstruction(instr);
-    CHECK_EQ(cpu.registers.regs[1], UINT64_C(0xCD1234), "LDI.S2: preserves low 2 bytes");
-}
-
-// ---------------------------------------------------------------------------
-// shift = 3 — OR into bits[31:24]; sign-extend if imm8 bit 7 set
-// ---------------------------------------------------------------------------
-static void test_ldi_shift3() {
-    Little64CPU cpu;
-
-    // Positive imm (MSB clear): no sign extension
-    auto instr_pos = make_instr("LDI.S3 #0x7F, R1");
-    cpu.registers.regs[1] = 0;
-    cpu.dispatchInstruction(instr_pos);
-    CHECK_EQ(cpu.registers.regs[1], UINT64_C(0x7F000000),
-             "LDI.S3 positive: no sign extension");
-
-    // Negative imm (MSB set): sign-extends bits[63:24] to all 1s
-    auto instr_neg = make_instr("LDI.S3 #0x80, R1");
-    cpu.registers.regs[1] = 0;
-    cpu.dispatchInstruction(instr_neg);
-    // 0x80 << 24 = 0x80000000; OR 0xFFFFFFFFFFFFFF00 → 0xFFFFFFFF80000000
-    CHECK_EQ(cpu.registers.regs[1], UINT64_C(0xFFFFFFFF80000000),
-             "LDI.S3 MSB set: sign extends to upper 40 bits");
-
-    // Sign extension with other bits already in low bytes
-    cpu.registers.regs[1] = UINT64_C(0x1234);
-    cpu.dispatchInstruction(instr_neg);
-    CHECK_EQ(cpu.registers.regs[1], UINT64_C(0xFFFFFFFF80001234),
-             "LDI.S3 sign-ext: preserves low bytes");
-
-    // Another negative value: 0xFF
-    auto instr_ff = make_instr("LDI.S3 #0xFF, R1");
-    cpu.registers.regs[1] = 0;
-    cpu.dispatchInstruction(instr_ff);
-    CHECK_EQ(cpu.registers.regs[1], UINT64_C(0xFFFFFFFFFF000000),
-             "LDI.S3 #0xFF: fully extends");
+static void test_shared_ldi_cases() {
+#define LITTLE64_LDI_CASE(shift, imm8, rd, initial, expected_rd, initial_flags, expected_flags, desc) \
+    run_ldi_case(shift, imm8, rd, initial, expected_rd, initial_flags, expected_flags, desc);
+#include "shared/ldi_cases.def"
+#undef LITTLE64_LDI_CASE
 }
 
 // ---------------------------------------------------------------------------
@@ -144,42 +62,13 @@ static void test_ldi64() {
 // ---------------------------------------------------------------------------
 // LDI does NOT update flags
 // ---------------------------------------------------------------------------
-static void test_ldi_no_flags() {
-    // Set known flags via SUB that produces a non-zero result (no flags set normally)
-    // Then run LDI; flags must remain whatever they were.
-    auto cpu = run_program(
-        "LDI #5, R1\n"
-        "LDI #3, R2\n"
-        "SUB R2, R1\n"   // R1 = 2; Z=0 C=0 S=0
-        "LDI #0, R3\n"   // LDI on R3; must NOT clear or change flags
-        "STOP\n"
-    );
-    CHECK_EQ(cpu.registers.flags & FLAG_Z, 0ULL, "LDI does not set Z");
-    CHECK_EQ(cpu.registers.flags & FLAG_C, 0ULL, "LDI does not set C");
-    CHECK_EQ(cpu.registers.flags & FLAG_S, 0ULL, "LDI does not set S");
-
-    // With carry flag set before LDI
-    cpu = run_program(
-        "LDI #3, R1\n"
-        "LDI #5, R2\n"
-        "SUB R2, R1\n"   // R1 = -2 as uint64; C=1 (borrow)
-        "LDI #42, R3\n"  // LDI must not clear carry
-        "STOP\n"
-    );
-    CHECK_EQ(cpu.registers.flags & FLAG_C, FLAG_C, "LDI does not clear carry flag");
-}
-
 // ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 int main() {
     std::printf("=== Little-64 CPU LDI instruction tests ===\n\n");
-    std::printf("LDI shift=0\n");   test_ldi_shift0();
-    std::printf("LDI shift=1\n");   test_ldi_shift1();
-    std::printf("LDI shift=2\n");   test_ldi_shift2();
-    std::printf("LDI shift=3\n");   test_ldi_shift3();
+    std::printf("shared LDI cases\n"); test_shared_ldi_cases();
     std::printf("LDI build 32-bit\n"); test_ldi_build32();
     std::printf("LDI64 pseudo\n");  test_ldi64();
-    std::printf("LDI no flags\n");  test_ldi_no_flags();
     return print_summary();
 }

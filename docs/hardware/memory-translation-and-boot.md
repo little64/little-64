@@ -74,6 +74,7 @@ Interpretation rules:
 
 - non-leaf PTE: `V=1` and `R=W=X=0`
 - leaf PTE: `V=1` and at least one of `R/W/X` is set
+- The PPN MUST cover all possible physical memory address bits that the CPUs memory control is capable of accessing. If the physical address bus of the CPU implementation does not implement a full 64-bit bus, unused bits MAY be unused or reserved, and software MUST write zeros to those bits. It is RECOMMENDED that bits set outside of the supported PPN raise a deterministic page fault, with a reserved-bit fault preferred.
 
 Supported leaf sizes:
 

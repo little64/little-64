@@ -1,6 +1,7 @@
 builddir/
 target/linux_port/rootfs/*
 !target/linux_port/rootfs/build.sh
+target/sysroot/*
 .~lock*
 *.bin
 *.o
@@ -27,3 +28,5 @@ compilers/lib/*
 docs/_build/
 
 tmp/
+
+*.pyc

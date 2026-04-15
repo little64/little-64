@@ -318,6 +318,111 @@ case "$ACTION" in
 
         echo ""
         echo "✓ Build successful!"
+
+        # ---------------------------------------------------------------
+        # Cross-build compiler-rt builtins for Little64
+        # ---------------------------------------------------------------
+        echo ""
+        echo "Building compiler-rt builtins for Little64"
+        echo "=========================================="
+
+        BUILTINS_SOURCE_DIR="$SCRIPT_DIR/llvm-project/compiler-rt/lib/builtins"
+        BUILTINS_BUILD_DIR="$SCRIPT_DIR/build-builtins-little64"
+        CLANG_BIN="$BUILD_DIR/bin/clang"
+        LLVM_AR_BIN="$BUILD_DIR/bin/llvm-ar"
+        LLVM_RANLIB_BIN="$BUILD_DIR/bin/llvm-ranlib"
+
+        BUILTINS_CMAKE_FLAGS=(
+            -DCMAKE_C_COMPILER="$CLANG_BIN"
+            -DCMAKE_C_COMPILER_TARGET="little64-unknown-elf"
+            -DCMAKE_ASM_COMPILER="$CLANG_BIN"
+            -DCMAKE_ASM_COMPILER_TARGET="little64-unknown-elf"
+            -DCMAKE_AR="$LLVM_AR_BIN"
+            -DCMAKE_NM="$BUILD_DIR/bin/llvm-nm"
+            -DCMAKE_RANLIB="$LLVM_RANLIB_BIN"
+            -DCMAKE_C_FLAGS="-ffreestanding -nostdlib -fPIC --target=little64-unknown-elf"
+            -DCMAKE_ASM_FLAGS="--target=little64-unknown-elf"
+            -DCMAKE_SYSTEM_NAME=Generic
+            -DCMAKE_CROSSCOMPILING=ON
+            -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY
+            # The toolchain only has the Little64 target, so skip the CXX
+            # compiler test (builtins are pure C) and force the C compiler
+            # so cmake does not try to compile a host test program.
+            -DCMAKE_CXX_COMPILER_FORCED=ON
+            -DCMAKE_C_COMPILER_FORCED=ON
+            -DCOMPILER_RT_BAREMETAL_BUILD=ON
+            -DCOMPILER_RT_DEFAULT_TARGET_ONLY=ON
+            -DCOMPILER_RT_OS_DIR=""
+        )
+
+        if [ ! -f "$BUILTINS_BUILD_DIR/CMakeCache.txt" ]; then
+            echo "Configuring compiler-rt builtins..."
+            cmake -S "$BUILTINS_SOURCE_DIR" -B "$BUILTINS_BUILD_DIR" \
+                "${BUILTINS_CMAKE_FLAGS[@]}"
+        else
+            echo "Using existing compiler-rt builtins configuration."
+        fi
+
+        nice -n 19 cmake --build "$BUILTINS_BUILD_DIR" -- -j"$(nproc)"
+
+        # Install into the clang resource directory so the driver finds it.
+        CLANG_VERSION=$("$CLANG_BIN" --version | grep -oP 'clang version \K[0-9]+\.[0-9]+\.[0-9]+')
+        CLANG_MAJOR="${CLANG_VERSION%%.*}"
+        RESOURCE_LIB_DIR="$BUILD_DIR/lib/clang/$CLANG_MAJOR/lib"
+
+        # The BareMetal driver looks under <resource>/lib/baremetal/ and also
+        # under <resource>/lib/ directly.  Install to both so that the library
+        # is found regardless of the driver's lookup order.
+        for dest_dir in "$RESOURCE_LIB_DIR/baremetal" "$RESOURCE_LIB_DIR"; do
+            mkdir -p "$dest_dir"
+            # Find the built builtins library (name varies by cmake version).
+            for candidate in \
+                "$BUILTINS_BUILD_DIR/libclang_rt.builtins-little64.a" \
+                "$BUILTINS_BUILD_DIR/libclang_rt.builtins.a" \
+                "$BUILTINS_BUILD_DIR/lib/libclang_rt.builtins-little64.a" \
+                "$BUILTINS_BUILD_DIR/lib/libclang_rt.builtins.a" \
+                "$BUILTINS_BUILD_DIR/lib/little64/libclang_rt.builtins.a"; do
+                if [ -f "$candidate" ]; then
+                    cp "$candidate" "$dest_dir/libclang_rt.builtins-little64.a"
+                    echo "  ✓ Installed to $dest_dir/libclang_rt.builtins-little64.a"
+                    break
+                fi
+            done
+        done
+
+        # Also install into the exported bin/../lib tree so the shipped
+        # toolchain can find it.
+        EXPORT_RESOURCE_LIB="$BIN_OUTPUT_DIR/../lib/clang/$CLANG_MAJOR/lib"
+        for dest_dir in "$EXPORT_RESOURCE_LIB/baremetal" "$EXPORT_RESOURCE_LIB"; do
+            mkdir -p "$dest_dir"
+            for candidate in \
+                "$BUILTINS_BUILD_DIR/libclang_rt.builtins-little64.a" \
+                "$BUILTINS_BUILD_DIR/libclang_rt.builtins.a" \
+                "$BUILTINS_BUILD_DIR/lib/libclang_rt.builtins-little64.a" \
+                "$BUILTINS_BUILD_DIR/lib/libclang_rt.builtins.a" \
+                "$BUILTINS_BUILD_DIR/lib/little64/libclang_rt.builtins.a"; do
+                if [ -f "$candidate" ]; then
+                    cp "$candidate" "$dest_dir/libclang_rt.builtins-little64.a"
+                    echo "  ✓ Exported to $dest_dir/libclang_rt.builtins-little64.a"
+                    break
+                fi
+            done
+        done
+
+        # Export the clang resource-directory headers so the shipped
+        # toolchain can find stdint.h, stddef.h, etc.
+        EXPORT_RESOURCE_INCLUDE="$BIN_OUTPUT_DIR/../lib/clang/$CLANG_MAJOR/include"
+        BUILD_RESOURCE_INCLUDE="$BUILD_DIR/lib/clang/$CLANG_MAJOR/include"
+        if [ -d "$BUILD_RESOURCE_INCLUDE" ]; then
+            mkdir -p "$EXPORT_RESOURCE_INCLUDE"
+            cp -a "$BUILD_RESOURCE_INCLUDE/." "$EXPORT_RESOURCE_INCLUDE/"
+            echo "  ✓ Exported resource headers to $EXPORT_RESOURCE_INCLUDE"
+        else
+            echo "  ⚠ Resource headers not found at $BUILD_RESOURCE_INCLUDE"
+        fi
+
+        echo ""
+        echo "✓ compiler-rt builtins build successful!"
         ;;
 
     clean)
@@ -325,6 +430,12 @@ case "$ACTION" in
         if [ -d "$BUILD_DIR" ]; then
             rm -rf "$BUILD_DIR"
             echo "Removed: $BUILD_DIR"
+        fi
+
+        BUILTINS_BUILD_DIR="$SCRIPT_DIR/build-builtins-little64"
+        if [ -d "$BUILTINS_BUILD_DIR" ]; then
+            rm -rf "$BUILTINS_BUILD_DIR"
+            echo "Removed: $BUILTINS_BUILD_DIR"
         fi
 
         for tool in "${COPY_TOOLS[@]}"; do

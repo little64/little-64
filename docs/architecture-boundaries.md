@@ -42,6 +42,17 @@ Frontend and tooling code should prefer `IEmulatorRuntime`/`EmulatorSession` ove
 - Linker: `host/linker/`
 - Project runner: `host/project/`
 
+## HDL Subsystem
+
+- RTL implementation root: `hdl/little64/`
+- HDL tests: `hdl/tests/`
+
+The HDL subtree is a separate implementation of the Little-64 ISA and should
+depend on `docs/hardware/` for the architectural contract, not on emulator-only
+runtime details. Differential testing against the emulator is allowed and
+encouraged, but emulator implementation details are not automatically part of
+the HDL contract.
+
 ## Build Boundaries (Meson)
 
 Top-level orchestration in `meson.build`, per-subsystem ownership in:

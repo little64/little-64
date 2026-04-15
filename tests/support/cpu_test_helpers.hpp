@@ -20,6 +20,43 @@ static constexpr uint64_t FLAG_S = 1ULL << 2;
 static constexpr uint64_t ROM_SIZE = 4096;
 static constexpr uint64_t RAM_BASE = ROM_SIZE;
 
+[[maybe_unused]] static uint16_t encode_ldi(uint8_t shift, uint8_t imm8, uint8_t rd) {
+    return static_cast<uint16_t>((0x2u << 14) | ((shift & 0x3u) << 12) | ((imm8 & 0xFFu) << 4) | (rd & 0xFu));
+}
+
+[[maybe_unused]] static uint8_t gp_opcode_from_name(const std::string& name) {
+    if (name == "ADD") return 0;
+    if (name == "SUB") return 1;
+    if (name == "TEST") return 2;
+    if (name == "LLR") return 3;
+    if (name == "SCR") return 4;
+    if (name == "AND") return 16;
+    if (name == "OR") return 17;
+    if (name == "XOR") return 18;
+    if (name == "SLL") return 20;
+    if (name == "SRL") return 21;
+    if (name == "SRA") return 22;
+    if (name == "SLLI") return 23;
+    if (name == "SRLI") return 24;
+    if (name == "SRAI") return 25;
+    if (name == "SYSCALL") return 27;
+    if (name == "LSR") return 28;
+    if (name == "SSR") return 29;
+    if (name == "IRET") return 30;
+    if (name == "STOP") return 31;
+    throw std::runtime_error("Unknown GP opcode name: " + name);
+}
+
+[[maybe_unused]] static uint16_t encode_gp_rr(const std::string& opcode_name, uint8_t rs1, uint8_t rd) {
+    const uint16_t opcode = gp_opcode_from_name(opcode_name);
+    return static_cast<uint16_t>((0x6u << 13) | ((opcode & 0x1Fu) << 8) | ((rs1 & 0xFu) << 4) | (rd & 0xFu));
+}
+
+[[maybe_unused]] static uint16_t encode_gp_imm(const std::string& opcode_name, uint8_t imm4, uint8_t rd) {
+    const uint16_t opcode = gp_opcode_from_name(opcode_name);
+    return static_cast<uint16_t>((0x6u << 13) | ((opcode & 0x1Fu) << 8) | ((imm4 & 0xFu) << 4) | (rd & 0xFu));
+}
+
 [[maybe_unused]] static uint16_t encode_ls_reg(uint8_t opcode, uint8_t offset2, uint8_t rs1, uint8_t rd) {
     return static_cast<uint16_t>((opcode << 10) | ((offset2 & 0x3) << 8) | ((rs1 & 0xF) << 4) | (rd & 0xF));
 }
@@ -138,6 +175,10 @@ static constexpr uint64_t RAM_BASE = ROM_SIZE;
     return Little64CPU::Instruction(assemble_words(src)[0]);
 }
 
+[[maybe_unused]] static Little64CPU::Instruction make_instr(uint16_t word) {
+    return Little64CPU::Instruction(word);
+}
+
 struct ExecResult {
     uint64_t rd_value;
     uint64_t flags;
@@ -147,6 +188,33 @@ struct ExecResult {
     Little64CPU cpu;
     cpu.registers.regs[rd] = initial;
     cpu.dispatchInstruction(make_instr(src));
+    return { cpu.registers.regs[rd], cpu.registers.flags };
+}
+
+[[maybe_unused]] static ExecResult exec(uint16_t word, int rd, uint64_t initial, uint64_t initial_flags = 0) {
+    Little64CPU cpu;
+    cpu.registers.regs[rd] = initial;
+    cpu.registers.flags = initial_flags;
+    cpu.dispatchInstruction(make_instr(word));
+    return { cpu.registers.regs[rd], cpu.registers.flags };
+}
+
+struct TwoRegResult {
+    uint64_t rd_value;
+    uint64_t flags;
+};
+
+[[maybe_unused]] static TwoRegResult exec2(uint16_t word,
+                                           int rs1,
+                                           uint64_t b,
+                                           int rd,
+                                           uint64_t a,
+                                           uint64_t initial_flags = 0) {
+    Little64CPU cpu;
+    cpu.registers.regs[rs1] = b;
+    cpu.registers.regs[rd] = a;
+    cpu.registers.flags = initial_flags;
+    cpu.dispatchInstruction(make_instr(word));
     return { cpu.registers.regs[rd], cpu.registers.flags };
 }
 
