@@ -845,8 +845,6 @@ class SimulatorRunner {
         top->clk = 1;
         top->eval();
         context->timeInc(1);
-        top->clk = 0;
-        top->eval();
     }
 
     bool isInvalidFetchPc() const {
