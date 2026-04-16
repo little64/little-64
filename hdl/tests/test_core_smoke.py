@@ -144,3 +144,35 @@ def test_core_locks_up_when_paging_is_enabled_without_mmu_support() -> None:
 
     assert observed['halted'] == 0
     assert observed['locked_up'] == 1
+
+
+def test_commit_valid_pulses_for_each_instruction() -> None:
+    observed = run_program_source(
+        '\n'.join([
+            'LDI #42, R1',
+            'LDI #7, R2',
+            'ADD R1, R2',
+            'STOP',
+        ])
+    )
+
+    assert observed['locked_up'] == 0
+    assert observed['halted'] == 1
+    assert observed['commit_count'] == 4
+
+
+def test_commit_valid_pulses_for_memory_instructions() -> None:
+    observed = run_program_source(
+        '\n'.join([
+            'LDI #0x10, R2',
+            'LDI.S1 #0x10, R2',
+            'LDI #0xAB, R1',
+            'STORE [R2], R1',
+            'LOAD [R2], R3',
+            'STOP',
+        ])
+    )
+
+    assert observed['locked_up'] == 0
+    assert observed['halted'] == 1
+    assert observed['commit_count'] == 6

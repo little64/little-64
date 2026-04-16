@@ -45,6 +45,7 @@ Frontend and tooling code should prefer `IEmulatorRuntime`/`EmulatorSession` ove
 ## HDL Subsystem
 
 - RTL implementation root: `hdl/little64/`
+- LiteX Linux boot/image helpers: `hdl/little64/litex_linux_boot.py`
 - HDL tests: `hdl/tests/`
 
 The HDL subtree is a separate implementation of the Little-64 ISA and should

@@ -8,7 +8,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[3]
 BIN = ROOT / "compilers" / "bin"
 LLVM_MC = BIN / "llvm-mc"
 LD = BIN / "ld.lld"
-BOOT_HELPER = ROOT / "target" / "linux_port" / "boot_direct_no_event_logging.sh"
+BOOT_HELPER = ROOT / "target" / "linux_port" / "boot_direct.sh"
 KERNEL_ELF = ROOT / "target" / "linux_port" / "build" / "vmlinux"
 
 INIT_SOURCE = pathlib.Path(__file__).with_name("linux_userspace_write_init.S")
@@ -124,6 +124,7 @@ def main() -> int:
     res = subprocess.run(
         [
             str(BOOT_HELPER),
+            "--mode=smoke",
             "--rootfs",
             str(rootfs_image),
             "--max-cycles",

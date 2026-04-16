@@ -2,11 +2,14 @@
 import argparse
 import json
 import os
+import pathlib
 import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, Union, cast
+
+from profile_paths import existing_kernel_path, symbol_cache_path
 
 
 LS_OP_NAMES: Dict[int, str] = {
@@ -207,15 +210,11 @@ def parse_relevant_events(lines: List[str]) -> Tuple[List[Event], Optional[Event
     return pc_flows, odd_ev, low_ev, mmu_detail
 
 
-def pick_default_elf(script_dir: str) -> Optional[str]:
-    candidates = [
-        os.path.join(script_dir, "build", "vmlinux.unstripped"),
-        os.path.join(script_dir, "build", "vmlinux"),
-    ]
-    for p in candidates:
-        if os.path.isfile(p):
-            return p
-    return None
+def pick_default_elf(script_dir: str, defconfig_name: Optional[str] = None) -> Optional[str]:
+    default_elf = existing_kernel_path(defconfig_name, linux_port_root=pathlib.Path(script_dir))
+    if default_elf is None:
+        return None
+    return str(default_elf)
 
 
 def find_llvm_addr2line(repo_root: str) -> Optional[str]:
@@ -605,7 +604,7 @@ def _parse_binary_trace_filtered(
 def main() -> int:
     script_dir = os.path.dirname(os.path.realpath(__file__))
     repo_root = os.path.realpath(os.path.join(script_dir, "..", ".."))
-    default_symbol_cache = os.path.join(script_dir, "build", ".analyze_lockup_flow_addr2line_cache.json")
+    linux_port_root = pathlib.Path(script_dir)
 
     parser = argparse.ArgumentParser(
         prog=os.path.basename(__file__),
@@ -615,17 +614,21 @@ def main() -> int:
         ),
     )
     parser.add_argument("--log", help="Path to log file (default: stdin)")
-    parser.add_argument("--elf", help="ELF for symbolization (default: build/vmlinux.unstripped, then build/vmlinux)")
+    parser.add_argument("--defconfig", help="Little64 Linux defconfig used for profile-aware default ELF/cache lookup")
+    parser.add_argument(
+        "--elf",
+        help="ELF for symbolization (default: selected profile vmlinux.unstripped, then vmlinux)",
+    )
     parser.add_argument("--tail", type=int, default=24, help="Number of recent pc-flow events to print")
     parser.add_argument("--no-loop-compress", action="store_true", help="Print all pc-flow rows without loop compression")
     parser.add_argument("--loop-max-pattern", type=int, default=8, help="Maximum repeated pattern length to detect")
     parser.add_argument("--no-symbolize", action="store_true", help="Disable address symbolization")
     parser.add_argument(
         "--symbol-cache",
-        default=default_symbol_cache,
+        default=None,
         help=(
             "Path to symbol cache JSON "
-            "(default: target/linux_port/build/.analyze_lockup_flow_addr2line_cache.json)"
+            "(default: selected profile build dir/.analyze_lockup_flow_addr2line_cache.json)"
         ),
     )
     parser.add_argument("--no-symbol-cache", action="store_true", help="Disable symbol cache reads/writes")
@@ -703,12 +706,14 @@ def main() -> int:
     resolved: Dict[int, AddrSymbol] = {}
     cache_hits = 0
     cache_misses = 0
-    cache_path: Optional[str] = None if args.no_symbol_cache else args.symbol_cache
+    cache_path: Optional[str] = None
+    if not args.no_symbol_cache:
+        cache_path = args.symbol_cache or str(symbol_cache_path(args.defconfig, linux_port_root=linux_port_root))
     addr2line_bin: Optional[str] = None
     elf: Optional[str] = None
 
     if not args.no_symbolize:
-        elf = args.elf or pick_default_elf(script_dir)
+        elf = args.elf or pick_default_elf(script_dir, args.defconfig)
         if not elf:
             symbol_status_message = "[little64] symbolization skipped: no ELF found"
         elif not os.path.isfile(elf):

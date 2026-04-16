@@ -9,13 +9,16 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BUILD_ROOT = REPO_ROOT / 'builddir' / 'hdl-verilator-linux-boot'
-VMLINUX = REPO_ROOT / 'target' / 'linux_port' / 'build' / 'vmlinux'
-DTS = REPO_ROOT / 'target' / 'linux_port' / 'linux' / 'arch' / 'little64' / 'boot' / 'dts' / 'little64.dts'
+VMLINUX = REPO_ROOT / 'target' / 'linux_port' / 'build-little64_litex_sim_defconfig' / 'vmlinux'
+GENERATE_DTS_SCRIPT = REPO_ROOT / 'hdl' / 'tools' / 'generate_litex_linux_dts.py'
 EXPORT_SCRIPT = REPO_ROOT / 'hdl' / 'tools' / 'export_linux_boot_verilog.py'
+FLASH_BUILD_SCRIPT = REPO_ROOT / 'hdl' / 'tools' / 'build_litex_flash_image.py'
 HARNESS_CPP = REPO_ROOT / 'hdl' / 'tools' / 'verilator_linux_boot_smoke_main.cpp'
 
 VERILOG = BUILD_ROOT / 'little64_linux_boot_top.v'
-DTB = BUILD_ROOT / 'little64.dtb'
+DTS = BUILD_ROOT / 'little64-litex-sim.dts'
+DTB = BUILD_ROOT / 'little64-litex-sim.dtb'
+FLASH_IMAGE = BUILD_ROOT / 'little64-linux-spiflash.bin'
 OBJDIR = BUILD_ROOT / 'obj'
 
 
@@ -27,15 +30,21 @@ def _default_verilator_threads() -> int:
 
 THREADS = max(1, int(os.environ.get('LITTLE64_VERILATOR_THREADS', str(_default_verilator_threads()))))
 BUILD_JOBS = max(1, int(os.environ.get('LITTLE64_VERILATOR_BUILD_JOBS', str(os.cpu_count() or 1))))
+HARNESS_DEBUG = os.environ.get('LITTLE64_VERILATOR_COMPILE_DEBUG', '1') != '0'
 CXXFLAGS = os.environ.get('LITTLE64_VERILATOR_CFLAGS', '-O3 -std=c++20 -march=native -flto -DNDEBUG')
 LDFLAGS = os.environ.get('LITTLE64_VERILATOR_LDFLAGS', '-O3 -march=native -flto')
-BINARY_NAME = f'little64_linux_boot_smoke_t{THREADS}'
+HARNESS_CXXFLAGS = f'{CXXFLAGS} -DLITTLE64_HARNESS_ENABLE_DEBUG={1 if HARNESS_DEBUG else 0}'
+BINARY_NAME = f'little64_linux_boot_smoke_t{THREADS}' + ('' if HARNESS_DEBUG else '_ndbg')
 BINARY = OBJDIR / BINARY_NAME
+BOOTARGS = os.environ.get(
+    'LITTLE64_VERILATOR_BOOTARGS',
+    'console=liteuart earlycon=liteuart,0xf0001000 ignore_loglevel loglevel=8',
+)
 
 REQUIRED_MARKERS = [
     'little64-timer: clocksource + clockevent @ 1 GHz',
-    'Little64 PV block disk:',
-    'Kernel panic - not syncing: VFS: Unable to mount root fs',
+    'physmap platform flash device:',
+    'VFS: Unable to mount root fs',
 ]
 
 
@@ -52,10 +61,26 @@ def _run_checked(command: list[str]) -> None:
 
 
 def _ensure_prerequisites() -> None:
-    if not VMLINUX.exists() or not DTS.exists():
+    if not VMLINUX.exists() or not GENERATE_DTS_SCRIPT.exists():
         raise SystemExit(77)
     if shutil.which('verilator') is None or shutil.which('dtc') is None:
         raise SystemExit(77)
+
+
+def _build_dts() -> None:
+    BUILD_ROOT.mkdir(parents=True, exist_ok=True)
+    sources = [GENERATE_DTS_SCRIPT, *_hdl_sources()]
+    if DTS.exists() and DTS.stat().st_mtime >= _latest_mtime(sources):
+        return
+    _run_checked([
+        sys.executable,
+        str(GENERATE_DTS_SCRIPT),
+        '--output',
+        str(DTS),
+        '--with-spi-flash',
+        '--bootargs',
+        BOOTARGS,
+    ])
 
 
 def _build_dtb() -> None:
@@ -70,6 +95,30 @@ def _build_verilog() -> None:
     if VERILOG.exists() and VERILOG.stat().st_mtime >= _latest_mtime(sources):
         return
     _run_checked([sys.executable, str(EXPORT_SCRIPT), str(VERILOG)])
+
+
+def _build_flash_image() -> None:
+    deps = [
+        FLASH_BUILD_SCRIPT,
+        VMLINUX,
+        DTB,
+        REPO_ROOT / 'target' / 'c_boot' / 'litex_spi_boot.c',
+        REPO_ROOT / 'target' / 'c_boot' / 'linker_litex_spi_boot.ld',
+        REPO_ROOT / 'hdl' / 'little64' / 'litex.py',
+        REPO_ROOT / 'hdl' / 'little64' / 'litex_linux_boot.py',
+    ]
+    if FLASH_IMAGE.exists() and FLASH_IMAGE.stat().st_mtime >= _latest_mtime(deps):
+        return
+    _run_checked([
+        sys.executable,
+        str(FLASH_BUILD_SCRIPT),
+        '--kernel-elf',
+        str(VMLINUX),
+        '--dtb',
+        str(DTB),
+        '--output',
+        str(FLASH_IMAGE),
+    ])
 
 
 def _build_binary() -> None:
@@ -101,7 +150,7 @@ def _build_binary() -> None:
         '-Wno-WIDTHTRUNC',
         '-Wno-WIDTHEXPAND',
         '-CFLAGS',
-        CXXFLAGS,
+        HARNESS_CXXFLAGS,
         '-LDFLAGS',
         LDFLAGS,
         '-o',
@@ -116,16 +165,18 @@ def _build_binary() -> None:
 
 def main() -> int:
     _ensure_prerequisites()
+    _build_dts()
     _build_dtb()
     _build_verilog()
+    _build_flash_image()
     _build_binary()
 
     command = [
         str(BINARY),
         '--kernel',
         str(VMLINUX),
-        '--dtb',
-        str(DTB),
+        '--flash',
+        str(FLASH_IMAGE),
         '--max-cycles',
         os.environ.get('LITTLE64_VERILATOR_MAX_CYCLES', '200000000'),
     ]

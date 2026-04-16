@@ -47,11 +47,24 @@ Alternative entry points:
 ## Linux Bring-up Helpers
 
 - Kernel build helper: `target/linux_port/build.sh`
+	- Override the default `little64_defconfig` with `LITTLE64_LINUX_DEFCONFIG=<name>`, for example `little64_litex_sim_defconfig`.
+	- Non-default profiles build into `target/linux_port/build-<defconfig>/` by default so they do not overwrite the emulator kernel artifacts under `target/linux_port/build/`.
 - Minimal rootfs image builder: `target/linux_port/rootfs/build.sh`
-- Direct-boot helper with rootfs attachment: `target/linux_port/boot_direct.sh`
-- Faster smoke helper without boot-event capture: `target/linux_port/boot_direct_no_event_logging.sh`
+- Canonical direct-boot helper: `target/linux_port/boot_direct.sh`
+	- Default mode captures control-flow, MMIO, and boot events.
+	- Use `--mode=smoke` for the faster no-event-capture smoke path.
+	- Use `--mode=rsp` to launch the direct-boot RSP debug server.
+- Compatibility wrappers remain available:
+	- `target/linux_port/boot_direct_no_event_logging.sh`
+	- `target/linux_port/boot_direct_debugserver.sh`
+- HDL LiteX-native Linux smoke wrapper: `./.venv/bin/python hdl/tools/run_litex_linux_boot_smoke.py`
+	- Builds the simulator through LiteX's own simulation flow instead of the repo-local custom Verilator harness.
 - HDL Verilator Linux smoke wrapper: `./.venv/bin/python hdl/tools/run_verilator_linux_boot_smoke.py`
 	- See `hdl.md` for the HDL-specific prerequisites, environment overrides, and direct-binary workflow.
+- LiteX Linux flash-image builder: `./.venv/bin/python hdl/tools/build_litex_flash_image.py`
+- LiteX LLVM wrapper generator: `./.venv/bin/python hdl/tools/generate_litex_llvm_wrappers.py`
+- LiteX DTS generator: `./.venv/bin/python hdl/tools/generate_litex_linux_dts.py`
+	- The Linux tree now also carries a separate built-in LiteX simulation profile via `target/linux_port/linux/arch/little64/boot/dts/little64-litex-sim.dts` and `target/linux_port/linux/arch/little64/configs/little64_litex_sim_defconfig`.
 - Dedicated Linux userspace-write smoke: `meson test -C builddir 'boot-linux-userspace-write' --print-errorlogs`
   - Builds its own test-only init payload and rootfs image under `builddir/`, so it does not depend on `target/linux_port/rootfs/init.S`
 - Repeated fast-boot sampler and outcome clusterer: `target/linux_port/sample_fast_boots.sh`

@@ -6,7 +6,7 @@ This chapter documents the default virtual machine and its devices.
 
 | Region | Base | Size | Meaning |
 |---|---|---|---|
-| RAM | `0x00100000` | `0x04000000` | 64 MiB RAM window |
+| RAM | `0x00100000` | `0x03F00000` | 63 MiB Linux-visible RAM window |
 | UART | `0x08000000` | `0x8` | ns16550a-compatible subset |
 | Timer | `0x08001000` | `0x20` | dual-mode timer |
 | PV block | `0x08002000` | `0x100` | paravirtual block device |
@@ -18,7 +18,12 @@ The embedded DTB currently describes:
 - compatible machine: `little64,virt`
 - model: `Little-64 Virtual Machine`
 - one CPU at 1 GHz
-- RAM at `0x00100000` with size `0x04000000`
+- RAM at `0x00100000` with size `0x03F00000`
+
+The emulator and HDL smoke both keep the underlying RAM fabric mapped from
+physical `0x0` through `0x03ffffff`. The first `0x00100000` is left out of the
+Linux-visible DT memory window so stage-0 and other low-memory bootstrap state
+can use that space without Linux allocating from it.
 - UART at `0x08000000`, IRQ 65
 - timer at `0x08001000`, IRQ 66
 - PV block device at `0x08002000`, IRQ 67

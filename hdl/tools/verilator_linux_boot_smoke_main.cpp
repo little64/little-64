@@ -25,10 +25,20 @@ namespace {
 
 namespace fs = std::filesystem;
 
+#ifndef LITTLE64_HARNESS_ENABLE_DEBUG
+#define LITTLE64_HARNESS_ENABLE_DEBUG 1
+#endif
+
+static constexpr bool kHarnessDebug = LITTLE64_HARNESS_ENABLE_DEBUG != 0;
+
 constexpr uint64_t KERNEL_PHYSICAL_BASE = 0x0010'0000ULL;
-constexpr uint64_t RAM_EXTRA_BYTES = 64ULL * 1024ULL * 1024ULL;
+constexpr uint64_t PAGE_OFFSET = 0xFFFF'FFC0'0000'0000ULL;
+constexpr uint64_t RAM_BASE = 0x0000'0000ULL;
 constexpr uint64_t PAGE_SIZE = 4096ULL;
 constexpr uint64_t EARLY_PT_SCRATCH_PAGES = 30ULL;
+constexpr uint64_t FLASH_BASE = 0x2000'0000ULL;
+constexpr uint64_t FLASH_BOOT_MAGIC = 0x4C3634464C415348ULL;
+constexpr uint64_t FLASH_BOOT_HEADER_OFFSET = 0x2000ULL;
 
 constexpr uint64_t UART_BASE = 0x0800'0000ULL;
 constexpr uint64_t UART_SIZE = 0x8ULL;
@@ -40,7 +50,7 @@ constexpr uint64_t PVBLK_SIZE = 0x100ULL;
 constexpr uint64_t TIMER_IRQ_MASK = 1ULL << 1;
 constexpr uint64_t PVBLK_IRQ_MASK = 1ULL << 2;
 
-constexpr uint64_t TIME_SCALE_NS = 10'000ULL;
+constexpr uint64_t DEFAULT_TIME_SCALE_NS = 10ULL;
 
 constexpr uint64_t L64_PVBLK_MAGIC_VALUE = 0x4B4C42505634364CULL;
 constexpr uint64_t L64_PVBLK_VERSION_VALUE = 1ULL;
@@ -70,6 +80,20 @@ bool envFlagEnabled(const char* name) {
     return value[0] != '\0' && value[0] != '0';
 }
 
+uint64_t envU64(const char* name, uint64_t defaultValue) {
+    const char* value = std::getenv(name);
+    if (value == nullptr || value[0] == '\0') {
+        return defaultValue;
+    }
+
+    char* end = nullptr;
+    const unsigned long long parsed = std::strtoull(value, &end, 0);
+    if (end == value || (end != nullptr && *end != '\0')) {
+        return defaultValue;
+    }
+    return parsed == 0 ? defaultValue : static_cast<uint64_t>(parsed);
+}
+
 std::vector<uint8_t> readBinaryFile(const fs::path& path) {
     std::ifstream stream(path, std::ios::binary);
     if (!stream) {
@@ -92,9 +116,64 @@ struct LoadedLinuxImage {
     uint64_t virtBase = 0;
     uint64_t virtEnd = 0;
     uint64_t imageSpan = 0;
-    uint64_t totalRam = 0;
+#if LITTLE64_HARNESS_ENABLE_DEBUG
+    std::optional<uint64_t> panicSymbol;
+    std::optional<uint64_t> vpanicSymbol;
+    std::optional<uint64_t> printkSymbol;
+    std::optional<uint64_t> pcpuSetupFirstChunkSymbol;
+#endif
     std::vector<uint8_t> ramImage;
 };
+
+#if LITTLE64_HARNESS_ENABLE_DEBUG
+std::optional<uint64_t> findElfSymbolValue(
+    const std::vector<uint8_t>& elfBytes,
+    std::string_view symbolName
+) {
+    if (elfBytes.size() < sizeof(Elf64_Ehdr)) {
+        return std::nullopt;
+    }
+
+    const auto* header = reinterpret_cast<const Elf64_Ehdr*>(elfBytes.data());
+    if (header->e_shentsize != sizeof(Elf64_Shdr) ||
+        header->e_shoff + (static_cast<uint64_t>(header->e_shnum) * sizeof(Elf64_Shdr)) > elfBytes.size()) {
+        return std::nullopt;
+    }
+
+    const auto* sectionHeaders = reinterpret_cast<const Elf64_Shdr*>(elfBytes.data() + header->e_shoff);
+    for (uint16_t sectionIndex = 0; sectionIndex < header->e_shnum; ++sectionIndex) {
+        const auto& section = sectionHeaders[sectionIndex];
+        if (section.sh_type != SHT_SYMTAB || section.sh_entsize != sizeof(Elf64_Sym) || section.sh_link >= header->e_shnum) {
+            continue;
+        }
+        if (section.sh_offset + section.sh_size > elfBytes.size()) {
+            continue;
+        }
+
+        const auto& stringSection = sectionHeaders[section.sh_link];
+        if (stringSection.sh_offset + stringSection.sh_size > elfBytes.size()) {
+            continue;
+        }
+
+        const auto* symbols = reinterpret_cast<const Elf64_Sym*>(elfBytes.data() + section.sh_offset);
+        const auto* stringTable = reinterpret_cast<const char*>(elfBytes.data() + stringSection.sh_offset);
+        const size_t symbolCount = static_cast<size_t>(section.sh_size / sizeof(Elf64_Sym));
+
+        for (size_t symbolIndex = 0; symbolIndex < symbolCount; ++symbolIndex) {
+            const auto& symbol = symbols[symbolIndex];
+            if (symbol.st_name >= stringSection.sh_size) {
+                continue;
+            }
+            const std::string_view currentName(stringTable + symbol.st_name);
+            if (currentName == symbolName) {
+                return symbol.st_value;
+            }
+        }
+    }
+
+    return std::nullopt;
+}
+#endif
 
 LoadedLinuxImage loadLinuxImage(const fs::path& path) {
     const auto elfBytes = readBinaryFile(path);
@@ -169,14 +248,80 @@ LoadedLinuxImage loadLinuxImage(const fs::path& path) {
         throw std::runtime_error("ELF entry point is outside loaded image");
     }
 
-    return LoadedLinuxImage{
+    LoadedLinuxImage image{
         .entryPhysical = entryPhysical,
         .virtBase = virtBase,
         .virtEnd = virtBase + imageSpan,
         .imageSpan = imageSpan,
-        .totalRam = imageSpan + RAM_EXTRA_BYTES,
         .ramImage = std::move(ramImage),
     };
+
+#if LITTLE64_HARNESS_ENABLE_DEBUG
+    image.panicSymbol = findElfSymbolValue(elfBytes, "panic");
+    image.vpanicSymbol = findElfSymbolValue(elfBytes, "vpanic");
+    image.printkSymbol = findElfSymbolValue(elfBytes, "_printk");
+    image.pcpuSetupFirstChunkSymbol = findElfSymbolValue(elfBytes, "pcpu_setup_first_chunk");
+#endif
+
+    return image;
+}
+
+struct FlashBootImage {
+    uint64_t abiVersion = 0;
+    uint64_t kernelFlashOffset = 0;
+    uint64_t kernelCopySize = 0;
+    uint64_t kernelPhysicalBase = 0;
+    uint64_t kernelEntryPhysical = 0;
+    uint64_t dtbFlashOffset = 0;
+    uint64_t dtbSize = 0;
+    uint64_t dtbPhysical = 0;
+    uint64_t kernelBootStackTop = 0;
+    uint64_t flashImageSize = 0;
+    std::vector<uint8_t> bytes;
+};
+
+uint64_t readLe64(const uint8_t* bytes) {
+    uint64_t value = 0;
+    for (unsigned index = 0; index < 8; ++index) {
+        value |= static_cast<uint64_t>(bytes[index]) << (8U * index);
+    }
+    return value;
+}
+
+FlashBootImage loadFlashBootImage(const fs::path& path) {
+    auto bytes = readBinaryFile(path);
+    if (bytes.size() < FLASH_BOOT_HEADER_OFFSET + (16ULL * sizeof(uint64_t))) {
+        throw std::runtime_error("flash image too small: " + path.string());
+    }
+
+    const uint8_t* header = bytes.data() + FLASH_BOOT_HEADER_OFFSET;
+    if (readLe64(header + 0x00) != FLASH_BOOT_MAGIC) {
+        throw std::runtime_error("flash image has invalid Little64 boot magic");
+    }
+
+    FlashBootImage image;
+    image.abiVersion = readLe64(header + 0x08);
+    image.kernelFlashOffset = readLe64(header + 0x10);
+    image.kernelCopySize = readLe64(header + 0x18);
+    image.kernelPhysicalBase = readLe64(header + 0x20);
+    image.kernelEntryPhysical = readLe64(header + 0x28);
+    image.dtbFlashOffset = readLe64(header + 0x30);
+    image.dtbSize = readLe64(header + 0x38);
+    image.dtbPhysical = readLe64(header + 0x40);
+    image.kernelBootStackTop = readLe64(header + 0x48);
+    image.flashImageSize = readLe64(header + 0x50);
+    image.bytes = std::move(bytes);
+
+    if (image.flashImageSize > image.bytes.size()) {
+        throw std::runtime_error("flash image header exceeds file size");
+    }
+    if (image.kernelFlashOffset + image.kernelCopySize > image.flashImageSize) {
+        throw std::runtime_error("flash image kernel payload exceeds file size");
+    }
+    if (image.dtbFlashOffset + image.dtbSize > image.flashImageSize) {
+        throw std::runtime_error("flash image DTB payload exceeds file size");
+    }
+    return image;
 }
 
 struct SerialDevice {
@@ -189,6 +334,13 @@ struct SerialDevice {
     uint8_t scr = 0;
     std::string output;
     std::string tail;
+    uint64_t readCount = 0;
+    uint64_t writeCount = 0;
+    uint64_t txWriteCount = 0;
+    uint64_t lastReadOffset = 0;
+    uint64_t lastWriteOffset = 0;
+    uint8_t lastReadValue = 0;
+    uint8_t lastWriteValue = 0;
 
     void appendOutput(uint8_t value) {
         if (value == '\r') {
@@ -198,7 +350,9 @@ struct SerialDevice {
         output.push_back(ch);
         tail.push_back(ch);
         std::cout.put(ch);
-        std::cout.flush();
+        if (ch == '\n') {
+            std::cout.flush();
+        }
         if (tail.size() > 16384) {
             tail.erase(0, tail.size() - 8192);
         }
@@ -223,6 +377,9 @@ struct SerialDevice {
     }
 
     void write8(uint64_t offset, uint8_t value) {
+        ++writeCount;
+        lastWriteOffset = offset & 0x7ULL;
+        lastWriteValue = value;
         const auto reg = offset & 0x7ULL;
         const bool dlab = (lcr & 0x80U) != 0;
         if (dlab && reg == 0) {
@@ -234,7 +391,7 @@ struct SerialDevice {
             return;
         }
         switch (reg) {
-            case 0: appendOutput(value); break;
+            case 0: ++txWriteCount; appendOutput(value); break;
             case 1: ier = value; break;
             case 2: fcr = value; break;
             case 3: lcr = value; break;
@@ -246,11 +403,14 @@ struct SerialDevice {
 };
 
 struct TimerDevice {
-    uint64_t tickNs = TIME_SCALE_NS;
+    uint64_t tickNs = envU64("LITTLE64_VERILATOR_TIME_SCALE_NS", DEFAULT_TIME_SCALE_NS);
     uint64_t cycleCounter = 0;
     uint64_t nsCounter = 0;
     uint64_t cycleInterval = 0;
     uint64_t nsInterval = 0;
+    uint64_t fireCount = 0;
+    uint64_t cycleFireCount = 0;
+    uint64_t nsFireCount = 0;
     std::optional<uint64_t> cycleDeadline;
     std::optional<uint64_t> nsDeadline;
 
@@ -301,10 +461,14 @@ struct TimerDevice {
         bool fired = false;
         if (cycleDeadline && cycleCounter >= *cycleDeadline) {
             fired = true;
+            ++fireCount;
+            ++cycleFireCount;
             *cycleDeadline += std::max<uint64_t>(1, cycleInterval);
         }
         if (nsDeadline && nsCounter >= *nsDeadline) {
             fired = true;
+            ++fireCount;
+            ++nsFireCount;
             *nsDeadline += std::max<uint64_t>(1, nsInterval);
         }
         return fired;
@@ -364,47 +528,58 @@ struct PvBlockDevice {
 };
 
 struct Platform {
-    explicit Platform(LoadedLinuxImage image_, std::vector<uint8_t> dtbBytes)
-        : image(std::move(image_)), ram(static_cast<size_t>(image.totalRam), 0) {
-        std::copy(image.ramImage.begin(), image.ramImage.end(), ram.begin());
-
-        if (!dtbBytes.empty()) {
-            const auto dtbOffset = alignUp(image.imageSpan + (EARLY_PT_SCRATCH_PAGES * PAGE_SIZE), PAGE_SIZE);
-            const auto candidate = KERNEL_PHYSICAL_BASE + dtbOffset;
-            if (ramContains(candidate, dtbBytes.size())) {
-                writeBytes(candidate, dtbBytes);
-                dtbPhysical = candidate;
-            }
-        }
-
+    explicit Platform(LoadedLinuxImage image_, FlashBootImage flash_)
+        : image(std::move(image_)), flash(std::move(flash_)) {
+        const uint64_t ramEnd = std::max(
+            std::max(
+                static_cast<uint64_t>(flash.kernelBootStackTop + 8ULL),
+                static_cast<uint64_t>(flash.kernelPhysicalBase + flash.kernelCopySize)
+            ),
+            static_cast<uint64_t>(flash.dtbPhysical + flash.dtbSize)
+        );
+        ram.resize(static_cast<size_t>(alignUp(ramEnd, PAGE_SIZE)), 0);
+        ramLimit = RAM_BASE + ram.size();
+        flashLimit = FLASH_BASE + flash.bytes.size();
         pvblk.platform = this;
     }
 
     LoadedLinuxImage image;
+    FlashBootImage flash;
     std::vector<uint8_t> ram;
-    uint64_t dtbPhysical = 0;
+    uint64_t ramLimit = RAM_BASE;
+    uint64_t flashLimit = FLASH_BASE;
     SerialDevice serial;
     TimerDevice timer;
     PvBlockDevice pvblk;
 
     const uint8_t* ramPointer(uint64_t address) const {
-        return ram.data() + static_cast<size_t>(address - KERNEL_PHYSICAL_BASE);
+        return ram.data() + static_cast<size_t>(address - RAM_BASE);
     }
 
     uint8_t* ramPointer(uint64_t address) {
-        return ram.data() + static_cast<size_t>(address - KERNEL_PHYSICAL_BASE);
+        return ram.data() + static_cast<size_t>(address - RAM_BASE);
     }
 
     bool ramContains(uint64_t address, size_t size) const {
-        const uint64_t ramEnd = KERNEL_PHYSICAL_BASE + ram.size();
-        return address >= KERNEL_PHYSICAL_BASE && address + size <= ramEnd;
+        return address >= RAM_BASE && address + size <= ramLimit;
+    }
+
+    bool flashContains(uint64_t address, size_t size) const {
+        return address >= FLASH_BASE && address + size <= flashLimit;
+    }
+
+    uint8_t readFlashByte(uint64_t address) const {
+        if (!flashContains(address, 1)) {
+            return 0xFF;
+        }
+        return flash.bytes[static_cast<size_t>(address - FLASH_BASE)];
     }
 
     void writeBytes(uint64_t address, std::span<const uint8_t> bytes) {
         if (!ramContains(address, bytes.size())) {
             throw std::runtime_error("RAM write out of range");
         }
-        const auto offset = static_cast<size_t>(address - KERNEL_PHYSICAL_BASE);
+        const auto offset = static_cast<size_t>(address - RAM_BASE);
         std::copy(bytes.begin(), bytes.end(), ram.begin() + static_cast<std::ptrdiff_t>(offset));
     }
 
@@ -412,7 +587,7 @@ struct Platform {
         if (!ramContains(address, size)) {
             throw std::runtime_error("RAM read out of range");
         }
-        const auto offset = static_cast<size_t>(address - KERNEL_PHYSICAL_BASE);
+        const auto offset = static_cast<size_t>(address - RAM_BASE);
         return std::vector<uint8_t>(ram.begin() + static_cast<std::ptrdiff_t>(offset), ram.begin() + static_cast<std::ptrdiff_t>(offset + size));
     }
 
@@ -434,7 +609,13 @@ struct Platform {
 
     uint8_t readDeviceByte(uint64_t address) const {
         if (address >= UART_BASE && address < UART_BASE + UART_SIZE) {
-            return serial.read8(address - UART_BASE);
+            auto& serialDevice = const_cast<SerialDevice&>(serial);
+            const auto offset = address - UART_BASE;
+            const auto value = serial.read8(offset);
+            ++serialDevice.readCount;
+            serialDevice.lastReadOffset = offset & 0x7ULL;
+            serialDevice.lastReadValue = value;
+            return value;
         }
         if (address >= TIMER_BASE && address < TIMER_BASE + TIMER_SIZE) {
             return timer.read8(address - TIMER_BASE);
@@ -461,13 +642,20 @@ struct Platform {
             std::memcpy(&value, ramPointer(address), sizeof(value));
             return value;
         }
+        if (flashContains(address, 8)) {
+            uint64_t value = 0;
+            std::memcpy(&value, flash.bytes.data() + static_cast<size_t>(address - FLASH_BASE), sizeof(value));
+            return value;
+        }
 
         uint64_t value = 0;
         for (uint64_t index = 0; index < 8; ++index) {
             const auto byteAddress = address + index;
             uint8_t byteValue = 0;
             if (ramContains(byteAddress, 1)) {
-                byteValue = ram[static_cast<size_t>(byteAddress - KERNEL_PHYSICAL_BASE)];
+                byteValue = ram[static_cast<size_t>(byteAddress - RAM_BASE)];
+            } else if (flashContains(byteAddress, 1)) {
+                byteValue = readFlashByte(byteAddress);
             } else {
                 byteValue = readDeviceByte(byteAddress);
             }
@@ -504,7 +692,7 @@ struct Platform {
             const auto byteAddress = address + index;
             const auto byteValue = static_cast<uint8_t>((value >> (8U * index)) & 0xFFULL);
             if (ramContains(byteAddress, 1)) {
-                ram[static_cast<size_t>(byteAddress - KERNEL_PHYSICAL_BASE)] = byteValue;
+                ram[static_cast<size_t>(byteAddress - RAM_BASE)] = byteValue;
             } else {
                 writeDeviceByte(byteAddress, byteValue);
             }
@@ -587,9 +775,11 @@ struct BootResult {
     bool halted = false;
     bool invalidPc = false;
     bool zeroInstruction = false;
+    bool panicCaptured = false;
     uint64_t cycles = 0;
 };
 
+#if LITTLE64_HARNESS_ENABLE_DEBUG
 struct TraceEntry {
     uint64_t cycle = 0;
     uint64_t fetchPc = 0;
@@ -602,7 +792,70 @@ struct TraceEntry {
     uint64_t r9 = 0;
     uint64_t r10 = 0;
     uint64_t r13 = 0;
+    uint64_t r14 = 0;
     uint64_t r15 = 0;
+};
+
+struct SymbolHitSnapshot {
+    std::string symbolName;
+    uint64_t cycle = 0;
+    uint64_t pc = 0;
+    uint64_t r1 = 0;
+    uint64_t r2 = 0;
+    uint64_t r3 = 0;
+    uint64_t r4 = 0;
+    uint64_t r5 = 0;
+    uint64_t r6 = 0;
+    uint64_t r7 = 0;
+    uint64_t r8 = 0;
+    uint64_t r9 = 0;
+    uint64_t r10 = 0;
+    uint64_t r11 = 0;
+    uint64_t r13 = 0;
+    uint64_t r14 = 0;
+    uint64_t r15 = 0;
+    std::optional<std::string> r1String;
+    std::optional<std::string> r2String;
+    std::optional<std::string> r3String;
+    std::optional<std::string> r4String;
+    std::optional<std::string> r5String;
+    std::optional<std::string> r6String;
+    std::optional<std::string> r7String;
+    std::optional<std::string> r8String;
+    std::optional<std::string> r9String;
+    std::optional<std::string> r10String;
+};
+
+struct PcpuAllocInfoDump {
+    uint64_t address = 0;
+    uint64_t staticSize = 0;
+    uint64_t reservedSize = 0;
+    uint64_t dynSize = 0;
+    uint64_t unitSize = 0;
+    uint64_t atomSize = 0;
+    uint64_t allocSize = 0;
+    uint64_t aiSize = 0;
+    uint32_t nrGroups = 0;
+    uint32_t group0NrUnits = 0;
+    uint64_t group0BaseOffset = 0;
+    uint64_t group0CpuMap = 0;
+    uint32_t group0Cpu0 = 0;
+};
+
+struct PcpuEntrySnapshot {
+    uint64_t cycle = 0;
+    uint64_t pc = 0;
+    uint64_t aiVirtual = 0;
+    uint64_t baseVirtual = 0;
+    std::optional<uint64_t> aiPhysical;
+    std::optional<uint64_t> basePhysical;
+    std::array<uint64_t, 8> aiWords{};
+    std::array<uint64_t, 8> baseWords{};
+    PcpuAllocInfoDump aiDump{};
+    bool aiWordsValid = false;
+    bool baseWordsValid = false;
+    bool aiDumpValid = false;
+    bool overlapsBase = false;
 };
 
 struct PageWalkDump {
@@ -623,6 +876,7 @@ struct PageWalkDump {
     uint64_t resolvedPhys = 0;
     bool valid = false;
 };
+#endif
 
 class SimulatorRunner {
   public:
@@ -630,10 +884,10 @@ class SimulatorRunner {
         : context(std::make_unique<VerilatedContext>()),
           top(std::make_unique<Vlittle64_linux_boot_top>(context.get(), "little64_linux_boot_top")),
                     platform(std::move(platform_)),
-                    debugTraceEnabled(envFlagEnabled("LITTLE64_VERILATOR_DEBUG_TRACE")) {
+                                        debugTraceEnabled(kHarnessDebug && envFlagEnabled("LITTLE64_VERILATOR_DEBUG_TRACE")) {
         context->traceEverOn(false);
-        top->boot_r1 = platform.dtbPhysical;
-        top->boot_r13 = KERNEL_PHYSICAL_BASE + platform.image.totalRam - 8ULL;
+                top->boot_r1 = 0;
+                top->boot_r13 = 0;
         top->irq_lines = 0;
         top->i_bus_ack = 0;
         top->i_bus_err = 0;
@@ -652,12 +906,17 @@ class SimulatorRunner {
         std::vector<bool> markerSeen(requiredMarkers.size(), requiredMarkers.empty());
         size_t markersSatisfied = requiredMarkers.empty() ? requiredMarkers.size() : 0;
         size_t lastSerialSize = 0;
+#if LITTLE64_HARNESS_ENABLE_DEBUG
+        const uint64_t panicExitGraceCycles = 100'000ULL;
+#endif
 
         for (uint64_t cycle = 0; cycle < maxCycles; ++cycle) {
             driveNextInputs();
             tick();
             result.cycles = cycle + 1;
+#if LITTLE64_HARNESS_ENABLE_DEBUG
             recordTrace(result.cycles);
+#endif
 
             if (isZeroInstructionExecution()) {
                 result.zeroInstruction = true;
@@ -700,9 +959,16 @@ class SimulatorRunner {
                 result.success = true;
                 break;
             }
+
+#if LITTLE64_HARNESS_ENABLE_DEBUG
+            if (panicCaptureComplete(result.cycles, panicExitGraceCycles)) {
+                result.panicCaptured = true;
+                break;
+            }
+#endif
         }
 
-        if (!result.success && !result.lockedUp && !result.halted) {
+        if (!result.success && !result.lockedUp && !result.halted && !result.panicCaptured) {
             result.timedOut = true;
         }
 
@@ -714,6 +980,10 @@ class SimulatorRunner {
     }
 
     void printDiagnostics(std::ostream& stream) const {
+         const uint64_t currentSp = top->rootp->little64_linux_boot_top__DOT__core__DOT__r13;
+         const uint64_t currentFp = top->rootp->little64_linux_boot_top__DOT__core__DOT__r11;
+         const uint64_t currentRa = top->rootp->little64_linux_boot_top__DOT__core__DOT__r14;
+
         stream << "state=" << static_cast<unsigned>(top->state)
                << " current_instruction=0x" << std::hex << top->current_instruction
                << " fetch_pc=0x" << top->fetch_pc
@@ -721,6 +991,103 @@ class SimulatorRunner {
                << " commit_valid=" << std::dec << static_cast<unsigned>(top->commit_valid)
                << " commit_pc=0x" << std::hex << top->commit_pc
                << "\n";
+         stream << "live_regs: sp=0x" << std::hex << currentSp
+             << " fp=0x" << currentFp
+             << " ra=0x" << currentRa
+             << "\n";
+         stream << "uart_stats: reads=" << std::dec << platform.serial.readCount
+             << " writes=" << platform.serial.writeCount
+             << " tx_writes=" << platform.serial.txWriteCount
+             << " last_read=[0x" << std::hex << platform.serial.lastReadOffset
+             << "]=0x" << static_cast<unsigned>(platform.serial.lastReadValue)
+             << " last_write=[0x" << platform.serial.lastWriteOffset
+             << "]=0x" << static_cast<unsigned>(platform.serial.lastWriteValue)
+             << "\n";
+         stream << "timer_stats: tick_ns=" << std::dec << platform.timer.tickNs
+             << " cycle_counter=" << platform.timer.cycleCounter
+             << " ns_counter=" << platform.timer.nsCounter
+             << " cycle_interval=" << platform.timer.cycleInterval
+             << " ns_interval=" << platform.timer.nsInterval
+             << " fire_count=" << platform.timer.fireCount
+             << " cycle_fire_count=" << platform.timer.cycleFireCount
+             << " ns_fire_count=" << platform.timer.nsFireCount
+             << "\n";
+
+#if LITTLE64_HARNESS_ENABLE_DEBUG
+        printSymbolHit(stream, firstPanicHit);
+        printSymbolHit(stream, firstVpanicHit);
+        if (!recentPrintkHits.empty()) {
+            for (const auto& snapshot : recentPrintkHits) {
+                printSymbolHit(stream, snapshot);
+            }
+        }
+
+        if (const auto percpuInfo = findCapturedPcpuAllocInfo()) {
+            stream << "pcpu_alloc_info: addr=0x" << std::hex << percpuInfo->address
+                   << " static=0x" << percpuInfo->staticSize
+                   << " reserved=0x" << percpuInfo->reservedSize
+                   << " dyn=0x" << percpuInfo->dynSize
+                   << " unit=0x" << percpuInfo->unitSize
+                   << " atom=0x" << percpuInfo->atomSize
+                   << " alloc=0x" << percpuInfo->allocSize
+                   << " ai_size=0x" << percpuInfo->aiSize
+                   << " nr_groups=" << std::dec << percpuInfo->nrGroups
+                   << " group0.nr_units=" << percpuInfo->group0NrUnits
+                   << " group0.base_offset=0x" << std::hex << percpuInfo->group0BaseOffset
+                   << " group0.cpu_map=0x" << percpuInfo->group0CpuMap
+                   << " cpu_map[0]=" << std::dec << percpuInfo->group0Cpu0
+                   << "\n";
+        }
+
+        if (pcpuEntrySnapshot) {
+            stream << "pcpu_setup_first_chunk_entry: cycle=" << std::dec << pcpuEntrySnapshot->cycle
+                   << " pc=0x" << std::hex << pcpuEntrySnapshot->pc
+                   << " ai_va=0x" << pcpuEntrySnapshot->aiVirtual
+                   << " ai_pa=";
+            if (pcpuEntrySnapshot->aiPhysical) {
+                stream << "0x" << *pcpuEntrySnapshot->aiPhysical;
+            } else {
+                stream << "<unmapped>";
+            }
+            stream << " base_va=0x" << pcpuEntrySnapshot->baseVirtual
+                   << " base_pa=";
+            if (pcpuEntrySnapshot->basePhysical) {
+                stream << "0x" << *pcpuEntrySnapshot->basePhysical;
+            } else {
+                stream << "<unmapped>";
+            }
+            stream << " overlaps_base=" << std::dec << static_cast<unsigned>(pcpuEntrySnapshot->overlapsBase)
+                   << "\n";
+            if (pcpuEntrySnapshot->aiDumpValid) {
+                stream << "  ai_dump: static=0x" << std::hex << pcpuEntrySnapshot->aiDump.staticSize
+                       << " reserved=0x" << pcpuEntrySnapshot->aiDump.reservedSize
+                       << " dyn=0x" << pcpuEntrySnapshot->aiDump.dynSize
+                       << " unit=0x" << pcpuEntrySnapshot->aiDump.unitSize
+                       << " atom=0x" << pcpuEntrySnapshot->aiDump.atomSize
+                       << " alloc=0x" << pcpuEntrySnapshot->aiDump.allocSize
+                       << " ai_size=0x" << pcpuEntrySnapshot->aiDump.aiSize
+                       << " nr_groups=" << std::dec << pcpuEntrySnapshot->aiDump.nrGroups
+                       << " group0.nr_units=" << pcpuEntrySnapshot->aiDump.group0NrUnits
+                       << " group0.base_offset=0x" << std::hex << pcpuEntrySnapshot->aiDump.group0BaseOffset
+                       << " group0.cpu_map=0x" << pcpuEntrySnapshot->aiDump.group0CpuMap
+                       << " cpu_map[0]=" << std::dec << pcpuEntrySnapshot->aiDump.group0Cpu0
+                       << "\n";
+            }
+            if (pcpuEntrySnapshot->aiWordsValid) {
+                stream << "  ai_words:";
+                for (const auto word : pcpuEntrySnapshot->aiWords) {
+                    stream << " 0x" << std::hex << word;
+                }
+                stream << "\n";
+            }
+            if (pcpuEntrySnapshot->baseWordsValid) {
+                stream << "  base_words:";
+                for (const auto word : pcpuEntrySnapshot->baseWords) {
+                    stream << " 0x" << std::hex << word;
+                }
+                stream << "\n";
+            }
+        }
 
          if (isZeroInstructionExecution()) {
              stream << "zero_instruction_fetch_pc=0x" << std::hex << top->fetch_pc
@@ -730,8 +1097,10 @@ class SimulatorRunner {
 
         if (isInvalidFetchPc()) {
             stream << "invalid_fetch_pc=0x" << std::hex << top->fetch_pc
-                   << " image_phys=[0x" << KERNEL_PHYSICAL_BASE
-                   << ", 0x" << (KERNEL_PHYSICAL_BASE + platform.image.imageSpan)
+                   << " image_phys=[0x" << platform.flash.kernelPhysicalBase
+                   << ", 0x" << (platform.flash.kernelPhysicalBase + platform.image.imageSpan)
+                   << ") flash_phys=[0x" << FLASH_BASE
+                   << ", 0x" << (FLASH_BASE + platform.flash.flashImageSize)
                    << ") image_virt=[0x" << platform.image.virtBase
                    << ", 0x" << platform.image.virtEnd
                    << ")\n";
@@ -772,7 +1141,37 @@ class SimulatorRunner {
                       << " r9=0x" << entry.r9
                       << " r10=0x" << entry.r10
                       << " r13=0x" << entry.r13
+                      << " r14=0x" << entry.r14
                       << " r15=0x" << entry.r15
+                       << "\n";
+            }
+        }
+#else
+        if (isInvalidFetchPc()) {
+            stream << "invalid_fetch_pc=0x" << std::hex << top->fetch_pc
+                   << " image_phys=[0x" << platform.flash.kernelPhysicalBase
+                   << ", 0x" << (platform.flash.kernelPhysicalBase + platform.image.imageSpan)
+                   << ") flash_phys=[0x" << FLASH_BASE
+                   << ", 0x" << (FLASH_BASE + platform.flash.flashImageSize)
+                   << ") image_virt=[0x" << platform.image.virtBase
+                   << ", 0x" << platform.image.virtEnd
+                   << ")\n";
+        }
+#endif
+
+        const auto stackPhysical = virtualToKernelPhysical(currentSp);
+        if (stackPhysical && platform.ramContains(*stackPhysical, 8)) {
+            stream << "stack_qwords:\n";
+            for (unsigned index = 0; index < 8; ++index) {
+                const uint64_t virtualAddress = currentSp + (index * 8ULL);
+                const uint64_t physicalAddress = *stackPhysical + (index * 8ULL);
+                if (!platform.ramContains(physicalAddress, 8)) {
+                    break;
+                }
+                stream << "  [sp+0x" << std::hex << (index * 8ULL)
+                       << "] va=0x" << virtualAddress
+                       << " pa=0x" << physicalAddress
+                       << " =0x" << platform.readU64(physicalAddress)
                        << "\n";
             }
         }
@@ -841,10 +1240,9 @@ class SimulatorRunner {
     void tick() {
         top->clk = 0;
         top->eval();
-        context->timeInc(1);
         top->clk = 1;
         top->eval();
-        context->timeInc(1);
+        context->timeInc(2);
     }
 
     bool isInvalidFetchPc() const {
@@ -854,18 +1252,35 @@ class SimulatorRunner {
         }
 
         const bool inPhysicalImage =
-            fetchPc >= KERNEL_PHYSICAL_BASE &&
-            fetchPc < KERNEL_PHYSICAL_BASE + platform.image.imageSpan;
+            fetchPc >= platform.flash.kernelPhysicalBase &&
+            fetchPc < platform.flash.kernelPhysicalBase + platform.image.imageSpan;
+        const bool inFlashImage =
+            fetchPc >= FLASH_BASE &&
+            fetchPc < FLASH_BASE + platform.flash.flashImageSize;
         const bool inVirtualImage =
             fetchPc >= platform.image.virtBase &&
             fetchPc < platform.image.virtEnd;
-        return !inPhysicalImage && !inVirtualImage;
+        return !inPhysicalImage && !inVirtualImage && !inFlashImage;
     }
 
     bool isZeroInstructionExecution() const {
         return top->state == 3 && top->fetch_pc != 0 && top->current_instruction == 0;
     }
 
+    std::optional<uint64_t> virtualToKernelPhysical(uint64_t address) const {
+        if (address >= PAGE_OFFSET) {
+            const uint64_t physical = address - PAGE_OFFSET + KERNEL_PHYSICAL_BASE;
+            if (platform.ramContains(physical, 1)) {
+                return physical;
+            }
+        }
+        if (platform.ramContains(address, 1)) {
+            return address;
+        }
+        return std::nullopt;
+    }
+
+#if LITTLE64_HARNESS_ENABLE_DEBUG
     PageWalkDump dumpPageWalk(uint64_t virtualAddress) const {
         auto readPte = [this](uint64_t address) -> uint64_t {
             if (!platform.ramContains(address, 8)) {
@@ -905,6 +1320,11 @@ class SimulatorRunner {
             return;
         }
 
+        maybeCaptureSymbolHit(cycle, platform.image.panicSymbol, "panic", firstPanicHit);
+        maybeCaptureSymbolHit(cycle, platform.image.vpanicSymbol, "vpanic", firstVpanicHit);
+        maybeCapturePrintkHit(cycle);
+        maybeCapturePcpuSetupEntry(cycle);
+
         recentTrace.push_back(TraceEntry{
             .cycle = cycle,
             .fetchPc = top->fetch_pc,
@@ -917,6 +1337,7 @@ class SimulatorRunner {
             .r9 = top->rootp->little64_linux_boot_top__DOT__core__DOT__r9,
             .r10 = top->rootp->little64_linux_boot_top__DOT__core__DOT__r10,
             .r13 = top->rootp->little64_linux_boot_top__DOT__core__DOT__r13,
+            .r14 = top->rootp->little64_linux_boot_top__DOT__core__DOT__r14,
             .r15 = top->rootp->little64_linux_boot_top__DOT__core__DOT__r15,
         });
         if (recentTrace.size() > 64) {
@@ -924,16 +1345,321 @@ class SimulatorRunner {
         }
     }
 
+    std::optional<std::string> readVirtualString(uint64_t address) const {
+        if (address == 0) {
+            return std::nullopt;
+        }
+
+        std::string result;
+        for (size_t index = 0; index < 160; ++index) {
+            const auto physical = virtualToKernelPhysical(address + index);
+            if (!physical || !platform.ramContains(*physical, 1)) {
+                break;
+            }
+            const char ch = static_cast<char>(platform.ram[static_cast<size_t>(*physical - RAM_BASE)]);
+            if (ch == '\0') {
+                return result.empty() ? std::nullopt : std::optional<std::string>(result);
+            }
+            const unsigned char byte = static_cast<unsigned char>(ch);
+            if ((byte < 0x20 || byte > 0x7e) && ch != '\n' && ch != '\r' && ch != '\t') {
+                break;
+            }
+            result.push_back(ch);
+        }
+
+        if (result.empty()) {
+            return std::nullopt;
+        }
+        if (result.size() == 160) {
+            result += "...";
+        }
+        return result;
+    }
+
+    std::optional<uint64_t> readVirtualU64(uint64_t address) const {
+        const auto physical = virtualToKernelPhysical(address);
+        if (!physical || !platform.ramContains(*physical, 8)) {
+            return std::nullopt;
+        }
+        return platform.readU64(*physical);
+    }
+
+    std::optional<uint32_t> readVirtualU32(uint64_t address) const {
+        const auto physical = virtualToKernelPhysical(address);
+        if (!physical || !platform.ramContains(*physical, 4)) {
+            return std::nullopt;
+        }
+        uint32_t value = 0;
+        std::memcpy(&value, platform.ramPointer(*physical), sizeof(value));
+        return value;
+    }
+
+    std::optional<PcpuAllocInfoDump> readRawPcpuAllocInfo(uint64_t address) const {
+        const auto staticSize = readVirtualU64(address + 0x00);
+        const auto reservedSize = readVirtualU64(address + 0x08);
+        const auto dynSize = readVirtualU64(address + 0x10);
+        const auto unitSize = readVirtualU64(address + 0x18);
+        const auto atomSize = readVirtualU64(address + 0x20);
+        const auto allocSize = readVirtualU64(address + 0x28);
+        const auto aiSize = readVirtualU64(address + 0x30);
+        const auto nrGroups = readVirtualU32(address + 0x38);
+        const auto group0NrUnits = readVirtualU32(address + 0x40);
+        const auto group0BaseOffset = readVirtualU64(address + 0x48);
+        const auto group0CpuMap = readVirtualU64(address + 0x50);
+        if (!staticSize.has_value() || !reservedSize.has_value() || !dynSize.has_value() ||
+            !unitSize.has_value() || !atomSize.has_value() || !allocSize.has_value() ||
+            !aiSize.has_value() || !nrGroups.has_value() || !group0NrUnits.has_value() ||
+            !group0BaseOffset.has_value() || !group0CpuMap.has_value()) {
+            return std::nullopt;
+        }
+        uint32_t cpu0 = 0;
+        if (const auto maybeCpu0 = readVirtualU32(*group0CpuMap)) {
+            cpu0 = *maybeCpu0;
+        }
+        return PcpuAllocInfoDump{
+            .address = address,
+            .staticSize = *staticSize,
+            .reservedSize = *reservedSize,
+            .dynSize = *dynSize,
+            .unitSize = *unitSize,
+            .atomSize = *atomSize,
+            .allocSize = *allocSize,
+            .aiSize = *aiSize,
+            .nrGroups = *nrGroups,
+            .group0NrUnits = *group0NrUnits,
+            .group0BaseOffset = *group0BaseOffset,
+            .group0CpuMap = *group0CpuMap,
+            .group0Cpu0 = cpu0,
+        };
+    }
+
+    bool readVirtualWords(uint64_t address, std::array<uint64_t, 8>& words) const {
+        for (size_t index = 0; index < words.size(); ++index) {
+            const auto value = readVirtualU64(address + (index * 8ULL));
+            if (!value.has_value()) {
+                return false;
+            }
+            words[index] = *value;
+        }
+        return true;
+    }
+
+    std::optional<PcpuAllocInfoDump> tryDecodePcpuAllocInfo(uint64_t address) const {
+        const auto dump = readRawPcpuAllocInfo(address);
+        if (!dump.has_value()) {
+            return std::nullopt;
+        }
+        if (dump->nrGroups == 0 || dump->nrGroups > 8 || dump->group0NrUnits == 0 || dump->group0NrUnits > 64) {
+            return std::nullopt;
+        }
+        if (dump->unitSize == 0 || (dump->unitSize & (PAGE_SIZE - 1ULL)) != 0 || dump->atomSize == 0 || dump->allocSize == 0) {
+            return std::nullopt;
+        }
+        return dump;
+    }
+
+    std::optional<PcpuAllocInfoDump> findCapturedPcpuAllocInfo() const {
+        for (const auto& snapshot : recentPrintkHits) {
+            if (const auto fromR10 = tryDecodePcpuAllocInfo(snapshot.r10)) {
+                return fromR10;
+            }
+            if (const auto fromR9 = tryDecodePcpuAllocInfo(snapshot.r9)) {
+                return fromR9;
+            }
+        }
+        return std::nullopt;
+    }
+
+    void maybeCaptureSymbolHit(
+        uint64_t cycle,
+        const std::optional<uint64_t>& symbol,
+        std::string_view name,
+        std::optional<SymbolHitSnapshot>& snapshot
+    ) {
+        if (snapshot || !symbol || top->fetch_pc != *symbol) {
+            return;
+        }
+
+        snapshot = SymbolHitSnapshot{
+            .symbolName = std::string(name),
+            .cycle = cycle,
+            .pc = top->fetch_pc,
+            .r1 = top->rootp->little64_linux_boot_top__DOT__core__DOT__r1,
+            .r2 = top->rootp->little64_linux_boot_top__DOT__core__DOT__r2,
+            .r3 = top->rootp->little64_linux_boot_top__DOT__core__DOT__r3,
+            .r4 = top->rootp->little64_linux_boot_top__DOT__core__DOT__r4,
+            .r5 = top->rootp->little64_linux_boot_top__DOT__core__DOT__r5,
+            .r6 = top->rootp->little64_linux_boot_top__DOT__core__DOT__r6,
+            .r7 = top->rootp->little64_linux_boot_top__DOT__core__DOT__r7,
+            .r8 = top->rootp->little64_linux_boot_top__DOT__core__DOT__r8,
+            .r9 = top->rootp->little64_linux_boot_top__DOT__core__DOT__r9,
+            .r10 = top->rootp->little64_linux_boot_top__DOT__core__DOT__r10,
+            .r11 = top->rootp->little64_linux_boot_top__DOT__core__DOT__r11,
+            .r13 = top->rootp->little64_linux_boot_top__DOT__core__DOT__r13,
+            .r14 = top->rootp->little64_linux_boot_top__DOT__core__DOT__r14,
+            .r15 = top->rootp->little64_linux_boot_top__DOT__core__DOT__r15,
+            .r1String = readVirtualString(top->rootp->little64_linux_boot_top__DOT__core__DOT__r1),
+            .r2String = readVirtualString(top->rootp->little64_linux_boot_top__DOT__core__DOT__r2),
+            .r3String = readVirtualString(top->rootp->little64_linux_boot_top__DOT__core__DOT__r3),
+            .r4String = readVirtualString(top->rootp->little64_linux_boot_top__DOT__core__DOT__r4),
+            .r5String = readVirtualString(top->rootp->little64_linux_boot_top__DOT__core__DOT__r5),
+            .r6String = readVirtualString(top->rootp->little64_linux_boot_top__DOT__core__DOT__r6),
+            .r7String = readVirtualString(top->rootp->little64_linux_boot_top__DOT__core__DOT__r7),
+            .r8String = readVirtualString(top->rootp->little64_linux_boot_top__DOT__core__DOT__r8),
+            .r9String = readVirtualString(top->rootp->little64_linux_boot_top__DOT__core__DOT__r9),
+            .r10String = readVirtualString(top->rootp->little64_linux_boot_top__DOT__core__DOT__r10),
+        };
+    }
+
+    void maybeCapturePrintkHit(uint64_t cycle) {
+        if (!platform.image.printkSymbol || top->fetch_pc != *platform.image.printkSymbol) {
+            return;
+        }
+
+        recentPrintkHits.push_back(SymbolHitSnapshot{
+            .symbolName = "_printk",
+            .cycle = cycle,
+            .pc = top->fetch_pc,
+            .r1 = top->rootp->little64_linux_boot_top__DOT__core__DOT__r1,
+            .r2 = top->rootp->little64_linux_boot_top__DOT__core__DOT__r2,
+            .r3 = top->rootp->little64_linux_boot_top__DOT__core__DOT__r3,
+            .r4 = top->rootp->little64_linux_boot_top__DOT__core__DOT__r4,
+            .r5 = top->rootp->little64_linux_boot_top__DOT__core__DOT__r5,
+            .r6 = top->rootp->little64_linux_boot_top__DOT__core__DOT__r6,
+            .r7 = top->rootp->little64_linux_boot_top__DOT__core__DOT__r7,
+            .r8 = top->rootp->little64_linux_boot_top__DOT__core__DOT__r8,
+            .r9 = top->rootp->little64_linux_boot_top__DOT__core__DOT__r9,
+            .r10 = top->rootp->little64_linux_boot_top__DOT__core__DOT__r10,
+            .r11 = top->rootp->little64_linux_boot_top__DOT__core__DOT__r11,
+            .r13 = top->rootp->little64_linux_boot_top__DOT__core__DOT__r13,
+            .r14 = top->rootp->little64_linux_boot_top__DOT__core__DOT__r14,
+            .r15 = top->rootp->little64_linux_boot_top__DOT__core__DOT__r15,
+            .r1String = readVirtualString(top->rootp->little64_linux_boot_top__DOT__core__DOT__r1),
+            .r2String = readVirtualString(top->rootp->little64_linux_boot_top__DOT__core__DOT__r2),
+            .r3String = readVirtualString(top->rootp->little64_linux_boot_top__DOT__core__DOT__r3),
+            .r4String = readVirtualString(top->rootp->little64_linux_boot_top__DOT__core__DOT__r4),
+            .r5String = readVirtualString(top->rootp->little64_linux_boot_top__DOT__core__DOT__r5),
+            .r6String = readVirtualString(top->rootp->little64_linux_boot_top__DOT__core__DOT__r6),
+            .r7String = readVirtualString(top->rootp->little64_linux_boot_top__DOT__core__DOT__r7),
+            .r8String = readVirtualString(top->rootp->little64_linux_boot_top__DOT__core__DOT__r8),
+            .r9String = readVirtualString(top->rootp->little64_linux_boot_top__DOT__core__DOT__r9),
+            .r10String = readVirtualString(top->rootp->little64_linux_boot_top__DOT__core__DOT__r10),
+        });
+        if (recentPrintkHits.size() > 8) {
+            recentPrintkHits.pop_front();
+        }
+    }
+
+    void maybeCapturePcpuSetupEntry(uint64_t cycle) {
+        if (pcpuEntrySnapshot || !platform.image.pcpuSetupFirstChunkSymbol ||
+            top->fetch_pc != *platform.image.pcpuSetupFirstChunkSymbol) {
+            return;
+        }
+
+        PcpuEntrySnapshot snapshot{
+            .cycle = cycle,
+            .pc = top->fetch_pc,
+            .aiVirtual = top->rootp->little64_linux_boot_top__DOT__core__DOT__r10,
+            .baseVirtual = top->rootp->little64_linux_boot_top__DOT__core__DOT__r9,
+            .aiPhysical = virtualToKernelPhysical(top->rootp->little64_linux_boot_top__DOT__core__DOT__r10),
+            .basePhysical = virtualToKernelPhysical(top->rootp->little64_linux_boot_top__DOT__core__DOT__r9),
+        };
+        snapshot.aiWordsValid = readVirtualWords(snapshot.aiVirtual, snapshot.aiWords);
+        snapshot.baseWordsValid = readVirtualWords(snapshot.baseVirtual, snapshot.baseWords);
+        if (const auto rawDump = readRawPcpuAllocInfo(snapshot.aiVirtual)) {
+            snapshot.aiDump = *rawDump;
+            snapshot.aiDumpValid = true;
+            if (snapshot.basePhysical.has_value()) {
+                const uint64_t baseStart = *snapshot.basePhysical;
+                const uint64_t baseEnd = baseStart + snapshot.aiDump.unitSize;
+                snapshot.overlapsBase = snapshot.aiPhysical.has_value() &&
+                    *snapshot.aiPhysical >= baseStart && *snapshot.aiPhysical < baseEnd;
+            }
+        }
+        pcpuEntrySnapshot = snapshot;
+    }
+
+    bool panicCaptureComplete(uint64_t cycle, uint64_t graceCycles) const {
+        if (!firstVpanicHit || !pcpuEntrySnapshot) {
+            return false;
+        }
+        return cycle >= firstVpanicHit->cycle + graceCycles;
+    }
+
+    void printSymbolHit(std::ostream& stream, const SymbolHitSnapshot& snapshot) const {
+        stream << "symbol_hit[" << snapshot.symbolName << "]: cycle=" << std::dec << snapshot.cycle
+               << " pc=0x" << std::hex << snapshot.pc
+               << " r1=0x" << snapshot.r1
+               << " r2=0x" << snapshot.r2
+               << " r3=0x" << snapshot.r3
+               << " r4=0x" << snapshot.r4
+               << " r5=0x" << snapshot.r5
+               << " r6=0x" << snapshot.r6
+               << " r7=0x" << snapshot.r7
+               << " r8=0x" << snapshot.r8
+               << " r9=0x" << snapshot.r9
+               << " r10=0x" << snapshot.r10
+               << " r11=0x" << snapshot.r11
+               << " r13=0x" << snapshot.r13
+               << " r14=0x" << snapshot.r14
+               << " r15=0x" << snapshot.r15
+               << "\n";
+        if (snapshot.r1String) {
+            stream << "  r1_str=\"" << *snapshot.r1String << "\"\n";
+        }
+        if (snapshot.r2String) {
+            stream << "  r2_str=\"" << *snapshot.r2String << "\"\n";
+        }
+        if (snapshot.r3String) {
+            stream << "  r3_str=\"" << *snapshot.r3String << "\"\n";
+        }
+        if (snapshot.r4String) {
+            stream << "  r4_str=\"" << *snapshot.r4String << "\"\n";
+        }
+        if (snapshot.r5String) {
+            stream << "  r5_str=\"" << *snapshot.r5String << "\"\n";
+        }
+        if (snapshot.r6String) {
+            stream << "  r6_str=\"" << *snapshot.r6String << "\"\n";
+        }
+        if (snapshot.r7String) {
+            stream << "  r7_str=\"" << *snapshot.r7String << "\"\n";
+        }
+        if (snapshot.r8String) {
+            stream << "  r8_str=\"" << *snapshot.r8String << "\"\n";
+        }
+        if (snapshot.r10String) {
+            stream << "  r10_str=\"" << *snapshot.r10String << "\"\n";
+        }
+        if (snapshot.r9String) {
+            stream << "  r9_str=\"" << *snapshot.r9String << "\"\n";
+        }
+    }
+
+    void printSymbolHit(std::ostream& stream, const std::optional<SymbolHitSnapshot>& snapshot) const {
+        if (!snapshot) {
+            return;
+        }
+        printSymbolHit(stream, *snapshot);
+    }
+#endif
+
     std::unique_ptr<VerilatedContext> context;
     std::unique_ptr<Vlittle64_linux_boot_top> top;
     Platform platform;
     bool debugTraceEnabled;
+#if LITTLE64_HARNESS_ENABLE_DEBUG
     std::deque<TraceEntry> recentTrace;
+    std::optional<SymbolHitSnapshot> firstPanicHit;
+    std::optional<SymbolHitSnapshot> firstVpanicHit;
+    std::optional<PcpuEntrySnapshot> pcpuEntrySnapshot;
+    std::deque<SymbolHitSnapshot> recentPrintkHits;
+#endif
 };
 
 struct Options {
     fs::path kernel;
-    fs::path dtb;
+    fs::path flash;
     uint64_t maxCycles = 200'000'000ULL;
     std::vector<std::string> requiredMarkers;
 };
@@ -952,8 +1678,8 @@ Options parseArguments(int argc, char** argv) {
 
         if (arg == "--kernel") {
             options.kernel = fs::path(nextValue(arg));
-        } else if (arg == "--dtb") {
-            options.dtb = fs::path(nextValue(arg));
+        } else if (arg == "--flash") {
+            options.flash = fs::path(nextValue(arg));
         } else if (arg == "--max-cycles") {
             options.maxCycles = std::stoull(std::string(nextValue(arg)));
         } else if (arg == "--require") {
@@ -966,8 +1692,8 @@ Options parseArguments(int argc, char** argv) {
     if (options.kernel.empty()) {
         throw std::runtime_error("--kernel is required");
     }
-    if (options.dtb.empty()) {
-        throw std::runtime_error("--dtb is required");
+    if (options.flash.empty()) {
+        throw std::runtime_error("--flash is required");
     }
     return options;
 }
@@ -979,7 +1705,7 @@ int main(int argc, char** argv) {
         Verilated::commandArgs(argc, argv);
         const auto options = parseArguments(argc, argv);
 
-        Platform platform(loadLinuxImage(options.kernel), readBinaryFile(options.dtb));
+        Platform platform(loadLinuxImage(options.kernel), loadFlashBootImage(options.flash));
         SimulatorRunner runner(std::move(platform));
         const auto result = runner.run(options.maxCycles, options.requiredMarkers);
 

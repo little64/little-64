@@ -1,3 +1,7 @@
+litex
+litedram
+litespi
+git+https://github.com/litex-hub/pythondata-misc-tapcfg.git
 amaranth>=0.5,<0.6
 amaranth-yosys
 pytest>=8,<10

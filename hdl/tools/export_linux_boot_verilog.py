@@ -11,9 +11,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from little64.config import Little64CoreConfig
 from little64.core import Little64Core
+from little64.litex import LITTLE64_LITEX_MEM_MAP
 
 
-KERNEL_PHYSICAL_BASE = 0x0010_0000
+FLASH_RESET_BASE = LITTLE64_LITEX_MEM_MAP['spiflash']
 
 
 class Little64LinuxBootTop(Elaboratable):
@@ -58,7 +59,7 @@ class Little64LinuxBootTop(Elaboratable):
         self.commit_valid = Signal()
         self.commit_pc = Signal(64)
 
-        self.core = Little64Core(Little64CoreConfig(reset_vector=KERNEL_PHYSICAL_BASE))
+        self.core = Little64Core(Little64CoreConfig(reset_vector=FLASH_RESET_BASE))
 
     def elaborate(self, platform):
         m = Module()

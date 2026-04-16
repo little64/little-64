@@ -7,11 +7,11 @@ LLVM_BIN="$REPO_ROOT/compilers/bin"
 SYMBOLIZER="$LLVM_BIN/llvm-symbolizer"
 ADDR2LINE="$LLVM_BIN/llvm-addr2line"
 OBJDUMP="$LLVM_BIN/llvm-objdump"
-DEFAULT_ELF="$SCRIPT_DIR/build/vmlinux"
+PROFILE_PATHS_PY="$SCRIPT_DIR/profile_paths.py"
 
 usage() {
     cat <<EOF
-Usage: $(basename "$0") [--elf <path>] [--context-bytes N] [--no-disasm] <pc>
+Usage: $(basename "$0") [--defconfig <name>] [--elf <path>] [--context-bytes N] [--no-disasm] <pc>
 
 Resolve a program counter (PC) to function/file/line in a Linux vmlinux image.
 
@@ -19,25 +19,33 @@ Arguments:
   <pc>                 Address to resolve (hex like 0xffffffc000013302 or decimal)
 
 Options:
-  --elf <path>         ELF image to inspect (default: $DEFAULT_ELF)
+    --defconfig <name>   Linux defconfig for profile-aware default ELF lookup
+    --elf <path>         ELF image to inspect (default: selected profile vmlinux)
   --context-bytes N    Disassembly bytes before/after PC (default: 32)
   --no-disasm          Skip disassembly context output
   -h, --help           Show this help message
 
 Examples:
   $(basename "$0") 0xffffffc000013302
+    $(basename "$0") --defconfig little64_litex_sim_defconfig 0xffffffc000013302
   $(basename "$0") --elf target/linux_port/build/vmlinux 0xffffffc000013302
   $(basename "$0") --context-bytes 64 0xffffffc000013302
 EOF
 }
 
-ELF_PATH="$DEFAULT_ELF"
+DEFCONFIG_NAME=""
+ELF_PATH=""
 CONTEXT_BYTES=32
 SHOW_DISASM=1
 PC_ARG=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --defconfig)
+            [[ $# -ge 2 ]] || { echo "error: --defconfig requires a value" >&2; exit 1; }
+            DEFCONFIG_NAME="$2"
+            shift 2
+            ;;
         --elf)
             [[ $# -ge 2 ]] || { echo "error: --elf requires a path" >&2; exit 1; }
             ELF_PATH="$2"
@@ -68,6 +76,18 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+PROFILE_ARGS=()
+if [[ -n "$DEFCONFIG_NAME" ]]; then
+    PROFILE_ARGS+=(--defconfig "$DEFCONFIG_NAME")
+fi
+
+if [[ -z "$ELF_PATH" ]]; then
+    ELF_PATH=$(python3 "$PROFILE_PATHS_PY" existing-kernel "${PROFILE_ARGS[@]}" 2>/dev/null || true)
+    if [[ -z "$ELF_PATH" ]]; then
+        ELF_PATH=$(python3 "$PROFILE_PATHS_PY" kernel "${PROFILE_ARGS[@]}" 2>/dev/null || true)
+    fi
+fi
+
 if [[ -z "$PC_ARG" ]]; then
     echo "error: missing PC argument" >&2
     usage >&2
@@ -76,7 +96,7 @@ fi
 
 if [[ ! -f "$ELF_PATH" ]]; then
     echo "error: ELF not found: $ELF_PATH" >&2
-    echo "hint: build kernel first with: target/linux_port/build.sh vmlinux" >&2
+    echo "hint: build the selected kernel first with: target/linux_port/build.sh vmlinux" >&2
     exit 1
 fi
 

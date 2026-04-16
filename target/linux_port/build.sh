@@ -2,9 +2,23 @@ SCRIPT_FOLDER=$(dirname "$(readlink -f "$0")")
 cd "$SCRIPT_FOLDER" || exit 1
 COMPILER_BIN=$SCRIPT_FOLDER/../../compilers/bin
 CC_CMD="$COMPILER_BIN/clang"
-BUILD_DIR="$SCRIPT_FOLDER/build"
-DEFCONFIG_PATH="$SCRIPT_FOLDER/linux/arch/little64/configs/little64_defconfig"
+DEFAULT_DEFCONFIG_NAME="little64_defconfig"
+DEFCONFIG_NAME="${LITTLE64_LINUX_DEFCONFIG:-$DEFAULT_DEFCONFIG_NAME}"
+if [[ -n "${LITTLE64_LINUX_BUILD_DIR:-}" ]]; then
+    BUILD_DIR="$LITTLE64_LINUX_BUILD_DIR"
+elif [[ "$DEFCONFIG_NAME" == "$DEFAULT_DEFCONFIG_NAME" ]]; then
+    BUILD_DIR="$SCRIPT_FOLDER/build"
+else
+    BUILD_DIR="$SCRIPT_FOLDER/build-$DEFCONFIG_NAME"
+fi
+DEFCONFIG_PATH="$SCRIPT_FOLDER/linux/arch/little64/configs/$DEFCONFIG_NAME"
 DEFCONFIG_STAMP="$BUILD_DIR/.little64_defconfig.sha256"
+DEFCONFIG_NAME_STAMP="$BUILD_DIR/.little64_defconfig.name"
+
+if [[ ! -f "$DEFCONFIG_PATH" ]]; then
+    echo "error: Little64 defconfig not found: $DEFCONFIG_PATH" >&2
+    exit 1
+fi
 
 # Get the target we want if arguments are provided, else default to vmlinux
 if [ $# -eq 0 ]; then
@@ -50,6 +64,7 @@ else
     echo "Using compiler: $CC_CMD"
 fi
 echo "Target: $TARGET"
+echo "Build directory: $BUILD_DIR"
 if [ ${#DEBUG_CFLAG_ARGS[@]} -gt 0 ]; then
     echo "Kernel C flags: ${DEBUG_CFLAG_ARGS[0]#KCFLAGS=}"
 else
@@ -61,13 +76,17 @@ mkdir -p "$BUILD_DIR"
 
 CURRENT_DEFCONFIG_SHA=$(sha256sum "$DEFCONFIG_PATH" | awk '{print $1}')
 PREVIOUS_DEFCONFIG_SHA=""
+PREVIOUS_DEFCONFIG_NAME=""
 if [ -f "$DEFCONFIG_STAMP" ]; then
     PREVIOUS_DEFCONFIG_SHA=$(cat "$DEFCONFIG_STAMP")
 fi
+if [ -f "$DEFCONFIG_NAME_STAMP" ]; then
+    PREVIOUS_DEFCONFIG_NAME=$(cat "$DEFCONFIG_NAME_STAMP")
+fi
 
 if [[ "$TARGET" != "clean" && "$TARGET" != "mrproper" && \
-      (! -f "$BUILD_DIR/.config" || "$CURRENT_DEFCONFIG_SHA" != "$PREVIOUS_DEFCONFIG_SHA") ]]; then
-    echo "Syncing kernel config from arch/little64/configs/little64_defconfig"
+      (! -f "$BUILD_DIR/.config" || "$CURRENT_DEFCONFIG_SHA" != "$PREVIOUS_DEFCONFIG_SHA" || "$DEFCONFIG_NAME" != "$PREVIOUS_DEFCONFIG_NAME") ]]; then
+    echo "Syncing kernel config from arch/little64/configs/$DEFCONFIG_NAME"
     nice -n 19 make -C linux ARCH=little64 \
         LLVM=1 \
         CC="$CC_CMD" \
@@ -77,8 +96,9 @@ if [[ "$TARGET" != "clean" && "$TARGET" != "mrproper" && \
         O="$BUILD_DIR" \
         HOSTCC=gcc \
         HOSTCXX=g++ \
-        little64_defconfig
+        "$DEFCONFIG_NAME"
     printf '%s\n' "$CURRENT_DEFCONFIG_SHA" > "$DEFCONFIG_STAMP"
+    printf '%s\n' "$DEFCONFIG_NAME" > "$DEFCONFIG_NAME_STAMP"
 fi
 
 nice -n 19 make -C linux ARCH=little64 \

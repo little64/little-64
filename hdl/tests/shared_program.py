@@ -300,6 +300,7 @@ def run_program_words(words: list[int],
     observed: dict[str, object] = {}
     ready = {'value': False}
     current_irq_lines = {'value': 0}
+    commit_count = {'value': 0}
 
     def read_code_qword(addr: int) -> int:
         return sum((code_memory.get(addr + byte_index, 0) & 0xFF) << (8 * byte_index) for byte_index in range(8))
@@ -366,6 +367,8 @@ def run_program_words(words: list[int],
                 current_irq_lines['value'] = irq_schedule[cycle]
                 yield dut.irq_lines.eq(current_irq_lines['value'])
             yield
+            if (yield dut.commit_valid):
+                commit_count['value'] += 1
             if (yield dut.halted) or (yield dut.locked_up):
                 break
 
@@ -393,6 +396,7 @@ def run_program_words(words: list[int],
             'interrupt_cpu_control': (yield dut.special_regs.interrupt_cpu_control),
         }
         observed['data_memory'] = dict(data_memory)
+        observed['commit_count'] = commit_count['value']
 
     sim.add_sync_process(bus_process)
     sim.add_sync_process(observe_process)

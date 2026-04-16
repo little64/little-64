@@ -35,6 +35,8 @@ class CoreState(IntEnum):
     HALTED = 9
     INTERRUPT_VECTOR_TRANSLATE = 10
     INTERRUPT_VECTOR_LOAD = 11
+    MEM_LOAD_SPLIT = 12
+    MEM_STORE_SPLIT = 13
 
 
 PTE_V = 1 << 0
@@ -211,6 +213,22 @@ class Little64Core(Elaboratable):
         reservation_end = Signal(64)
         write_end = Signal(64)
         store_overlaps_reservation = Signal()
+
+        byte_offset = Signal(3)
+        base_sel = Signal(8)
+        shifted_sel = Signal(16)
+        split_needed = Signal()
+        first_beat_sel = Signal(8)
+        second_beat_sel = Signal(8)
+        shifted_dat_w = Signal(128)
+        first_beat_dat_w = Signal(64)
+        second_beat_dat_w = Signal(64)
+        word_aligned_addr = Signal(self.config.address_width)
+        next_word_addr = Signal(self.config.address_width)
+        single_read_data = Signal(64)
+        combined_read_data = Signal(64)
+        split_first_data = Signal(64)
+        split_first_cycle = Signal()
 
         irq_valid_mask_high = ((1 << (self.config.irq_input_count + 1)) - 1) & ~1
         cpu_control_entry_clear_mask = (
@@ -393,6 +411,45 @@ class Little64Core(Elaboratable):
         ]
 
         m.d.comb += [
+            byte_offset.eq(self.pending_addr[0:3]),
+            base_sel.eq(Mux(self.pending_width_bytes == 1, 0x01,
+                        Mux(self.pending_width_bytes == 2, 0x03,
+                        Mux(self.pending_width_bytes == 4, 0x0F,
+                        Mux(self.pending_width_bytes == 8, 0xFF, 0x00))))),
+            word_aligned_addr.eq(self.pending_addr & Const(~0x7 & ((1 << self.config.address_width) - 1), self.config.address_width)),
+            next_word_addr.eq(word_aligned_addr + 8),
+            first_beat_sel.eq(shifted_sel[0:8]),
+            second_beat_sel.eq(shifted_sel[8:16]),
+            first_beat_dat_w.eq(shifted_dat_w[0:64]),
+            second_beat_dat_w.eq(shifted_dat_w[64:128]),
+            split_needed.eq(shifted_sel[8:16] != 0),
+        ]
+
+        with m.Switch(byte_offset):
+            for i in range(8):
+                with m.Case(i):
+                    m.d.comb += [
+                        shifted_sel.eq(base_sel << i),
+                        shifted_dat_w.eq(self.pending_store_value << (i * 8)),
+                    ]
+
+        with m.Switch(byte_offset):
+            for i in range(8):
+                with m.Case(i):
+                    if i == 0:
+                        m.d.comb += single_read_data.eq(self.d_bus.dat_r)
+                    else:
+                        m.d.comb += single_read_data.eq(Cat(self.d_bus.dat_r[i * 8:64], Const(0, i * 8)))
+
+        with m.Switch(byte_offset):
+            for i in range(8):
+                with m.Case(i):
+                    if i == 0:
+                        m.d.comb += combined_read_data.eq(split_first_data)
+                    else:
+                        m.d.comb += combined_read_data.eq(Cat(split_first_data[i * 8:64], self.d_bus.dat_r[0:i * 8]))
+
+        m.d.comb += [
             self.special_regs.user_mode.eq(self.special_regs.cpu_control[17]),
             self.special_regs.read_selector.eq(b[:16]),
             self.special_regs.write_stb.eq(special_write_active),
@@ -442,16 +499,20 @@ class Little64Core(Elaboratable):
             self.i_bus.cti.eq(0),
             self.i_bus.bte.eq(0),
             self.d_bus.adr.eq(Mux(self.state == CoreState.WALK, walk_pte_addr,
-                              Mux(self.state == CoreState.INTERRUPT_VECTOR_LOAD, self.interrupt_vector_phys, self.pending_addr))),
-            self.d_bus.dat_w.eq(Mux((self.state == CoreState.WALK) | (self.state == CoreState.INTERRUPT_VECTOR_LOAD), 0, self.pending_store_value)),
+                              Mux(self.state == CoreState.INTERRUPT_VECTOR_LOAD, self.interrupt_vector_phys,
+                              Mux((self.state == CoreState.MEM_LOAD_SPLIT) | (self.state == CoreState.MEM_STORE_SPLIT), next_word_addr,
+                              word_aligned_addr)))),
+            self.d_bus.dat_w.eq(Mux((self.state == CoreState.WALK) | (self.state == CoreState.INTERRUPT_VECTOR_LOAD), 0,
+                              Mux((self.state == CoreState.MEM_STORE_SPLIT), second_beat_dat_w,
+                              first_beat_dat_w))),
             self.d_bus.sel.eq(Mux((self.state == CoreState.WALK) | (self.state == CoreState.INTERRUPT_VECTOR_LOAD), 0xFF,
-                              Mux(self.pending_width_bytes == 1, 0x01,
-                              Mux(self.pending_width_bytes == 2, 0x03,
-                              Mux(self.pending_width_bytes == 4, 0x0F,
-                              Mux(self.pending_width_bytes == 8, 0xFF, 0x00)))))),
-            self.d_bus.cyc.eq((self.state == CoreState.MEM_LOAD) | (self.state == CoreState.MEM_STORE) | (self.state == CoreState.WALK) | (self.state == CoreState.INTERRUPT_VECTOR_LOAD)),
-            self.d_bus.stb.eq((self.state == CoreState.MEM_LOAD) | (self.state == CoreState.MEM_STORE) | (self.state == CoreState.WALK) | (self.state == CoreState.INTERRUPT_VECTOR_LOAD)),
-            self.d_bus.we.eq(self.state == CoreState.MEM_STORE),
+                              Mux((self.state == CoreState.MEM_LOAD_SPLIT) | (self.state == CoreState.MEM_STORE_SPLIT), second_beat_sel,
+                              first_beat_sel))),
+            self.d_bus.cyc.eq((self.state == CoreState.MEM_LOAD) | (self.state == CoreState.MEM_STORE) | (self.state == CoreState.WALK) | (self.state == CoreState.INTERRUPT_VECTOR_LOAD)
+                              | (((self.state == CoreState.MEM_LOAD_SPLIT) | (self.state == CoreState.MEM_STORE_SPLIT)) & ~split_first_cycle)),
+            self.d_bus.stb.eq((self.state == CoreState.MEM_LOAD) | (self.state == CoreState.MEM_STORE) | (self.state == CoreState.WALK) | (self.state == CoreState.INTERRUPT_VECTOR_LOAD)
+                              | (((self.state == CoreState.MEM_LOAD_SPLIT) | (self.state == CoreState.MEM_STORE_SPLIT)) & ~split_first_cycle)),
+            self.d_bus.we.eq((self.state == CoreState.MEM_STORE) | ((self.state == CoreState.MEM_STORE_SPLIT) & ~split_first_cycle)),
             self.d_bus.cti.eq(0),
             self.d_bus.bte.eq(0),
         ]
@@ -495,6 +556,7 @@ class Little64Core(Elaboratable):
             ]
 
         def raise_sync_trap(vector, trap_pc, *, fault_addr=0, access=0, aux=0):
+            m.d.comb += self.commit_valid.eq(0)
             with m.If(self.special_regs.cpu_control[1] & (current_interrupt_vector != 0) & (current_interrupt_vector < TrapVector.FIRST_HW_IRQ) & (current_interrupt_vector <= vector)):
                 enter_lockup()
             with m.Else():
@@ -606,6 +668,7 @@ class Little64Core(Elaboratable):
                             m.d.comb += ldi_value.eq(rd_value | sign_extended_imm)
 
                     write_reg(rd, ldi_value)
+                    m.d.comb += self.commit_valid.eq(1)
                     m.d.sync += [
                         self.register_file[15].eq(post_increment_pc),
                         self.state.eq(CoreState.FETCH_TRANSLATE),
@@ -700,6 +763,7 @@ class Little64Core(Elaboratable):
                             ]
                         with m.Case(LSOpcode.MOVE):
                             write_reg(rd, ls_addr)
+                            m.d.comb += self.commit_valid.eq(1)
                             m.d.sync += [
                                 self.register_file[15].eq(Mux(rd == 15, ls_addr, post_increment_pc)),
                                 self.state.eq(CoreState.FETCH_TRANSLATE),
@@ -707,6 +771,7 @@ class Little64Core(Elaboratable):
                         with m.Case(LSOpcode.JUMP_Z, LSOpcode.JUMP_C, LSOpcode.JUMP_S, LSOpcode.JUMP_GT, LSOpcode.JUMP_LT):
                             with m.If(_ls_condition(self.flags, ls_opcode)):
                                 write_reg(rd, ls_addr)
+                            m.d.comb += self.commit_valid.eq(1)
                             m.d.sync += [
                                 self.register_file[15].eq(Mux(_ls_condition(self.flags, ls_opcode) & (rd == 15), ls_addr, post_increment_pc)),
                                 self.state.eq(CoreState.FETCH_TRANSLATE),
@@ -806,6 +871,7 @@ class Little64Core(Elaboratable):
                             ]
                         with m.Case(LSOpcode.MOVE):
                             write_reg(rd, ls_pc_effective)
+                            m.d.comb += self.commit_valid.eq(1)
                             m.d.sync += [
                                 self.register_file[15].eq(Mux(rd == 15, ls_pc_effective, post_increment_pc)),
                                 self.state.eq(CoreState.FETCH_TRANSLATE),
@@ -815,6 +881,7 @@ class Little64Core(Elaboratable):
                                 m.d.sync += self.register_file[15].eq(ls_jump_effective)
                             with m.Else():
                                 m.d.sync += self.register_file[15].eq(post_increment_pc)
+                            m.d.comb += self.commit_valid.eq(1)
                             m.d.sync += self.state.eq(CoreState.FETCH_TRANSLATE)
                         with m.Default():
                             m.d.sync += [
@@ -822,6 +889,7 @@ class Little64Core(Elaboratable):
                                 self.state.eq(CoreState.HALTED),
                             ]
                 with m.Elif(top3 == 0b110):
+                    m.d.comb += self.commit_valid.eq(1)
                     sum_value = Signal(65)
                     sub_value = Signal(64)
                     imm4 = self.current_instruction[4:8]
@@ -852,6 +920,7 @@ class Little64Core(Elaboratable):
                                 self.state.eq(CoreState.FETCH_TRANSLATE),
                             ]
                         with m.Case(GPOpcode.LLR):
+                            m.d.comb += self.commit_valid.eq(0)
                             m.d.sync += [
                                 self.pending_addr.eq(b),
                                 self.pending_virtual_addr.eq(b),
@@ -872,6 +941,7 @@ class Little64Core(Elaboratable):
                             ]
                         with m.Case(GPOpcode.SCR):
                             with m.If(self.ll_reservation_valid & (self.ll_reservation_addr == b)):
+                                m.d.comb += self.commit_valid.eq(0)
                                 m.d.sync += [
                                     self.ll_reservation_valid.eq(0),
                                     self.flags.eq(Cat(Const(1, 1), self.flags[1], self.flags[2])),
@@ -1022,14 +1092,9 @@ class Little64Core(Elaboratable):
                                 ]
                         with m.Default():
                             raise_sync_trap(TrapVector.INVALID_INSTRUCTION, self.fetch_pc)
-                with m.Elif((top3 == 0b110) & (gp_opcode == GPOpcode.STOP)):
-                    m.d.sync += [
-                        self.register_file[15].eq(post_increment_pc),
-                        self.halted.eq(1),
-                        self.state.eq(CoreState.HALTED),
-                    ]
                 with m.Elif(top3 == 0b111):
                     jump_offset = _sign_extend(self.current_instruction[:13], 13, 64) << 1
+                    m.d.comb += self.commit_valid.eq(1)
                     m.d.sync += [
                         self.register_file[15].eq(post_increment_pc + jump_offset),
                         self.state.eq(CoreState.FETCH_TRANSLATE),
@@ -1078,24 +1143,83 @@ class Little64Core(Elaboratable):
                 with m.If(self.d_bus.err):
                     enter_lockup()
                 with m.Elif(self.d_bus.ack):
-                    load_result = Signal(64)
-                    post_mem_value = Signal(64)
-                    next_pc_after_load = Signal(64)
-                    m.d.comb += load_result.eq(Mux(self.pending_width_bytes == 1, self.d_bus.dat_r & 0xFF,
-                                               Mux(self.pending_width_bytes == 2, self.d_bus.dat_r & 0xFFFF,
-                                               Mux(self.pending_width_bytes == 4, self.d_bus.dat_r & 0xFFFFFFFF,
-                                               self.d_bus.dat_r))))
-                    m.d.comb += post_mem_value.eq(Mux(self.pending_post_mem_use_load_result,
-                                                  load_result + self.pending_post_mem_delta,
-                                                  self.pending_post_mem_value))
-                    m.d.comb += next_pc_after_load.eq(
+                    with m.If(split_needed):
+                        m.d.sync += [
+                            split_first_data.eq(self.d_bus.dat_r),
+                            split_first_cycle.eq(1),
+                            self.state.eq(CoreState.MEM_LOAD_SPLIT),
+                        ]
+                    with m.Else():
+                        load_result = Signal(64, name='load_result_single')
+                        post_mem_value = Signal(64, name='post_mem_value_single')
+                        next_pc_after_load = Signal(64, name='next_pc_after_load_single')
+                        m.d.comb += load_result.eq(Mux(self.pending_width_bytes == 1, single_read_data & 0xFF,
+                                                   Mux(self.pending_width_bytes == 2, single_read_data & 0xFFFF,
+                                                   Mux(self.pending_width_bytes == 4, single_read_data & 0xFFFFFFFF,
+                                                   single_read_data))))
+                        m.d.comb += post_mem_value.eq(Mux(self.pending_post_mem_use_load_result,
+                                                      load_result + self.pending_post_mem_delta,
+                                                      self.pending_post_mem_value))
+                        m.d.comb += next_pc_after_load.eq(
+                            Mux(self.pending_post_mem_write & (self.pending_post_mem_reg == 15),
+                                post_mem_value,
+                                Mux(self.pending_rd == 15, load_result, self.pending_next_pc))
+                        )
+                        write_reg(self.pending_rd, load_result)
+                        with m.If(self.pending_post_mem_write):
+                            write_reg(self.pending_post_mem_reg, post_mem_value)
+                        with m.If(self.pending_set_reservation):
+                            m.d.sync += [
+                                self.ll_reservation_addr.eq(self.pending_reservation_addr),
+                                self.ll_reservation_valid.eq(1),
+                            ]
+                        with m.If(self.pending_chain_store):
+                            m.d.sync += [
+                                self.pending_addr.eq(self.pending_chain_store_addr),
+                                self.pending_virtual_addr.eq(self.pending_chain_store_addr),
+                                self.pending_width_bytes.eq(8),
+                                self.pending_store_value.eq(Mux(self.pending_chain_store_use_load_result, load_result, self.pending_chain_store_value)),
+                                self.pending_mem_write.eq(1),
+                                self.pending_set_reservation.eq(0),
+                                self.pending_post_mem_write.eq(0),
+                                self.pending_post_mem_use_load_result.eq(0),
+                                self.pending_post_mem_delta.eq(0),
+                                self.pending_chain_store.eq(0),
+                                self.pending_chain_store_use_load_result.eq(0),
+                                self.pending_chain_store_value.eq(0),
+                                self.state.eq(CoreState.MEM_TRANSLATE),
+                            ]
+                        with m.Else():
+                            m.d.comb += self.commit_valid.eq(1)
+                            m.d.sync += [
+                                self.register_file[15].eq(next_pc_after_load),
+                                self.state.eq(CoreState.FETCH_TRANSLATE),
+                            ]
+
+            with m.Case(CoreState.MEM_LOAD_SPLIT):
+                with m.If(split_first_cycle):
+                    m.d.sync += split_first_cycle.eq(0)
+                with m.Elif(self.d_bus.err):
+                    enter_lockup()
+                with m.Elif(self.d_bus.ack):
+                    load_result_split = Signal(64, name='load_result_split')
+                    post_mem_value_split = Signal(64, name='post_mem_value_split')
+                    next_pc_after_load_split = Signal(64, name='next_pc_after_load_split')
+                    m.d.comb += load_result_split.eq(Mux(self.pending_width_bytes == 1, combined_read_data & 0xFF,
+                                                     Mux(self.pending_width_bytes == 2, combined_read_data & 0xFFFF,
+                                                     Mux(self.pending_width_bytes == 4, combined_read_data & 0xFFFFFFFF,
+                                                     combined_read_data))))
+                    m.d.comb += post_mem_value_split.eq(Mux(self.pending_post_mem_use_load_result,
+                                                        load_result_split + self.pending_post_mem_delta,
+                                                        self.pending_post_mem_value))
+                    m.d.comb += next_pc_after_load_split.eq(
                         Mux(self.pending_post_mem_write & (self.pending_post_mem_reg == 15),
-                            post_mem_value,
-                            Mux(self.pending_rd == 15, load_result, self.pending_next_pc))
+                            post_mem_value_split,
+                            Mux(self.pending_rd == 15, load_result_split, self.pending_next_pc))
                     )
-                    write_reg(self.pending_rd, load_result)
+                    write_reg(self.pending_rd, load_result_split)
                     with m.If(self.pending_post_mem_write):
-                        write_reg(self.pending_post_mem_reg, post_mem_value)
+                        write_reg(self.pending_post_mem_reg, post_mem_value_split)
                     with m.If(self.pending_set_reservation):
                         m.d.sync += [
                             self.ll_reservation_addr.eq(self.pending_reservation_addr),
@@ -1106,7 +1230,7 @@ class Little64Core(Elaboratable):
                             self.pending_addr.eq(self.pending_chain_store_addr),
                             self.pending_virtual_addr.eq(self.pending_chain_store_addr),
                             self.pending_width_bytes.eq(8),
-                            self.pending_store_value.eq(Mux(self.pending_chain_store_use_load_result, load_result, self.pending_chain_store_value)),
+                            self.pending_store_value.eq(Mux(self.pending_chain_store_use_load_result, load_result_split, self.pending_chain_store_value)),
                             self.pending_mem_write.eq(1),
                             self.pending_set_reservation.eq(0),
                             self.pending_post_mem_write.eq(0),
@@ -1118,8 +1242,9 @@ class Little64Core(Elaboratable):
                             self.state.eq(CoreState.MEM_TRANSLATE),
                         ]
                     with m.Else():
+                        m.d.comb += self.commit_valid.eq(1)
                         m.d.sync += [
-                            self.register_file[15].eq(next_pc_after_load),
+                            self.register_file[15].eq(next_pc_after_load_split),
                             self.state.eq(CoreState.FETCH_TRANSLATE),
                         ]
 
@@ -1127,10 +1252,33 @@ class Little64Core(Elaboratable):
                 with m.If(self.d_bus.err):
                     enter_lockup()
                 with m.Elif(self.d_bus.ack):
+                    with m.If(split_needed):
+                        m.d.sync += [
+                            split_first_cycle.eq(1),
+                            self.state.eq(CoreState.MEM_STORE_SPLIT),
+                        ]
+                    with m.Else():
+                        with m.If(store_overlaps_reservation):
+                            m.d.sync += self.ll_reservation_valid.eq(0)
+                        with m.If(self.pending_post_mem_write):
+                            write_reg(self.pending_post_mem_reg, self.pending_post_mem_value)
+                        m.d.comb += self.commit_valid.eq(1)
+                        m.d.sync += [
+                            self.register_file[15].eq(Mux(self.pending_post_mem_write & (self.pending_post_mem_reg == 15), self.pending_post_mem_value, self.pending_next_pc)),
+                            self.state.eq(CoreState.FETCH_TRANSLATE),
+                        ]
+
+            with m.Case(CoreState.MEM_STORE_SPLIT):
+                with m.If(split_first_cycle):
+                    m.d.sync += split_first_cycle.eq(0)
+                with m.Elif(self.d_bus.err):
+                    enter_lockup()
+                with m.Elif(self.d_bus.ack):
                     with m.If(store_overlaps_reservation):
                         m.d.sync += self.ll_reservation_valid.eq(0)
                     with m.If(self.pending_post_mem_write):
                         write_reg(self.pending_post_mem_reg, self.pending_post_mem_value)
+                    m.d.comb += self.commit_valid.eq(1)
                     m.d.sync += [
                         self.register_file[15].eq(Mux(self.pending_post_mem_write & (self.pending_post_mem_reg == 15), self.pending_post_mem_value, self.pending_next_pc)),
                         self.state.eq(CoreState.FETCH_TRANSLATE),

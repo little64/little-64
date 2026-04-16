@@ -15,6 +15,16 @@ test_linker = executable('test-linker',
 
 test('linker', test_linker, suite : ['unit', 'linker'])
 
+test('shared-case-generation',
+  python3,
+  args : [
+    meson.project_source_root() / 'tests/shared/generate_instruction_cases.py',
+    '--check',
+  ],
+  suite : ['unit', 'isa', 'tests'],
+  timeout : 60,
+)
+
 cpu_tests = {
   'gp':          'target/test_cpu_gp.cpp',
   'ldi':         'target/test_cpu_ldi.cpp',

@@ -74,8 +74,14 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--boot-script",
-        default=str(script_dir / "boot_direct_no_event_logging.sh"),
-        help="Boot helper to invoke (default: target/linux_port/boot_direct_no_event_logging.sh)",
+        default=str(script_dir / "boot_direct.sh"),
+        help="Boot helper to invoke (default: target/linux_port/boot_direct.sh)",
+    )
+    parser.add_argument(
+        "--boot-mode",
+        default="smoke",
+        choices=("trace", "smoke", "rsp"),
+        help="Mode passed to the boot helper when it supports --mode (default: smoke)",
     )
     parser.add_argument(
         "--kernel",
@@ -198,7 +204,7 @@ def hash_text(text: str) -> str:
 
 
 def build_command(args: argparse.Namespace) -> list[str]:
-    command = [args.boot_script, "--max-cycles", str(args.max_cycles)]
+    command = [args.boot_script, f"--mode={args.boot_mode}", "--max-cycles", str(args.max_cycles)]
     if args.no_rootfs:
         command.append("--no-rootfs")
     elif args.rootfs:

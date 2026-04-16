@@ -5,33 +5,35 @@ SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
 REPO_ROOT=$(readlink -f "$SCRIPT_DIR/../..")
 LLVM_BIN="$REPO_ROOT/compilers/bin"
 LLDB_BIN="$LLVM_BIN/lldb"
+PROFILE_PATHS_PY="$SCRIPT_DIR/profile_paths.py"
 
 DEFAULT_HOST="127.0.0.1"
 DEFAULT_PORT="9000"
-DEFAULT_ELF_UNSTRIPPED="$SCRIPT_DIR/build/vmlinux.unstripped"
-DEFAULT_ELF="$SCRIPT_DIR/build/vmlinux"
 
 usage() {
     cat <<EOF
-Usage: $(basename "$0") [--host <ip-or-hostname>] [--port <port>] [--elf <path>] [--] [lldb args...]
+Usage: $(basename "$0") [--host <ip-or-hostname>] [--port <port>] [--defconfig <name>] [--elf <path>] [--] [lldb args...]
 
 Connect LLDB to a Little64 RSP server and enter LLDB TUI (gui) mode.
 
 Options:
   --host <value>    RSP host (default: $DEFAULT_HOST)
   --port <value>    RSP port (default: $DEFAULT_PORT)
-  --elf <path>      ELF for symbols (default: vmlinux.unstripped if present, else vmlinux)
+    --defconfig <n>   Linux defconfig for profile-aware ELF lookup
+    --elf <path>      ELF for symbols (default: selected profile vmlinux.unstripped if present, else vmlinux)
   -h, --help        Show this help message
 
 Examples:
   $(basename "$0")
   $(basename "$0") --port 1234
-  $(basename "$0") --host 10.0.0.5 --port 9000 --elf target/linux_port/build/vmlinux.unstripped
+    $(basename "$0") --defconfig little64_litex_sim_defconfig
+    $(basename "$0") --host 10.0.0.5 --port 9000 --elf target/linux_port/build/vmlinux.unstripped
 EOF
 }
 
 HOST="$DEFAULT_HOST"
 PORT="$DEFAULT_PORT"
+DEFCONFIG_NAME=""
 ELF_PATH=""
 EXTRA_LLDB_ARGS=()
 
@@ -45,6 +47,11 @@ while [[ $# -gt 0 ]]; do
         --port)
             [[ $# -ge 2 ]] || { echo "error: --port requires a value" >&2; exit 1; }
             PORT="$2"
+            shift 2
+            ;;
+        --defconfig)
+            [[ $# -ge 2 ]] || { echo "error: --defconfig requires a value" >&2; exit 1; }
+            DEFCONFIG_NAME="$2"
             shift 2
             ;;
         --elf)
@@ -70,11 +77,11 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$ELF_PATH" ]]; then
-    if [[ -f "$DEFAULT_ELF_UNSTRIPPED" ]]; then
-        ELF_PATH="$DEFAULT_ELF_UNSTRIPPED"
-    elif [[ -f "$DEFAULT_ELF" ]]; then
-        ELF_PATH="$DEFAULT_ELF"
+    PROFILE_ARGS=()
+    if [[ -n "$DEFCONFIG_NAME" ]]; then
+        PROFILE_ARGS+=(--defconfig "$DEFCONFIG_NAME")
     fi
+    ELF_PATH=$(python3 "$PROFILE_PATHS_PY" existing-kernel "${PROFILE_ARGS[@]}" 2>/dev/null || true)
 fi
 
 if [[ ! -x "$LLDB_BIN" ]]; then
