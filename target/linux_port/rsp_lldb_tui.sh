@@ -27,7 +27,7 @@ Examples:
   $(basename "$0")
   $(basename "$0") --port 1234
     $(basename "$0") --defconfig little64_litex_sim_defconfig
-    $(basename "$0") --host 10.0.0.5 --port 9000 --elf target/linux_port/build/vmlinux.unstripped
+    $(basename "$0") --host 10.0.0.5 --port 9000 --elf target/linux_port/build-litex/vmlinux.unstripped
 EOF
 }
 

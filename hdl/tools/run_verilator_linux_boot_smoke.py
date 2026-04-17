@@ -9,7 +9,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BUILD_ROOT = REPO_ROOT / 'builddir' / 'hdl-verilator-linux-boot'
-VMLINUX = REPO_ROOT / 'target' / 'linux_port' / 'build-little64_litex_sim_defconfig' / 'vmlinux'
+VMLINUX = REPO_ROOT / 'target' / 'linux_port' / 'build-litex' / 'vmlinux'
 GENERATE_DTS_SCRIPT = REPO_ROOT / 'hdl' / 'tools' / 'generate_litex_linux_dts.py'
 EXPORT_SCRIPT = REPO_ROOT / 'hdl' / 'tools' / 'export_linux_boot_verilog.py'
 FLASH_BUILD_SCRIPT = REPO_ROOT / 'hdl' / 'tools' / 'build_litex_flash_image.py'
@@ -36,6 +36,9 @@ LDFLAGS = os.environ.get('LITTLE64_VERILATOR_LDFLAGS', '-O3 -march=native -flto'
 HARNESS_CXXFLAGS = f'{CXXFLAGS} -DLITTLE64_HARNESS_ENABLE_DEBUG={1 if HARNESS_DEBUG else 0}'
 BINARY_NAME = f'little64_linux_boot_smoke_t{THREADS}' + ('' if HARNESS_DEBUG else '_ndbg')
 BINARY = OBJDIR / BINARY_NAME
+CORE_VARIANT = os.environ.get('LITTLE64_VERILATOR_CORE_VARIANT', 'v2')
+CACHE_TOPOLOGY = os.environ.get('LITTLE64_VERILATOR_CACHE_TOPOLOGY', 'unified')
+VERILOG_CONFIG = BUILD_ROOT / 'little64_linux_boot_top.cfg'
 BOOTARGS = os.environ.get(
     'LITTLE64_VERILATOR_BOOTARGS',
     'console=liteuart earlycon=liteuart,0xf0001000 ignore_loglevel loglevel=8',
@@ -53,7 +56,7 @@ def _latest_mtime(paths: list[Path]) -> float:
 
 
 def _hdl_sources() -> list[Path]:
-    return sorted((REPO_ROOT / 'hdl' / 'little64').glob('*.py'))
+    return sorted((REPO_ROOT / 'hdl' / 'little64').rglob('*.py'))
 
 
 def _run_checked(command: list[str]) -> None:
@@ -92,9 +95,20 @@ def _build_dtb() -> None:
 
 def _build_verilog() -> None:
     sources = [EXPORT_SCRIPT, *_hdl_sources()]
-    if VERILOG.exists() and VERILOG.stat().st_mtime >= _latest_mtime(sources):
+    desired_config = f'{CORE_VARIANT}:{CACHE_TOPOLOGY}\n'
+    existing_config = VERILOG_CONFIG.read_text(encoding='utf-8') if VERILOG_CONFIG.exists() else None
+    if VERILOG.exists() and VERILOG.stat().st_mtime >= _latest_mtime(sources) and existing_config == desired_config:
         return
-    _run_checked([sys.executable, str(EXPORT_SCRIPT), str(VERILOG)])
+    _run_checked([
+        sys.executable,
+        str(EXPORT_SCRIPT),
+        str(VERILOG),
+        '--core-variant',
+        CORE_VARIANT,
+        '--cache-topology',
+        CACHE_TOPOLOGY,
+    ])
+    VERILOG_CONFIG.write_text(desired_config, encoding='utf-8')
 
 
 def _build_flash_image() -> None:
@@ -178,7 +192,7 @@ def main() -> int:
         '--flash',
         str(FLASH_IMAGE),
         '--max-cycles',
-        os.environ.get('LITTLE64_VERILATOR_MAX_CYCLES', '200000000'),
+        os.environ.get('LITTLE64_VERILATOR_MAX_CYCLES', '2000000000'),
     ]
     for marker in REQUIRED_MARKERS:
         command.extend(['--require', marker])

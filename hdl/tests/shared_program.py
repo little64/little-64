@@ -9,7 +9,9 @@ from typing import Any
 from amaranth.sim import Simulator
 
 from little64.config import Little64CoreConfig
-from little64.core import CoreState, Little64Core
+from little64.core import CoreState
+from little64.v2 import V2PipelineState
+from little64.variants import create_core
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -279,7 +281,8 @@ def run_program_words(words: list[int],
                       initial_data_memory: dict[int, int] | None = None,
                       irq_schedule: dict[int, int] | None = None,
                       max_cycles: int = 256) -> dict[str, object]:
-    dut = Little64Core(config or Little64CoreConfig(reset_vector=0))
+    resolved_config = config or Little64CoreConfig(reset_vector=0)
+    dut = create_core(resolved_config)
     sim = Simulator(dut)
     sim.add_clock(1e-6)
 
@@ -333,6 +336,7 @@ def run_program_words(words: list[int],
 
     def observe_process():
         def seed_core_state():
+            initial_pc = (initial_registers or {}).get(15, resolved_config.reset_vector)
             if initial_registers:
                 for index, value in initial_registers.items():
                     yield dut.register_file[index].eq(value)
@@ -340,7 +344,6 @@ def run_program_words(words: list[int],
             if initial_special_registers:
                 for name, value in initial_special_registers.items():
                     yield getattr(dut.special_regs, name).eq(value)
-            yield dut.halted.eq(0)
             yield dut.locked_up.eq(0)
             if 'trap_cause' not in seeded_special_registers:
                 yield dut.special_regs.trap_cause.eq(0)
@@ -353,7 +356,17 @@ def run_program_words(words: list[int],
             if 'trap_aux' not in seeded_special_registers:
                 yield dut.special_regs.trap_aux.eq(0)
             yield dut.irq_lines.eq(0)
-            yield dut.state.eq(CoreState.FETCH_TRANSLATE)
+            if resolved_config.core_variant == 'basic':
+                yield dut.halted.eq(0)
+                yield dut.state.eq(CoreState.FETCH_TRANSLATE)
+            else:
+                yield dut.frontend.line_valid.eq(0)
+                yield dut.fetch_pc.eq(initial_pc)
+                yield dut.fetch_phys_addr.eq(initial_pc)
+                yield dut.register_file[15].eq(initial_pc)
+                yield dut.current_instruction.eq(0)
+                yield dut.execute_instruction.eq(0)
+                yield dut.state.eq(V2PipelineState.FETCH_TRANSLATE)
 
         yield
         seeded_special_registers = initial_special_registers or {}
@@ -413,7 +426,7 @@ def run_single_instruction(word: int,
                            extra_code_words: dict[int, int] | None = None,
                            initial_data_memory: dict[int, int] | None = None,
                            irq_schedule: dict[int, int] | None = None,
-                           max_cycles: int = 12) -> dict[str, object]:
+                           max_cycles: int = 20) -> dict[str, object]:
     return run_program_words(
         [word, encode_gp_imm('STOP', 0, 0)],
         config=config,

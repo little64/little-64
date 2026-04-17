@@ -1,0 +1,463 @@
+#!/usr/bin/env python3
+
+from __future__ import annotations
+
+import argparse
+import subprocess
+import sys
+from pathlib import Path
+
+from litedram.init import get_sdram_phy_c_header
+from litex.soc.integration import export as litex_export
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+REPO_ROOT = _repo_root()
+sys.path.insert(0, str(REPO_ROOT / 'hdl'))
+
+DEFAULT_ROOTFS_IMAGE = REPO_ROOT / 'target' / 'linux_port' / 'rootfs' / 'build' / 'rootfs.ext4'
+ROOTFS_BUILD_SCRIPT = REPO_ROOT / 'target' / 'linux_port' / 'rootfs' / 'build.sh'
+
+from little64.litex import LITTLE64_LINUX_RAM_BASE, LITTLE64_LITEX_BOOT_SOURCES, LITTLE64_LITEX_TARGET_NAMES
+from little64.litex import normalize_litex_boot_source, resolve_litex_target
+from little64.litex_linux_boot import (
+    DEFAULT_SD_BOOT_PARTITION_SIZE_MB,
+    DEFAULT_SD_CARD_SIZE_BYTES,
+    write_litex_sd_card_image,
+)
+from little64.litex_soc import Little64LiteXSimSoC
+
+
+STAGE0_SYSTEM_HEADER = """#ifndef __SYSTEM_H
+#define __SYSTEM_H
+
+#define CONFIG_CPU_NOP \"nop\"
+
+#endif
+"""
+
+
+STAGE0_HW_COMMON_HEADER = """#ifndef __HW_COMMON_H
+#define __HW_COMMON_H
+
+#include <stdint.h>
+#include <generated/soc.h>
+
+#ifndef CSR_ACCESSORS_DEFINED
+#define CSR_ACCESSORS_DEFINED
+
+#define MMPTR(a) (*((volatile uint32_t *)(a)))
+
+static inline void csr_write_simple(unsigned long value, unsigned long address) {
+    MMPTR(address) = (uint32_t)value;
+}
+
+static inline unsigned long csr_read_simple(unsigned long address) {
+    return MMPTR(address);
+}
+
+#endif
+
+#define CSR_DW_BYTES     (CONFIG_CSR_DATA_WIDTH/8)
+#define CSR_OFFSET_BYTES 4
+
+static inline int num_subregs(int csr_bytes) {
+    return (csr_bytes - 1) / CSR_DW_BYTES + 1;
+}
+
+static inline uint64_t _csr_rd(unsigned long address, int csr_bytes) {
+    uint64_t value = csr_read_simple(address);
+    for (int index = 1; index < num_subregs(csr_bytes); ++index) {
+        value <<= CONFIG_CSR_DATA_WIDTH;
+        address += CSR_OFFSET_BYTES;
+        value |= csr_read_simple(address);
+    }
+    return value;
+}
+
+static inline void _csr_wr(unsigned long address, uint64_t value, int csr_bytes) {
+    int subregs = num_subregs(csr_bytes);
+    for (int index = 0; index < subregs; ++index) {
+        csr_write_simple(value >> (CONFIG_CSR_DATA_WIDTH * (subregs - 1 - index)), address);
+        address += CSR_OFFSET_BYTES;
+    }
+}
+
+static inline uint8_t csr_rd_uint8(unsigned long address) {
+    return (uint8_t)_csr_rd(address, sizeof(uint8_t));
+}
+
+static inline void csr_wr_uint8(uint8_t value, unsigned long address) {
+    _csr_wr(address, value, sizeof(uint8_t));
+}
+
+static inline uint16_t csr_rd_uint16(unsigned long address) {
+    return (uint16_t)_csr_rd(address, sizeof(uint16_t));
+}
+
+static inline void csr_wr_uint16(uint16_t value, unsigned long address) {
+    _csr_wr(address, value, sizeof(uint16_t));
+}
+
+static inline uint32_t csr_rd_uint32(unsigned long address) {
+    return (uint32_t)_csr_rd(address, sizeof(uint32_t));
+}
+
+static inline void csr_wr_uint32(uint32_t value, unsigned long address) {
+    _csr_wr(address, value, sizeof(uint32_t));
+}
+
+static inline uint64_t csr_rd_uint64(unsigned long address) {
+    return _csr_rd(address, sizeof(uint64_t));
+}
+
+static inline void csr_wr_uint64(uint64_t value, unsigned long address) {
+    _csr_wr(address, value, sizeof(uint64_t));
+}
+
+#endif
+"""
+
+
+def _run(command: list[str]) -> None:
+    subprocess.run(command, check=True)
+
+
+def _build_default_rootfs() -> Path:
+    if not ROOTFS_BUILD_SCRIPT.is_file():
+        raise FileNotFoundError(f'missing default rootfs builder: {ROOTFS_BUILD_SCRIPT}')
+    _run(['bash', str(ROOTFS_BUILD_SCRIPT)])
+    if not DEFAULT_ROOTFS_IMAGE.is_file():
+        raise FileNotFoundError(f'default rootfs builder did not produce {DEFAULT_ROOTFS_IMAGE}')
+    return DEFAULT_ROOTFS_IMAGE
+
+
+def _align_up(value: int, alignment: int) -> int:
+    return (value + alignment - 1) & -alignment
+
+
+def _write_stage0_header(
+    output_path: Path,
+    *,
+    soc: Little64LiteXSimSoC,
+    ram_base: int,
+    ram_size: int,
+    kernel_physical_base: int,
+) -> None:
+    if not soc.finalized:
+        soc.finalize()
+
+    rom_region = soc.bus.regions.get('rom')
+    uart_region = soc.csr.regions.get('uart')
+    sdcard_phy_region = soc.csr.regions.get('sdcard_phy')
+    sdcard_core_region = soc.csr.regions.get('sdcard_core')
+    sdcard_block2mem_region = soc.csr.regions.get('sdcard_block2mem')
+    sdram_region = soc.csr.regions.get('sdram')
+    if uart_region is None or sdcard_phy_region is None or sdcard_core_region is None or sdcard_block2mem_region is None:
+        raise ValueError('SD-capable LiteX SoC is missing the UART or SDCard CSR regions needed by stage-0')
+
+    output_path.write_text(
+        '\n'.join([
+            '#ifndef LITTLE64_LITEX_SD_BOOT_REGS_H',
+            '#define LITTLE64_LITEX_SD_BOOT_REGS_H',
+            '',
+            f'#define L64_SYS_CLK_FREQ {soc.sys_clk_freq}ULL',
+            f'#define L64_RAM_BASE 0x{ram_base:016x}ULL',
+            f'#define L64_RAM_SIZE 0x{ram_size:016x}ULL',
+            f'#define L64_KERNEL_PHYSICAL_BASE 0x{kernel_physical_base:016x}ULL',
+            f'#define L64_BOOTROM_BASE 0x{0 if rom_region is None else rom_region.origin:016x}ULL',
+            f'#define L64_BOOTROM_SIZE 0x{0 if rom_region is None else rom_region.size:016x}ULL',
+            f'#define L64_HAVE_SDRAM_INIT {1 if sdram_region is not None else 0}',
+            '',
+            f'#define L64_UART_BASE 0x{uart_region.origin:016x}ULL',
+            f'#define L64_SDCARD_BLOCK2MEM_BASE 0x{sdcard_block2mem_region.origin:016x}ULL',
+            f'#define L64_SDCARD_CORE_BASE 0x{sdcard_core_region.origin:016x}ULL',
+            f'#define L64_SDCARD_PHY_BASE 0x{sdcard_phy_region.origin:016x}ULL',
+            f'#define L64_SDRAM_CSR_BASE 0x{0 if sdram_region is None else sdram_region.origin:016x}ULL',
+            '',
+            '#define L64_UART_RXTX_ADDR (L64_UART_BASE + 0x00ULL)',
+            '#define L64_UART_TXFULL_ADDR (L64_UART_BASE + 0x04ULL)',
+            '',
+            '#define L64_SDCARD_BLOCK2MEM_DMA_BASE_ADDR (L64_SDCARD_BLOCK2MEM_BASE + 0x00ULL)',
+            '#define L64_SDCARD_BLOCK2MEM_DMA_LENGTH_ADDR (L64_SDCARD_BLOCK2MEM_BASE + 0x08ULL)',
+            '#define L64_SDCARD_BLOCK2MEM_DMA_ENABLE_ADDR (L64_SDCARD_BLOCK2MEM_BASE + 0x0cULL)',
+            '#define L64_SDCARD_BLOCK2MEM_DMA_DONE_ADDR (L64_SDCARD_BLOCK2MEM_BASE + 0x10ULL)',
+            '',
+            '#define L64_SDCARD_CORE_CMD_ARGUMENT_ADDR (L64_SDCARD_CORE_BASE + 0x00ULL)',
+            '#define L64_SDCARD_CORE_CMD_COMMAND_ADDR (L64_SDCARD_CORE_BASE + 0x04ULL)',
+            '#define L64_SDCARD_CORE_CMD_SEND_ADDR (L64_SDCARD_CORE_BASE + 0x08ULL)',
+            '#define L64_SDCARD_CORE_CMD_RESPONSE_ADDR (L64_SDCARD_CORE_BASE + 0x0cULL)',
+            '#define L64_SDCARD_CORE_CMD_EVENT_ADDR (L64_SDCARD_CORE_BASE + 0x1cULL)',
+            '#define L64_SDCARD_CORE_DATA_EVENT_ADDR (L64_SDCARD_CORE_BASE + 0x20ULL)',
+            '#define L64_SDCARD_CORE_BLOCK_LENGTH_ADDR (L64_SDCARD_CORE_BASE + 0x24ULL)',
+            '#define L64_SDCARD_CORE_BLOCK_COUNT_ADDR (L64_SDCARD_CORE_BASE + 0x28ULL)',
+            '',
+            '#define L64_SDCARD_PHY_CARD_DETECT_ADDR (L64_SDCARD_PHY_BASE + 0x00ULL)',
+            '#define L64_SDCARD_PHY_CLOCK_DIVIDER_ADDR (L64_SDCARD_PHY_BASE + 0x04ULL)',
+            '#define L64_SDCARD_PHY_INITIALIZE_ADDR (L64_SDCARD_PHY_BASE + 0x08ULL)',
+            '#define L64_SDCARD_PHY_DATAW_STATUS_ADDR (L64_SDCARD_PHY_BASE + 0x10ULL)',
+            '#define L64_SDCARD_PHY_SETTINGS_ADDR (L64_SDCARD_PHY_BASE + 0x18ULL)',
+            '',
+            '#endif',
+            '',
+        ]),
+        encoding='utf-8',
+    )
+
+
+def _write_stage0_generated_support(output_dir: Path, *, soc: Little64LiteXSimSoC) -> None:
+    if not soc.finalized:
+        soc.finalize()
+
+    generated_dir = output_dir / 'generated'
+    hw_dir = output_dir / 'hw'
+    generated_dir.mkdir(parents=True, exist_ok=True)
+    hw_dir.mkdir(parents=True, exist_ok=True)
+
+    (generated_dir / 'soc.h').write_text(
+        litex_export.get_soc_header(soc.constants, with_access_functions=False),
+        encoding='utf-8',
+    )
+    (output_dir / 'system.h').write_text(STAGE0_SYSTEM_HEADER, encoding='utf-8')
+    (hw_dir / 'common.h').write_text(STAGE0_HW_COMMON_HEADER, encoding='utf-8')
+
+    if not hasattr(soc, 'sdram'):
+        return
+
+    (generated_dir / 'csr.h').write_text(
+        _generate_stage0_sdram_csr_header(soc),
+        encoding='utf-8',
+    )
+    (generated_dir / 'sdram_phy.h').write_text(
+        get_sdram_phy_c_header(
+            soc.sdram.controller.settings.phy,
+            soc.sdram.controller.settings.timing,
+            soc.sdram.controller.settings.geom,
+        ),
+        encoding='utf-8',
+    )
+
+
+def _generate_stage0_sdram_csr_header(soc: Little64LiteXSimSoC) -> str:
+    if not soc.finalized:
+        soc.finalize()
+
+    region = soc.csr_regions['sdram']
+    alignment_bytes = int(soc.constants.get('CONFIG_CSR_ALIGNMENT', 32)) // 8
+    busword = region.busword
+    lines = [
+        '#include <generated/soc.h>',
+        '#ifndef __GENERATED_CSR_H',
+        '#define __GENERATED_CSR_H',
+        '#include <stdint.h>',
+        '#include <system.h>',
+        '#ifndef CSR_ACCESSORS_DEFINED',
+        '#include <hw/common.h>',
+        '#endif /* ! CSR_ACCESSORS_DEFINED */',
+        '',
+        '#define CSR_SDRAM_BASE 0x{:x}L'.format(region.origin),
+    ]
+
+    offset = 0
+
+    def add_csr(name: str, csr, *, with_read: bool = True, with_write: bool = True) -> None:
+        nonlocal offset
+        nwords = (csr.size + busword - 1) // busword
+        address = region.origin + offset
+        lines.append('#define CSR_{}_ADDR 0x{:x}L'.format(name, address))
+        lines.append('#define CSR_{}_SIZE {}'.format(name, nwords))
+        if nwords == 1:
+            if with_read:
+                lines.extend([
+                    'static inline uint32_t {}_read(void) {{'.format(name.lower()),
+                    '\treturn csr_read_simple(CSR_{}_ADDR);'.format(name),
+                    '}',
+                ])
+            if with_write:
+                lines.extend([
+                    'static inline void {}_write(uint32_t value) {{'.format(name.lower()),
+                    '\tcsr_write_simple(value, CSR_{}_ADDR);'.format(name),
+                    '}',
+                ])
+        offset += alignment_bytes * nwords
+
+    add_csr('SDRAM_DFII_CONTROL', soc.sdram.dfii._control)
+    for phase_index in range(soc.sdram.controller.settings.phy.nphases):
+        phase = getattr(soc.sdram.dfii, f'pi{phase_index}')
+        prefix = f'SDRAM_DFII_PI{phase_index}'
+        add_csr(f'{prefix}_COMMAND', phase._command)
+        add_csr(f'{prefix}_COMMAND_ISSUE', phase._command_issue)
+        add_csr(f'{prefix}_ADDRESS', phase._address)
+        add_csr(f'{prefix}_BADDRESS', phase._baddress)
+        add_csr(f'{prefix}_WRDATA', phase._wrdata, with_read=False, with_write=False)
+        add_csr(f'{prefix}_RDDATA', phase._rddata, with_read=False, with_write=False)
+
+    lines.append('')
+    lines.append('#endif /* ! __GENERATED_CSR_H */')
+    lines.append('')
+    return '\n'.join(lines)
+
+
+def _build_stage0(stage0_source: Path, stage0_linker: Path, generated_header_dir: Path, work_dir: Path) -> bytes:
+    compilers_bin = REPO_ROOT / 'compilers' / 'bin'
+    obj_path = work_dir / 'litex_sd_boot.o'
+    elf_path = work_dir / 'litex_sd_boot.elf'
+    bin_path = work_dir / 'litex_sd_boot.bin'
+
+    _run([
+        str(compilers_bin / 'clang'),
+        '-target', 'little64',
+        '-Os',
+        '-ffreestanding',
+        '-fno-builtin',
+        '-fomit-frame-pointer',
+        '-fno-stack-protector',
+        '-fno-unwind-tables',
+        '-fno-asynchronous-unwind-tables',
+        '-I',
+        str(generated_header_dir),
+        '-c',
+        str(stage0_source),
+        '-o',
+        str(obj_path),
+    ])
+    _run([
+        str(compilers_bin / 'ld.lld'),
+        str(obj_path),
+        '-o',
+        str(elf_path),
+        '-T',
+        str(stage0_linker),
+    ])
+    _run([
+        str(compilers_bin / 'llvm-objcopy'),
+        '-O',
+        'binary',
+        str(elf_path),
+        str(bin_path),
+    ])
+    return bin_path.read_bytes()
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description='Build Little64 SD boot artifacts for LiteX-compatible boot flows.')
+    parser.add_argument('--kernel-elf', type=Path, required=True, help='Little64 Linux kernel ELF to store as VMLINUX in the FAT32 boot partition.')
+    parser.add_argument('--dtb', type=Path, required=True, help='Compiled DTB to store as BOOT.DTB in the FAT32 boot partition.')
+    parser.add_argument('--bootrom-output', type=Path, help='Boot ROM image path to write.')
+    parser.add_argument('--flash-output', type=Path, default=None, help=argparse.SUPPRESS)
+    parser.add_argument('--sd-output', type=Path, required=True, help='Raw SD card image path to write.')
+    rootfs_group = parser.add_mutually_exclusive_group()
+    rootfs_group.add_argument('--rootfs-image', type=Path,
+        help='Explicit ext4 rootfs image to place in the second partition. When omitted, the builder regenerates the default init.S-based rootfs.')
+    rootfs_group.add_argument('--no-rootfs', action='store_true',
+        help='Leave the second partition empty instead of generating the default ext4 rootfs.')
+    parser.add_argument('--ram-base', type=lambda value: int(value, 0), default=None, help='Physical RAM base visible to the SoC. Defaults to the selected LiteX target contract.')
+    parser.add_argument('--ram-size', type=lambda value: int(value, 0), default=None, help='Physical RAM size visible to the SoC. Defaults to the selected LiteX target contract.')
+    parser.add_argument('--kernel-physical-base', type=lambda value: int(value, 0), default=None,
+        help='Physical kernel load base. Defaults to the selected RAM base when it is above the historical Linux low-memory base.')
+    parser.add_argument('--cpu-variant', default='standard', help='LiteX CPU variant used to derive the SoC CSR layout for stage-0.')
+    parser.add_argument('--litex-target', choices=LITTLE64_LITEX_TARGET_NAMES, default='sim-bootrom',
+        help='Named LiteX target descriptor used for SoC metadata and the default boot source.')
+    parser.add_argument('--boot-source', choices=LITTLE64_LITEX_BOOT_SOURCES, default=None,
+        help='Override the LiteX target default boot source while deriving the SoC CSR layout.')
+    parser.add_argument('--with-sdram', action='store_true',
+        help='Enable the LiteDRAM-backed SDRAM model even for simulation targets that default to integrated RAM.')
+    parser.add_argument('--stage0-source', type=Path, default=Path('target/c_boot/litex_sd_boot.c'), help='SD-capable stage-0 C source to compile into the internal boot ROM image.')
+    parser.add_argument('--stage0-linker', type=Path, default=Path('target/c_boot/linker_litex_bootrom.ld'), help='Linker script used for the internal boot ROM stage-0 image.')
+    parser.add_argument('--sd-card-size-bytes', type=lambda value: int(value, 0), default=DEFAULT_SD_CARD_SIZE_BYTES,
+        help='Total raw SD card image size in bytes. Defaults to 4 GiB.')
+    parser.add_argument('--boot-partition-size-mb', type=int, default=DEFAULT_SD_BOOT_PARTITION_SIZE_MB,
+        help='FAT32 boot partition size in MiB. Defaults to 256.')
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+    legacy_flash_output = args.flash_output is not None and args.bootrom_output is None
+    output_arg = args.bootrom_output or args.flash_output
+    if output_arg is None:
+        raise ValueError('missing required output path: pass --bootrom-output')
+
+    target = resolve_litex_target(args.litex_target)
+    default_boot_source = 'spiflash' if legacy_flash_output else target.boot_source
+    boot_source = normalize_litex_boot_source(args.boot_source or default_boot_source)
+    resolved_with_sdram = args.with_sdram or target.with_sdram
+
+    default_ram_base = 0 if boot_source == 'spiflash' else target.main_ram_base
+    default_ram_size = 0x0400_0000 if boot_source == 'spiflash' else target.default_ram_size
+    ram_base = default_ram_base if args.ram_base is None else args.ram_base
+    ram_size = default_ram_size if args.ram_size is None else args.ram_size
+    kernel_physical_base = max(ram_base, LITTLE64_LINUX_RAM_BASE) if args.kernel_physical_base is None else args.kernel_physical_base
+
+    image_output = output_arg.resolve()
+    sd_output = args.sd_output.resolve()
+    work_dir = image_output.parent / f'{image_output.stem}.work'
+    work_dir.mkdir(parents=True, exist_ok=True)
+
+    stage0_linker = args.stage0_linker
+    if legacy_flash_output and stage0_linker == Path('target/c_boot/linker_litex_bootrom.ld'):
+        stage0_linker = Path('target/c_boot/linker_litex_spi_boot.ld')
+
+    soc = Little64LiteXSimSoC(
+        cpu_variant=args.cpu_variant,
+        integrated_main_ram_size=0 if resolved_with_sdram else ram_size,
+        main_ram_size=ram_size,
+        with_sdram=resolved_with_sdram,
+        with_spi_flash=True,
+        with_sdcard=True,
+        with_timer=True,
+        litex_target=args.litex_target,
+        boot_source=boot_source,
+        sdram_module=target.sdram_module,
+    )
+    generated_header = work_dir / 'litex_sd_boot_regs.h'
+    _write_stage0_header(
+        generated_header,
+        soc=soc,
+        ram_base=ram_base,
+        ram_size=ram_size,
+        kernel_physical_base=kernel_physical_base,
+    )
+    _write_stage0_generated_support(work_dir, soc=soc)
+
+    stage0_bytes = _build_stage0(
+        (REPO_ROOT / args.stage0_source).resolve(),
+        (REPO_ROOT / stage0_linker).resolve(),
+        work_dir,
+        work_dir,
+    )
+
+    if boot_source == 'bootrom':
+        image_size = max(target.integrated_rom_size, _align_up(len(stage0_bytes), 4096))
+        if len(stage0_bytes) > image_size:
+            raise ValueError('stage-0 image exceeds the selected boot ROM capacity')
+        stage0_image = bytearray(image_size)
+        stage0_image[:len(stage0_bytes)] = stage0_bytes
+    else:
+        image_size = max(0x10000, _align_up(len(stage0_bytes), 4096))
+        stage0_image = bytearray(image_size)
+        stage0_image[:len(stage0_bytes)] = stage0_bytes
+
+    rootfs_bytes = None
+    if not args.no_rootfs:
+        rootfs_path = _build_default_rootfs() if args.rootfs_image is None else args.rootfs_image.resolve()
+        rootfs_bytes = rootfs_path.read_bytes()
+    write_litex_sd_card_image(
+        sd_output,
+        kernel_elf_bytes=args.kernel_elf.resolve().read_bytes(),
+        dtb_bytes=args.dtb.resolve().read_bytes(),
+        rootfs_bytes=rootfs_bytes,
+        total_disk_size_bytes=args.sd_card_size_bytes,
+        boot_partition_size_mb=args.boot_partition_size_mb,
+    )
+
+    image_output.parent.mkdir(parents=True, exist_ok=True)
+    image_output.write_bytes(bytes(stage0_image))
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

@@ -7,10 +7,10 @@ from amaranth import Elaboratable, Module, Signal
 from amaranth.back import verilog
 
 from .config import Little64CoreConfig
-from .core import Little64Core
+from .variants import LITEX_CPU_VARIANT_CONFIGS, create_core
 
 
-LITTLE64_LITEX_CPU_VARIANTS = ('standard',)
+LITTLE64_LITEX_CPU_VARIANTS = tuple(LITEX_CPU_VARIANT_CONFIGS)
 LITTLE64_LITEX_IO_REGIONS = {
     0x0800_0000: 0x0100_0000,
     0x8000_0000: 0x8000_0000,
@@ -23,11 +23,18 @@ LITTLE64_LITEX_MEM_MAP = {
     'csr': 0xF000_0000,
 }
 LITTLE64_LINUX_RAM_BASE = 0x0010_0000
-LITTLE64_LINUX_BREADCRUMB_UART_BASE = 0x0800_0000
 LITTLE64_LINUX_TIMER_BASE = 0x0800_1000
 LITTLE64_LITEX_FLASH_BOOT_MAGIC = 0x4C3634464C415348
 LITTLE64_LITEX_FLASH_BOOT_HEADER_OFFSET = 0x0000_2000
 LITTLE64_LITEX_FLASH_BOOT_ABI_VERSION = 1
+LITTLE64_LITEX_BOOTROM_SIZE = 0x0000_8000
+LITTLE64_LITEX_BOOTROM_MAIN_RAM_BASE = 0x4000_0000
+LITTLE64_LITEX_BOOT_SOURCE_BOOTROM = 'bootrom'
+LITTLE64_LITEX_BOOT_SOURCE_SPIFLASH = 'spiflash'
+LITTLE64_LITEX_BOOT_SOURCES = (
+    LITTLE64_LITEX_BOOT_SOURCE_BOOTROM,
+    LITTLE64_LITEX_BOOT_SOURCE_SPIFLASH,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +58,83 @@ class Little64LiteXProfile:
     mem_map: dict[str, int] = field(default_factory=lambda: dict(LITTLE64_LITEX_MEM_MAP))
 
 
+@dataclass(frozen=True, slots=True)
+class Little64LiteXTarget:
+    name: str
+    model: str
+    compatible: tuple[str, ...]
+    boot_source: str = LITTLE64_LITEX_BOOT_SOURCE_SPIFLASH
+    integrated_rom_size: int = 0
+    main_ram_base: int = LITTLE64_LITEX_MEM_MAP['main_ram']
+    default_ram_size: int = 0x0400_0000
+    with_spi_flash: bool = False
+    with_sdcard: bool = False
+    with_sdram: bool = False
+    sdram_module: str = 'MT48LC16M16'
+
+
+LITTLE64_LITEX_TARGET_CONFIGS = {
+    'sim-flash': Little64LiteXTarget(
+        name='sim-flash',
+        model='Little64 LiteX Simulation SoC',
+        compatible=('little64,litex-sim',),
+        boot_source=LITTLE64_LITEX_BOOT_SOURCE_SPIFLASH,
+        with_spi_flash=True,
+    ),
+    'sim-bootrom': Little64LiteXTarget(
+        name='sim-bootrom',
+        model='Little64 LiteX Simulation SoC (Boot ROM)',
+        compatible=('little64,litex-sim', 'little64,bootrom'),
+        boot_source=LITTLE64_LITEX_BOOT_SOURCE_BOOTROM,
+        integrated_rom_size=LITTLE64_LITEX_BOOTROM_SIZE,
+        main_ram_base=LITTLE64_LITEX_BOOTROM_MAIN_RAM_BASE,
+    ),
+    'arty-a7-35': Little64LiteXTarget(
+        name='arty-a7-35',
+        model='Little64 LiteX Arty A7-35T SoC',
+        compatible=('little64,arty-a7-35', 'digilent,arty-a7-35'),
+        boot_source=LITTLE64_LITEX_BOOT_SOURCE_BOOTROM,
+        integrated_rom_size=LITTLE64_LITEX_BOOTROM_SIZE,
+        main_ram_base=0x4000_0000,
+        default_ram_size=0x1000_0000,
+        with_sdcard=True,
+        with_sdram=True,
+        sdram_module='MT41K128M16',
+    ),
+}
+LITTLE64_LITEX_TARGET_NAMES = tuple(LITTLE64_LITEX_TARGET_CONFIGS)
+
+
+def normalize_litex_boot_source(boot_source: str) -> str:
+    if boot_source not in LITTLE64_LITEX_BOOT_SOURCES:
+        raise ValueError(f'Unsupported Little64 LiteX boot source: {boot_source}')
+    return boot_source
+
+
+def resolve_litex_target(target: str | Little64LiteXTarget | None) -> Little64LiteXTarget:
+    if target is None:
+        return LITTLE64_LITEX_TARGET_CONFIGS['sim-flash']
+    if isinstance(target, Little64LiteXTarget):
+        return target
+    try:
+        return LITTLE64_LITEX_TARGET_CONFIGS[target]
+    except KeyError as exc:
+        raise ValueError(f'Unsupported Little64 LiteX target: {target}') from exc
+
+
+def litex_mem_map_for_target(
+    target: str | Little64LiteXTarget | None,
+    *,
+    boot_source: str | None = None,
+) -> dict[str, int]:
+    resolved_target = resolve_litex_target(target)
+    resolved_boot_source = normalize_litex_boot_source(boot_source or resolved_target.boot_source)
+    mem_map = dict(LITTLE64_LITEX_MEM_MAP)
+    if resolved_boot_source == LITTLE64_LITEX_BOOT_SOURCE_BOOTROM:
+        mem_map['main_ram'] = resolved_target.main_ram_base
+    return mem_map
+
+
 class Little64LiteXShim(Elaboratable):
     def __init__(
         self,
@@ -68,7 +152,7 @@ class Little64LiteXShim(Elaboratable):
         if self.profile.reset_address != self.config.reset_vector:
             raise ValueError('Little64LiteXProfile reset_address must match Little64CoreConfig reset_vector')
 
-        self.core = Little64Core(self.config)
+        self.core = create_core(self.config)
 
         self.ibus = self.core.i_bus
         self.dbus = self.core.d_bus

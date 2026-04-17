@@ -25,6 +25,15 @@ test('shared-case-generation',
   timeout : 60,
 )
 
+test('linux-port-build-helper',
+  python3,
+  args : [
+    meson.project_source_root() / 'tests/host/test_linux_port_build_helper.py',
+  ],
+  suite : ['unit', 'linux', 'tooling'],
+  timeout : 60,
+)
+
 cpu_tests = {
   'gp':          'target/test_cpu_gp.cpp',
   'ldi':         'target/test_cpu_ldi.cpp',
@@ -194,6 +203,15 @@ test('boot-direct-physical-run',
   ],
   suite : ['boot', 'integration', 'direct'],
   timeout : 60,
+)
+
+test('boot-litex-bootrom-run',
+  python3,
+  args : [
+    meson.project_source_root() / 'tests/host/boot/test_litex_flash_boot.py',
+  ],
+  suite : ['boot', 'integration', 'litex'],
+  timeout : 120,
 )
 
 test('boot-linux-userspace-write',

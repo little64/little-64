@@ -23,6 +23,11 @@ public:
                                    uint64_t total_size, std::string_view name = "MEM");
     MachineConfig& addRom(uint64_t base, std::vector<uint8_t> data, std::string_view name = "ROM");
     MachineConfig& addSerial(uint64_t base, std::string_view name = "SERIAL");
+    MachineConfig& addLiteUart(uint64_t base, std::string_view name = "LITEUART");
+    MachineConfig& addLiteDramDfiiStub(uint64_t base, std::string_view name = "LITEDRAM");
+    MachineConfig& addLiteSdCard(uint64_t base, std::string_view image_path,
+                                 bool force_read_only = false,
+                                 std::string_view name = "LITESDCARD");
     MachineConfig& addTimer(uint64_t base, std::string_view name = "TIMER");
     MachineConfig& addPvBlock(uint64_t base, std::string_view image_path,
                               bool force_read_only = false,

@@ -160,6 +160,22 @@ bool loadRuntimeImageFromPath(IEmulatorRuntime& runtime,
         return false;
     }
 
+    if (options.boot_mode == HeadlessBootMode::LiteXBootRom) {
+        if (!runtime.loadProgramLiteXBootRomImage(bytes)) {
+            error = "Error: failed to load LiteX bootrom image";
+            return false;
+        }
+        return true;
+    }
+
+    if (options.boot_mode == HeadlessBootMode::LiteXFlash) {
+        if (!runtime.loadProgramLiteXFlashImage(bytes)) {
+            error = "Error: failed to load LiteX SPI flash image";
+            return false;
+        }
+        return true;
+    }
+
     const bool is_elf = bytes.size() >= 4 &&
                         bytes[0] == 0x7F && bytes[1] == 'E' && bytes[2] == 'L' && bytes[3] == 'F';
     if (!is_elf) {

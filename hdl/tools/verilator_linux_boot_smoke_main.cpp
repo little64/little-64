@@ -40,8 +40,8 @@ constexpr uint64_t FLASH_BASE = 0x2000'0000ULL;
 constexpr uint64_t FLASH_BOOT_MAGIC = 0x4C3634464C415348ULL;
 constexpr uint64_t FLASH_BOOT_HEADER_OFFSET = 0x2000ULL;
 
-constexpr uint64_t UART_BASE = 0x0800'0000ULL;
-constexpr uint64_t UART_SIZE = 0x8ULL;
+constexpr uint64_t UART_BASE = 0xF000'1000ULL;
+constexpr uint64_t UART_SIZE = 0x100ULL;
 constexpr uint64_t TIMER_BASE = 0x0800'1000ULL;
 constexpr uint64_t TIMER_SIZE = 0x20ULL;
 constexpr uint64_t PVBLK_BASE = 0x0800'2000ULL;
@@ -325,13 +325,15 @@ FlashBootImage loadFlashBootImage(const fs::path& path) {
 }
 
 struct SerialDevice {
-    uint8_t dll = 0;
-    uint8_t dlm = 0;
-    uint8_t ier = 0;
-    uint8_t fcr = 0;
-    uint8_t lcr = 0;
-    uint8_t mcr = 0;
-    uint8_t scr = 0;
+    static constexpr uint64_t OFF_RXTX = 0x00;
+    static constexpr uint64_t OFF_TXFULL = 0x04;
+    static constexpr uint64_t OFF_RXEMPTY = 0x08;
+    static constexpr uint64_t OFF_EV_STATUS = 0x0C;
+    static constexpr uint64_t OFF_EV_PENDING = 0x10;
+    static constexpr uint64_t OFF_EV_ENABLE = 0x14;
+
+    uint8_t evPending = 0;
+    uint8_t evEnable = 0;
     std::string output;
     std::string tail;
     uint64_t readCount = 0;
@@ -359,44 +361,32 @@ struct SerialDevice {
     }
 
     uint8_t read8(uint64_t offset) const {
-        const auto reg = offset & 0x7ULL;
-        const bool dlab = (lcr & 0x80U) != 0;
-        if (dlab && reg == 0) return dll;
-        if (dlab && reg == 1) return dlm;
-        switch (reg) {
-            case 0: return 0;
-            case 1: return ier;
-            case 2: return 0x01;
-            case 3: return lcr;
-            case 4: return mcr;
-            case 5: return 0x60;
-            case 6: return 0xB0;
-            case 7: return scr;
+        switch (offset) {
+            case OFF_RXTX: return 0;
+            case OFF_TXFULL: return 0;
+            case OFF_RXEMPTY: return 1;
+            case OFF_EV_STATUS: return evPending;
+            case OFF_EV_PENDING: return evPending;
+            case OFF_EV_ENABLE: return evEnable;
             default: return 0;
         }
     }
 
     void write8(uint64_t offset, uint8_t value) {
         ++writeCount;
-        lastWriteOffset = offset & 0x7ULL;
+        lastWriteOffset = offset;
         lastWriteValue = value;
-        const auto reg = offset & 0x7ULL;
-        const bool dlab = (lcr & 0x80U) != 0;
-        if (dlab && reg == 0) {
-            dll = value;
-            return;
-        }
-        if (dlab && reg == 1) {
-            dlm = value;
-            return;
-        }
-        switch (reg) {
-            case 0: ++txWriteCount; appendOutput(value); break;
-            case 1: ier = value; break;
-            case 2: fcr = value; break;
-            case 3: lcr = value; break;
-            case 4: mcr = value; break;
-            case 7: scr = value; break;
+        switch (offset) {
+            case OFF_RXTX:
+                ++txWriteCount;
+                appendOutput(value);
+                break;
+            case OFF_EV_PENDING:
+                evPending &= static_cast<uint8_t>(~value);
+                break;
+            case OFF_EV_ENABLE:
+                evEnable = value;
+                break;
             default: break;
         }
     }
@@ -777,6 +767,21 @@ struct BootResult {
     bool zeroInstruction = false;
     bool panicCaptured = false;
     uint64_t cycles = 0;
+};
+
+struct IBusRequestTracker {
+    bool active = false;
+    bool responseIssued = false;
+    uint64_t address = 0;
+};
+
+struct DBusRequestTracker {
+    bool active = false;
+    bool responseIssued = false;
+    uint64_t address = 0;
+    uint64_t data = 0;
+    uint8_t selectMask = 0;
+    bool write = false;
 };
 
 #if LITTLE64_HARNESS_ENABLE_DEBUG
@@ -1199,6 +1204,8 @@ class SimulatorRunner {
         top->d_bus_ack = 0;
         top->d_bus_err = 0;
         top->d_bus_dat_r = 0;
+        iBusRequest = {};
+        dBusRequest = {};
     }
 
     void driveNextInputs() {
@@ -1213,27 +1220,66 @@ class SimulatorRunner {
         top->irq_lines = irqLines;
 
         if (top->i_bus_cyc && top->i_bus_stb) {
-            top->i_bus_dat_r = platform.readBusQword(top->i_bus_adr);
-            top->i_bus_ack = 1;
+            const bool newRequest = !iBusRequest.active || iBusRequest.address != top->i_bus_adr;
+            if (newRequest) {
+                iBusRequest = {
+                    .active = true,
+                    .responseIssued = false,
+                    .address = top->i_bus_adr,
+                };
+                top->i_bus_dat_r = 0;
+                top->i_bus_ack = 0;
+            } else if (!iBusRequest.responseIssued) {
+                top->i_bus_dat_r = platform.readBusQword(top->i_bus_adr);
+                top->i_bus_ack = 1;
+                iBusRequest.responseIssued = true;
+            } else {
+                top->i_bus_dat_r = 0;
+                top->i_bus_ack = 0;
+            }
             top->i_bus_err = 0;
         } else {
             top->i_bus_dat_r = 0;
             top->i_bus_ack = 0;
             top->i_bus_err = 0;
+            iBusRequest = {};
         }
 
         if (top->d_bus_cyc && top->d_bus_stb) {
-            if (top->d_bus_we) {
-                platform.writeBus(top->d_bus_adr, top->d_bus_dat_w, top->d_bus_sel);
+            const bool newRequest = !dBusRequest.active ||
+                dBusRequest.address != top->d_bus_adr ||
+                dBusRequest.data != top->d_bus_dat_w ||
+                dBusRequest.selectMask != top->d_bus_sel ||
+                dBusRequest.write != static_cast<bool>(top->d_bus_we);
+            if (newRequest) {
+                dBusRequest = {
+                    .active = true,
+                    .responseIssued = false,
+                    .address = top->d_bus_adr,
+                    .data = top->d_bus_dat_w,
+                    .selectMask = static_cast<uint8_t>(top->d_bus_sel),
+                    .write = static_cast<bool>(top->d_bus_we),
+                };
+                top->d_bus_dat_r = 0;
+                top->d_bus_ack = 0;
+            } else if (!dBusRequest.responseIssued) {
+                if (top->d_bus_we) {
+                    platform.writeBus(top->d_bus_adr, top->d_bus_dat_w, top->d_bus_sel);
+                } else {
+                    top->d_bus_dat_r = platform.readBusQword(top->d_bus_adr);
+                }
+                top->d_bus_ack = 1;
+                dBusRequest.responseIssued = true;
             } else {
-                top->d_bus_dat_r = platform.readBusQword(top->d_bus_adr);
+                top->d_bus_dat_r = 0;
+                top->d_bus_ack = 0;
             }
-            top->d_bus_ack = 1;
             top->d_bus_err = 0;
         } else {
             top->d_bus_dat_r = 0;
             top->d_bus_ack = 0;
             top->d_bus_err = 0;
+            dBusRequest = {};
         }
     }
 
@@ -1648,6 +1694,8 @@ class SimulatorRunner {
     std::unique_ptr<Vlittle64_linux_boot_top> top;
     Platform platform;
     bool debugTraceEnabled;
+    IBusRequestTracker iBusRequest;
+    DBusRequestTracker dBusRequest;
 #if LITTLE64_HARNESS_ENABLE_DEBUG
     std::deque<TraceEntry> recentTrace;
     std::optional<SymbolHitSnapshot> firstPanicHit;

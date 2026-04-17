@@ -34,18 +34,33 @@ The HDL core now performs exception and maskable IRQ vector delivery through the
 
 If the HDL conflicts with the ISA docs or proving tests, the HDL should be corrected unless the docs are stale.
 
+The current multi-cycle core now lives under `hdl/little64/basic/`.
+The new pipelined implementation path lives under `hdl/little64/v2/`.
+The top-level `hdl/little64/core.py` module remains as a compatibility import that currently aliases the Basic core.
+
 ## Current Layout
 
-- `hdl/little64/config.py` — core configuration and architectural build-time choices
+- `hdl/little64/config.py` — core configuration, core-variant selection, and architectural build-time choices
+- `hdl/little64/decode.py` — shared instruction-field helpers used by both the Basic and V2 cores
+- `hdl/little64/alu.py` — shared sign-extension and flag helpers used by both the Basic and V2 cores
+- `hdl/little64/mmu.py` — shared page-table and auxiliary fault helpers used by the V2 privilege/MMU path
 - `hdl/little64/wishbone.py` — 64-bit LiteX-compatible bus signal bundle
 - `hdl/little64/tlb.py` — direct-mapped TLB module
 - `hdl/little64/special_registers.py` — architected special-register storage
-- `hdl/little64/core.py` — single-issue core FSM with fetch, GP ALU, jumps, and basic LSU execution
-- `hdl/little64/litex.py` — LiteX-facing profile, wrapper shim, and generic CPU export top
+- `hdl/little64/core.py` — compatibility export for the current default core variant
+- `hdl/little64/basic/core.py` — current single-issue multi-cycle core FSM with fetch, GP ALU, jumps, and basic LSU execution
+- `hdl/little64/v2/core.py` — V2 core with fetch, execute, privilege/MMU, and cache-topology support behind the shared external interface
+- `hdl/little64/v2/cache.py` — small direct-mapped cache-line store used by the V2 data-side cache path
+- `hdl/little64/v2/frontend.py` — 64-bit fetch-line frontend that extracts 16-bit instructions for the V2 pipeline
+- `hdl/little64/v2/lsu.py` — V2 load/store unit handling aligned and split 64-bit Wishbone accesses
+- `hdl/little64/v2/decode.py` — V2 decode helpers used by the pipeline bring-up path
+- `hdl/little64/variants.py` — shared core-variant and cache-topology selection helpers used by the LiteX-facing path
+- `hdl/little64/litex.py` — LiteX-facing profile, named target and boot-source descriptors, wrapper shim, and generic CPU export top
 - `hdl/little64/litex_cpu.py` — real LiteX CPU plugin and raw Little64 data-bus alignment bridge
 - `hdl/little64/litex_linux_boot.py` — Linux ELF flattening and SPI-flash image packing helpers for the LiteX path
 - `hdl/little64/litex_soc.py` — minimal LiteX simulation SoC wrapper and Linux DTS generator
 - `hdl/tests/` — Python simulation and unit tests for unit and ISA coverage
+	- includes Basic/V2 shared generated ISA coverage, V2 shared jump/memory program coverage, V2 unaligned-access coverage, V2 cache/topology regression tests, and V2 privilege/MMU trap regression tests
 - `hdl/tools/build_litex_flash_image.py` — build a bootable SPI-flash image containing stage-0, Linux, and a DTB
 - `hdl/tools/export_litex_cpu_verilog.py` — export the generic LiteX CPU wrapper to Verilog
 - `hdl/tools/generate_litex_llvm_wrappers.py` — emit LiteX-compatible triple-prefixed LLVM tool wrappers for the repo toolchain
@@ -54,36 +69,54 @@ If the HDL conflicts with the ISA docs or proving tests, the HDL should be corre
 
 The current Python/Amaranth simulation path is appropriate for unit and ISA coverage but is too slow for practical full-Linux boot validation. Linux-on-HDL boot validation now uses a compiled Verilator harness instead of the pure Python simulator.
 
+The V2 path now executes the shared ALU, jump, and LSU subsets, including register-form and PC-relative loads/stores, stack push/pop paths, load-linked/store-conditional sequencing, and split unaligned accesses on the 64-bit Wishbone bus. It now also performs privileged trap entry, Sv39-style page walking for fetch/data/vector accesses, and data-side cache-line reuse behind the `none` / `unified` / `split` cache-topology surface. The LiteX-facing delivery path now exposes those choices through CPU variants, and the Linux boot export/smoke helpers can select non-default V2 configurations. The V2 HDL regression matrix now covers same-line instruction invalidation, paged interrupt-vector fetch, and core trap/MMU fault cases in addition to the shared ISA and memory subsets.
+
 ## Linux Boot Smoke
 
 The Linux boot smoke is the practical full-system validation path for the HDL core.
 It uses:
 
-- `target/linux_port/build-little64_litex_sim_defconfig/vmlinux` as the LiteX simulation kernel image,
+- `target/linux_port/build-litex/vmlinux` as the default LiteX simulation kernel image,
 - `hdl/tools/generate_litex_linux_dts.py` to emit a LiteX-simulation DTS under `builddir/hdl-verilator-linux-boot/`,
 - `hdl/tools/export_linux_boot_verilog.py` to emit the standalone top-level Verilog,
 - `hdl/tools/verilator_linux_boot_smoke_main.cpp` as the compiled harness,
 - `hdl/tools/run_verilator_linux_boot_smoke.py` as the normal entrypoint.
+
+The Verilator smoke path defaults to the Basic core but can also exercise V2 by setting:
+
+- `LITTLE64_VERILATOR_CORE_VARIANT=v2`
+- `LITTLE64_VERILATOR_CACHE_TOPOLOGY=none|unified|split`
 
 ## Native LiteX Simulation Flow
 
 The repo now also has a LiteX-native Linux smoke wrapper that uses LiteX's own
 simulation toolchain instead of the repo-local custom Verilator harness.
 
+The LiteX configuration layer now also carries named target descriptors such as
+`sim-flash`, `sim-bootrom`, and `arty-a7-35`. These currently drive SoC
+metadata and the default reset-source selection. The active native simulation
+and smoke flows remain SPI-flash-first by default while the internal boot-ROM
+migration is wired through stage-0 and artifact generation.
+
 Run it with:
 
 ```bash
-LITTLE64_LINUX_DEFCONFIG=little64_litex_sim_defconfig target/linux_port/build.sh vmlinux -j1
+target/linux_port/build.sh --machine litex vmlinux -j1
 ./.venv/bin/python hdl/tools/run_litex_linux_boot_smoke.py
 ```
 
 This wrapper:
 
 1. regenerates the LiteX simulation DTS and DTB,
-2. rebuilds the SPI-flash image containing stage-0, the kernel, and the DTB,
-3. instantiates the existing `Little64LiteXSimSoC` with that flash image,
+2. rebuilds either the SPI-flash image containing stage-0, the kernel, and the DTB or, with `--with-sdcard`, a SPI-flash stage-0 image plus a raw SD card image,
+3. instantiates the existing `Little64LiteXSimSoC` with the matching flash image and optional LiteSDCard path,
 4. asks LiteX's native simulation builder to generate and compile the simulator,
 5. runs the resulting `Vsim` binary and watches the serial stream for the required boot markers.
+
+The DTS generator now keeps a small sidecar cache next to each output DTS and
+skips rebuilding when the requested arguments and relevant `hdl/little64/*.py`
+inputs are unchanged. Current callers also skip `dtc` when the cached DTS file
+mtime has not advanced.
 
 Use this path when you want to validate the Little64 LiteX integration through
 LiteX's own simulator plumbing rather than the standalone custom harness.
@@ -94,23 +127,50 @@ Useful options:
 |---|---|
 | `--build-only` | Build the LiteX simulator and flash artifacts without running them |
 | `--run-only` | Reuse an existing LiteX simulator build from the output directory |
+| `--with-sdcard` | Build the SD-capable stage-0 flow, expose LiteSDCard in the SoC, and stage `sdcard.img` into the LiteX simulator run directory |
+| `--rootfs-image PATH` | Optional ext4 rootfs override for the second SD partition when `--with-sdcard` is enabled; when omitted the SD artifact builder regenerates the default init.S-based rootfs |
+| `--cpu-variant NAME` | Select the LiteX CPU variant, including `standard-v2`, `standard-v2-unified`, and `standard-v2-split` |
 | `--timeout-seconds N` | Stop waiting after `N` wall-clock seconds if the boot markers never appear |
-| `--require TEXT` | Override or extend the required serial markers |
+| `--require TEXT` | Replace the default success markers with an exact custom marker list |
+| `--extra-require TEXT` | Add extra serial markers on top of the default success markers |
 | `--jobs N` | Limit LiteX's Verilator compile parallelism |
 | `--threads N` | Set LiteX Verilator simulation thread count |
 
 The default output directory for this path is `builddir/hdl-litex-linux-boot/`.
+With `--with-sdcard`, the wrapper uses `builddir/hdl-litex-linux-boot-sdcard/`
+instead so SPI-flash and SD-card simulator builds do not reuse stale gateware.
+
+With `--with-sdcard`, the wrapper also builds `little64-linux-sdcard.img`
+under the SD-specific output directory and loads it through a repo-local LiteX
+sim module that services LiteSDCard block reads from `sdcard.img` in the
+simulator run directory.
+
+The default native LiteX smoke success marker is now the kernel banner:
+
+- `Linux version `
+
+That is late enough to prove that stage-0 has handed off and Linux has started
+executing real early boot code, but still earlier than waiting for the later
+root-mount panic path. When you need a stricter checkpoint, use repeated
+`--require` arguments to replace the default marker set entirely, or add
+repeated `--extra-require` arguments to keep the Linux banner while also
+requiring earlier or later breadcrumbs such as `stage0: handing off to kernel`.
+
+The repo now carries a local mirror of the LiteSDCard emulator Verilog sources
+used by this path. Some `litesdcard` Python package installs omit
+`litesdcard/emulator/verilog/`, so the Little64 LiteX SD wrapper falls back to
+the repo-local copy when the installed package does not provide those RTL files.
 
 ### Prerequisites
 
 Before running the smoke:
 
 ```bash
-LITTLE64_LINUX_DEFCONFIG=little64_litex_sim_defconfig target/linux_port/build.sh vmlinux -j1
+target/linux_port/build.sh vmlinux -j1
 ./.venv/bin/pip install -r requirements-hdl.txt
 ```
 
-The smoke expects the LiteX simulation kernel profile rather than the emulator-oriented default profile.
+The smoke expects the default LiteX simulation kernel profile. Use `--machine virt` only when you intentionally need the emulator-oriented kernel elsewhere.
 
 The HDL requirements file now also carries the LiteX Python packages used by the
 simulation-SoC integration layer:
@@ -232,7 +292,7 @@ Important failure bits:
 
 ### Timing And Progress Expectations
 
-For the current single-threaded harness on the LiteX simulation `vmlinux` image, `1000000` cycles is enough to see only early breadcrumb UART output such as `0`, `B`, and `P`. It is useful for rough performance estimates, not for reaching the later smoke markers.
+For the current single-threaded harness on the LiteX simulation `vmlinux` image, `1000000` cycles is enough to see only very early stage-0 UART output. It is useful for rough performance estimates, not for reaching the later smoke markers.
 
 If you need a quick throughput sample:
 
@@ -250,7 +310,7 @@ For timing experiments or when iterating on harness behavior, it is sometimes mo
 
 ```bash
 builddir/hdl-verilator-linux-boot/obj/little64_linux_boot_smoke_t1 \
-	--kernel target/linux_port/build-little64_litex_sim_defconfig/vmlinux \
+	--kernel target/linux_port/build-litex/vmlinux \
 	--flash builddir/hdl-verilator-linux-boot/little64-linux-spiflash.bin \
 	--max-cycles 1000000 \
 	--require 'little64-timer: clocksource + clockevent @ 1 GHz' \
@@ -276,15 +336,19 @@ than only a generic exported wrapper. The current LiteX support includes:
 	standard LiteX word-addressed Wishbone transactions, including split accesses
 	across 64-bit boundaries,
 - a minimal simulation-first LiteX SoC wrapper for SRAM, integrated RAM or
-	LiteDRAM-backed main RAM, LiteUART, a Linux-compatible timer block, a low-MMIO
-	breadcrumb UART sink, and memory-mapped SPI flash,
+	LiteDRAM-backed main RAM, LiteUART, a Linux-compatible timer block,
+	memory-mapped SPI flash, and optional LiteSDCard,
 - a SPI-flash boot-image flow that compiles a flash-resident stage-0 loader,
 	flattens the Linux PT_LOAD image the same way as the emulator's direct loader,
 	places the DTB after the kernel image with the same scratch gap, and jumps with
 	the existing Little64 physical-entry contract,
+- an SD boot-artifact flow that keeps stage-0 in SPI flash, emits a raw SD card
+	image with a fixed MBR and FAT32 boot partition, loads `VMLINUX` and
+	`BOOT.DTB` through LiteSDCard, and optionally places a second rootfs image in
+	the second partition,
 - a Linux DTS generator that emits Little64 CPU and interrupt-controller nodes
 	plus LiteUART, the Little64 timer node, the Linux-visible RAM window, and the
-	memory-mapped flash node.
+	memory-mapped flash node, plus LiteSDCard/MMC nodes when requested.
 
 Generate a baseline DTS with:
 
@@ -299,9 +363,19 @@ Build a bootable flash image with:
 
 ```bash
 ./.venv/bin/python hdl/tools/build_litex_flash_image.py \
-	--kernel-elf target/linux_port/build-little64_litex_sim_defconfig/vmlinux \
+	--kernel-elf target/linux_port/build-litex/vmlinux \
 	--dtb builddir/hdl-verilator-linux-boot/little64-litex-sim.dtb \
 	--output builddir/little64-linux-spiflash.bin
+```
+
+Build SD-oriented LiteX boot artifacts with:
+
+```bash
+./.venv/bin/python target/linux_port/build_sd_boot_artifacts.py \
+	--kernel-elf target/linux_port/build-litex/vmlinux \
+	--dtb builddir/hdl-litex-linux-boot/little64-litex-sim.dtb \
+	--flash-output builddir/little64-sd-stage0-spiflash.bin \
+	--sd-output builddir/little64-linux-sdcard.img
 ```
 
 ### LiteX Stage-0 Entry
@@ -309,21 +383,30 @@ Build a bootable flash image with:
 The LiteX SPI-flash flow now uses a dedicated stage-0 SoC boot entry at
 `target/c_boot/litex_spi_boot.c`.
 
+The SD-oriented LiteX flow uses a parallel stage-0 entry at
+`target/c_boot/litex_sd_boot.c`. That path now enters from the integrated boot
+ROM, performs any generated LiteDRAM/DFII initialization required by the
+selected SoC target, initializes LiteSDCard, reads a fixed MBR layout from
+sector `0`, mounts the first partition as a simple FAT32 volume with a fixed
+short-name lookup, loads `VMLINUX` and `BOOT.DTB`, and then hands off with the
+same register contract as the SPI-flash stage-0.
+
 Its reset sequence is intentionally minimal:
 
-1. enter from the CPU reset PC in SPI flash,
-2. establish a temporary low-RAM scratch stack below `0x00100000`,
+1. enter from the CPU reset PC in the integrated boot ROM,
+2. establish a temporary SRAM-backed boot stack,
 3. clear stage-0 `.bss`,
-4. validate the flash boot header at `0x20000000 + 0x2000`,
-5. copy the flattened kernel payload to physical RAM at `KERNEL_PHYS_BASE`,
-6. copy the DTB to the post-image scratch-safe address,
-7. jump to the kernel physical entry with the existing direct-boot register contract.
+4. run the generated LiteDRAM/DFII init sequence when the selected LiteX target exposes SDRAM,
+5. initialize LiteSDCard and bring the card to transfer-ready state,
+6. read the fixed MBR plus FAT32 boot partition from the SD image,
+7. load `VMLINUX` and `BOOT.DTB` from the FAT32 root directory,
+8. jump to the kernel physical entry with the existing direct-boot register contract.
 
-The stage-0 loader now emits readable serial status lines while it runs. The
-intent is to make simulator and future FPGA bring-up failures diagnosable from a
-plain UART capture rather than from terse breadcrumb bytes alone. In the normal
-success path it reports entry from SPI flash, `.bss` clearing, flash-header
-validation, the kernel and DTB copy plan with addresses and sizes, copy
+The stage-0 loader now emits readable serial status lines while it runs through
+the normal LiteUART path. The intent is to make simulator and future FPGA
+bring-up failures diagnosable from a plain UART capture. In the normal success
+path it reports boot-ROM entry, `.bss` clearing, optional SDRAM init progress,
+SD readiness, the kernel and DTB copy plan with addresses and sizes, copy
 completion, and the final kernel handoff. Validation failures also print a
 descriptive error line before the CPU stops.
 
@@ -336,6 +419,14 @@ The handoff contract remains aligned with the emulator's direct Linux boot path:
 
 The temporary stage-0 stack lives in low RAM so it does not overlap the kernel
 load window starting at `0x00100000`.
+
+For the current SD milestone, the on-disk contract is intentionally narrow:
+
+- partition 1 is a FAT32 boot partition,
+- `VMLINUX` and `BOOT.DTB` are looked up by fixed short names,
+- the stage-0 loader currently expects one sector per cluster and two FATs,
+- partition 2 is reserved for a later Linux rootfs and can already be populated
+	by `--rootfs-image` in the SD artifact builder and LiteX smoke wrapper.
 
 Emit the LiteX LLVM wrapper tools with:
 

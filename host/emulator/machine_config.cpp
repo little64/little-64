@@ -1,5 +1,8 @@
 #include "machine_config.hpp"
 
+#include "lite_dram_dfii_stub_device.hpp"
+#include "lite_sdcard_device.hpp"
+#include "lite_uart_device.hpp"
 #include "ram_region.hpp"
 #include "rom_region.hpp"
 #include "pv_block_device.hpp"
@@ -46,6 +49,32 @@ MachineConfig& MachineConfig::addSerial(uint64_t base, std::string_view name) {
     });
 }
 
+MachineConfig& MachineConfig::addLiteUart(uint64_t base, std::string_view name) {
+    std::string region_name(name);
+    return addDevice([base, region_name]() {
+        return std::make_unique<LiteUartDevice>(base, region_name);
+    });
+}
+
+MachineConfig& MachineConfig::addLiteDramDfiiStub(uint64_t base, std::string_view name) {
+    std::string region_name(name);
+    return addDevice([base, region_name]() {
+        return std::make_unique<LiteDramDfiiStubDevice>(base, region_name);
+    });
+}
+
+MachineConfig& MachineConfig::addLiteSdCard(uint64_t base, std::string_view image_path,
+                                            bool force_read_only, std::string_view name) {
+    std::string path(image_path);
+    std::string region_name(name);
+    return addDevice([base, path, force_read_only, region_name]() {
+        return std::make_unique<LiteSdCardDevice>(
+            base,
+            DiskImage::open(path, force_read_only),
+            region_name);
+    });
+}
+
 MachineConfig& MachineConfig::addTimer(uint64_t base, std::string_view name) {
     std::string region_name(name);
     return addDevice([base, region_name]() {
@@ -79,6 +108,9 @@ void MachineConfig::applyTo(MemoryBus& bus, std::vector<Device*>& devices, Inter
         }
         if (auto* pvblk = dynamic_cast<PvBlockDevice*>(device.get())) {
             pvblk->setMemoryBus(&bus);
+        }
+        if (auto* litesd = dynamic_cast<LiteSdCardDevice*>(device.get())) {
+            litesd->setMemoryBus(&bus);
         }
         // Set clock on TimerDevice if present
         if (clock) {

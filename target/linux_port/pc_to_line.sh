@@ -28,7 +28,7 @@ Options:
 Examples:
   $(basename "$0") 0xffffffc000013302
     $(basename "$0") --defconfig little64_litex_sim_defconfig 0xffffffc000013302
-  $(basename "$0") --elf target/linux_port/build/vmlinux 0xffffffc000013302
+    $(basename "$0") --elf target/linux_port/build-litex/vmlinux 0xffffffc000013302
   $(basename "$0") --context-bytes 64 0xffffffc000013302
 EOF
 }
@@ -96,7 +96,11 @@ fi
 
 if [[ ! -f "$ELF_PATH" ]]; then
     echo "error: ELF not found: $ELF_PATH" >&2
-    echo "hint: build the selected kernel first with: target/linux_port/build.sh vmlinux" >&2
+    if [[ -n "$DEFCONFIG_NAME" ]]; then
+        echo "hint: build the selected kernel first with: target/linux_port/build.sh --defconfig $DEFCONFIG_NAME vmlinux" >&2
+    else
+        echo "hint: build the selected kernel first with: target/linux_port/build.sh vmlinux" >&2
+    fi
     exit 1
 fi
 

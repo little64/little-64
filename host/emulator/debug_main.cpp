@@ -24,6 +24,8 @@ int main(int argc, char** argv) {
             if (mode == "auto")    load_options.boot_mode = HeadlessBootMode::Auto;
             else if (mode == "bios")   load_options.boot_mode = HeadlessBootMode::Bios;
             else if (mode == "direct") load_options.boot_mode = HeadlessBootMode::Direct;
+            else if (mode == "litex-bootrom") load_options.boot_mode = HeadlessBootMode::LiteXBootRom;
+            else if (mode == "litex-flash") load_options.boot_mode = HeadlessBootMode::LiteXFlash;
             else {
                 std::cerr << "Error: invalid --boot-mode value '" << mode << "'\n";
                 return 2;

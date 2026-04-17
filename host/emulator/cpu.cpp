@@ -1,4 +1,6 @@
 #include "cpu.hpp"
+#include "lite_sdcard_device.hpp"
+#include "lite_uart_device.hpp"
 #include "machine_config.hpp"
 #include "opcodes.hpp"
 #include "page_table_builder.hpp"
@@ -119,6 +121,21 @@ constexpr uint64_t HYPERCALL_CAP_MINIMAL_BOOT = 1;
 constexpr uint64_t SERIAL_BASE = 0x08000000ULL;
 constexpr uint64_t TIMER_BASE = 0x08001000ULL;
 constexpr uint64_t PVBLK_BASE = 0x08002000ULL;
+constexpr uint64_t LITEX_BOOTROM_BASE = 0x00000000ULL;
+constexpr uint64_t LITEX_BOOTROM_SIZE = 0x00008000ULL;
+constexpr uint64_t LITEX_BOOTROM_RAM_BASE = 0x40000000ULL;
+constexpr uint64_t LITEX_FLASH_BASE = 0x20000000ULL;
+constexpr uint64_t LITEX_FLASH_WINDOW_SIZE = 0x01000000ULL;
+constexpr uint64_t LITEX_SRAM_BASE = 0x10000000ULL;
+constexpr uint64_t LITEX_SRAM_SIZE = 0x00004000ULL;
+constexpr uint64_t LITEX_SDCARD_BASE = 0xF0000800ULL;
+constexpr uint64_t LITEX_UART_BASE = 0xF0001000ULL;
+constexpr uint64_t LITEX_SDRAM_CSR_BASE = 0xF0003000ULL;
+constexpr uint64_t LITEX_SDRAM_CSR_SIZE = 0x00000100ULL;
+constexpr uint64_t LITEX_FLASH_SD_UART_BASE = 0xF0003800ULL;
+constexpr uint64_t LITEX_BOOTROM_SD_UART_BASE = 0xF0004000ULL;
+constexpr uint64_t LITEX_FLASH_RAM_SIZE = 64 * 1024 * 1024ULL;
+constexpr uint64_t LITEX_BOOTROM_RAM_SIZE = 256 * 1024 * 1024ULL;
 
 } // namespace
 
@@ -1412,6 +1429,105 @@ bool Little64CPU::loadProgramElfDirectPaged(const std::vector<uint8_t>& elf_byte
     return true;
 }
 
+bool Little64CPU::loadProgramLiteXFlashImage(const std::vector<uint8_t>& flash_bytes) {
+    _boot_event_head = 0;
+    _boot_event_wrapped = false;
+    _boot_event_dumped = false;
+    _cycle_count = 0;
+    _flushTLB();
+
+    if (flash_bytes.empty() || flash_bytes.size() > LITEX_FLASH_WINDOW_SIZE) {
+        return false;
+    }
+
+    std::vector<uint8_t> flash_window(static_cast<size_t>(LITEX_FLASH_WINDOW_SIZE), 0xFF);
+    std::memcpy(flash_window.data(), flash_bytes.data(), flash_bytes.size());
+    setBootSourcePages(flash_bytes, 4096);
+
+    MachineConfig cfg;
+    cfg.addRam(0, LITEX_FLASH_RAM_SIZE, "RAM")
+        .addRam(LITEX_SRAM_BASE, LITEX_SRAM_SIZE, "SRAM")
+        .addRom(LITEX_FLASH_BASE, std::move(flash_window), "FLASH");
+    if (_disk_image && _disk_image->isValid()) {
+        cfg.addLiteSdCard(LITEX_SDCARD_BASE, _disk_image->path(), _disk_image->isReadOnly(), "LITESDCARD")
+            .addLiteUart(LITEX_FLASH_SD_UART_BASE, "LITEUART");
+    } else {
+        cfg.addLiteUart(LITEX_UART_BASE, "LITEUART");
+    }
+    cfg.addTimer(TIMER_BASE, "TIMER");
+    cfg.applyTo(_bus, _devices, this, &_clock);
+
+    _mem_base = 0;
+    _mem_size = LITEX_FLASH_RAM_SIZE;
+    _page_table_alloc_cursor = _mem_base + _mem_size;
+
+    registers = {};
+    registers.boot_source_page_size = 4096;
+    registers.boot_source_page_count = (_boot_source_bytes.size() + 4095ULL) / 4096ULL;
+    registers.hypercall_caps = HYPERCALL_CAP_MINIMAL_BOOT;
+    registers.regs[15] = LITEX_FLASH_BASE;
+    isRunning = true;
+    _clock.resume();
+    _recordBootEvent("litex-flash-load", LITEX_FLASH_BASE, LITEX_FLASH_WINDOW_SIZE,
+                     static_cast<uint64_t>(flash_bytes.size()));
+    if (_disk_image && _disk_image->isValid()) {
+        _recordBootEvent("litex-sd-attach", LITEX_SDCARD_BASE, _disk_image->sectorCount(),
+                         LITEX_FLASH_SD_UART_BASE);
+    }
+    return true;
+}
+
+bool Little64CPU::loadProgramLiteXBootRomImage(const std::vector<uint8_t>& bootrom_bytes) {
+    _boot_event_head = 0;
+    _boot_event_wrapped = false;
+    _boot_event_dumped = false;
+    _cycle_count = 0;
+    _flushTLB();
+
+    if (bootrom_bytes.empty() || bootrom_bytes.size() > LITEX_BOOTROM_SIZE) {
+        return false;
+    }
+
+    std::vector<uint8_t> bootrom_window(static_cast<size_t>(LITEX_BOOTROM_SIZE), 0x00);
+    std::memcpy(bootrom_window.data(), bootrom_bytes.data(), bootrom_bytes.size());
+    std::vector<uint8_t> flash_window(static_cast<size_t>(LITEX_FLASH_WINDOW_SIZE), 0xFF);
+    setBootSourcePages(bootrom_bytes, 4096);
+
+    MachineConfig cfg;
+    cfg.addRom(LITEX_BOOTROM_BASE, std::move(bootrom_window), "BOOTROM")
+        .addRom(LITEX_FLASH_BASE, std::move(flash_window), "FLASH")
+        .addRam(LITEX_SRAM_BASE, LITEX_SRAM_SIZE, "SRAM")
+        .addRam(LITEX_BOOTROM_RAM_BASE, LITEX_BOOTROM_RAM_SIZE, "RAM")
+        .addLiteDramDfiiStub(LITEX_SDRAM_CSR_BASE, "LITEDRAM");
+    if (_disk_image && _disk_image->isValid()) {
+        cfg.addLiteSdCard(LITEX_SDCARD_BASE, _disk_image->path(), _disk_image->isReadOnly(), "LITESDCARD")
+            .addLiteUart(LITEX_BOOTROM_SD_UART_BASE, "LITEUART");
+    } else {
+        cfg.addLiteUart(LITEX_UART_BASE, "LITEUART");
+    }
+    cfg.addTimer(TIMER_BASE, "TIMER");
+    cfg.applyTo(_bus, _devices, this, &_clock);
+
+    _mem_base = LITEX_BOOTROM_RAM_BASE;
+    _mem_size = LITEX_BOOTROM_RAM_SIZE;
+    _page_table_alloc_cursor = _mem_base + _mem_size;
+
+    registers = {};
+    registers.boot_source_page_size = 4096;
+    registers.boot_source_page_count = (_boot_source_bytes.size() + 4095ULL) / 4096ULL;
+    registers.hypercall_caps = HYPERCALL_CAP_MINIMAL_BOOT;
+    registers.regs[15] = LITEX_BOOTROM_BASE;
+    isRunning = true;
+    _clock.resume();
+    _recordBootEvent("litex-bootrom-load", LITEX_BOOTROM_BASE, LITEX_BOOTROM_SIZE,
+                     static_cast<uint64_t>(bootrom_bytes.size()));
+    if (_disk_image && _disk_image->isValid()) {
+        _recordBootEvent("litex-sd-attach", LITEX_SDCARD_BASE, _disk_image->sectorCount(),
+                         LITEX_BOOTROM_SD_UART_BASE);
+    }
+    return true;
+}
+
 void Little64CPU::setBootSourcePages(std::vector<uint8_t> bytes, uint64_t page_size) {
     _boot_source_bytes = std::move(bytes);
     registers.boot_source_page_size = page_size;
@@ -1428,6 +1544,26 @@ SerialDevice* Little64CPU::getSerial() {
             return s;
     }
     return nullptr;
+}
+
+std::string Little64CPU::takeConsoleOutput() {
+    for (Device* d : _devices) {
+        if (auto* serial = dynamic_cast<SerialDevice*>(d)) {
+            std::string output = serial->txBuffer();
+            if (!output.empty()) {
+                serial->clearTxBuffer();
+            }
+            return output;
+        }
+        if (auto* liteuart = dynamic_cast<LiteUartDevice*>(d)) {
+            std::string output = liteuart->txBuffer();
+            if (!output.empty()) {
+                liteuart->clearTxBuffer();
+            }
+            return output;
+        }
+    }
+    return {};
 }
 
 void Little64CPU::setMmioTrace(bool enabled) {

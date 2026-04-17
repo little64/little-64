@@ -36,6 +36,7 @@ Current examples:
 
 - `TimerDevice` receives the shared `EmulatorClock`
 - `PvBlockDevice` receives the `MemoryBus` so it can read guest request descriptors and data buffers
+- `PvBlockDevice` and `LiteSdCardDevice` both use the shared `DiskImage` helper, which performs file-backed sector I/O instead of caching the whole image in RAM
 
 ## Runtime Integration Points
 

@@ -15,6 +15,8 @@ enum class HeadlessBootMode {
     Auto,
     Bios,
     Direct,
+    LiteXBootRom,
+    LiteXFlash,
 };
 
 struct HeadlessLoadOptions {

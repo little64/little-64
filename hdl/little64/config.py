@@ -3,11 +3,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
+CORE_VARIANTS = ('basic', 'v2')
+CACHE_TOPOLOGIES = ('none', 'unified', 'split')
+
+
 @dataclass(frozen=True, slots=True)
 class Little64CoreConfig:
     instruction_bus_width: int = 64
     data_bus_width: int = 64
     address_width: int = 64
+    core_variant: str = 'basic'
+    cache_topology: str = 'none'
     enable_mmu: bool = True
     enable_tlb: bool = True
     tlb_entries: int = 64
@@ -22,6 +28,12 @@ class Little64CoreConfig:
             raise ValueError('Little64CoreConfig requires a 64-bit data bus')
         if self.address_width < 39:
             raise ValueError('Little64CoreConfig address width must cover canonical 39-bit VA space')
+        if self.core_variant not in CORE_VARIANTS:
+            raise ValueError(f'Little64CoreConfig core_variant must be one of {CORE_VARIANTS}')
+        if self.cache_topology not in CACHE_TOPOLOGIES:
+            raise ValueError(f'Little64CoreConfig cache_topology must be one of {CACHE_TOPOLOGIES}')
+        if self.core_variant == 'basic' and self.cache_topology != 'none':
+            raise ValueError('Little64CoreConfig basic core only supports cache_topology="none"')
         if self.irq_input_count < 1 or self.irq_input_count > 63:
             raise ValueError('Little64CoreConfig irq_input_count must be in the range 1..63')
         if self.enable_tlb:

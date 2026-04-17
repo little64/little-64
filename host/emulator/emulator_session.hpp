@@ -17,6 +17,8 @@ public:
     bool loadProgramElfDirectPaged(const std::vector<uint8_t>& elf_bytes,
                                    uint64_t kernel_physical_base = 0x100000,
                                    uint64_t direct_map_virtual_base = 0xFFFFFFC000000000ULL) override;
+    bool loadProgramLiteXBootRomImage(const std::vector<uint8_t>& bootrom_bytes) override;
+    bool loadProgramLiteXFlashImage(const std::vector<uint8_t>& flash_bytes) override;
     void cycle() override;
     void reset() override;
     void assertInterrupt(uint64_t num) override;

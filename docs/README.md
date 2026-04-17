@@ -47,11 +47,18 @@ Alternative entry points:
 ## Linux Bring-up Helpers
 
 - Kernel build helper: `target/linux_port/build.sh`
-	- Override the default `little64_defconfig` with `LITTLE64_LINUX_DEFCONFIG=<name>`, for example `little64_litex_sim_defconfig`.
-	- Non-default profiles build into `target/linux_port/build-<defconfig>/` by default so they do not overwrite the emulator kernel artifacts under `target/linux_port/build/`.
+	- The shell entrypoint delegates to `target/linux_port/linux_build.py`.
+	- Prefer `--machine virt|litex` for known profiles, or use `--defconfig <name>` for an explicit override.
+	- The default profile is `little64_litex_sim_defconfig`; use `--machine virt` or `LITTLE64_LINUX_DEFCONFIG=little64_defconfig` when you explicitly need the emulator-oriented kernel profile.
+	- Known profile directories are `target/linux_port/build-litex/` and `target/linux_port/build-virt/`; custom defconfigs still build into `target/linux_port/build-<defconfig>/`.
 - Minimal rootfs image builder: `target/linux_port/rootfs/build.sh`
+  - Builds the default ext4 image from `target/linux_port/rootfs/init.S`.
 - Canonical direct-boot helper: `target/linux_port/boot_direct.sh`
-	- Default mode captures control-flow, MMIO, and boot events.
+	- Default machine profile is `litex` and default mode is `smoke`.
+	- `--machine=virt` keeps the existing emulator-oriented direct Linux boot path.
+	- `--machine=litex` builds a matching LiteX DTB, SPI flash stage-0 image, and SD card image, then boots the LiteX kernel profile through the emulator's LiteX SD-compatible flash mode.
+	- The default LiteX path now also regenerates a minimal ext4 rootfs from `target/linux_port/rootfs/init.S` for SD partition 2 unless `--rootfs PATH` or `--no-rootfs` overrides it.
+	- The LiteX machine path also verifies that the selected kernel's adjacent `.config` enables `CONFIG_MMC_LITEX=y`, FAT/MSDOS boot-partition support, and `CONFIG_EXT4_FS=y` for the SD rootfs path, unless `LITTLE64_SKIP_LITEX_KERNEL_CONFIG_CHECK=1` is set.
 	- Use `--mode=smoke` for the faster no-event-capture smoke path.
 	- Use `--mode=rsp` to launch the direct-boot RSP debug server.
 - Compatibility wrappers remain available:
@@ -62,6 +69,8 @@ Alternative entry points:
 - HDL Verilator Linux smoke wrapper: `./.venv/bin/python hdl/tools/run_verilator_linux_boot_smoke.py`
 	- See `hdl.md` for the HDL-specific prerequisites, environment overrides, and direct-binary workflow.
 - LiteX Linux flash-image builder: `./.venv/bin/python hdl/tools/build_litex_flash_image.py`
+- SD boot artifact builder used by LiteX smoke and emulator LiteX boots: `./.venv/bin/python target/linux_port/build_sd_boot_artifacts.py`
+	- When `--rootfs-image` is omitted, it regenerates the default ext4 rootfs from `target/linux_port/rootfs/init.S` and installs it into the second SD partition.
 - LiteX LLVM wrapper generator: `./.venv/bin/python hdl/tools/generate_litex_llvm_wrappers.py`
 - LiteX DTS generator: `./.venv/bin/python hdl/tools/generate_litex_linux_dts.py`
 	- The Linux tree now also carries a separate built-in LiteX simulation profile via `target/linux_port/linux/arch/little64/boot/dts/little64-litex-sim.dts` and `target/linux_port/linux/arch/little64/configs/little64_litex_sim_defconfig`.

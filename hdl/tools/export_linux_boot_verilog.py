@@ -9,16 +9,16 @@ from amaranth.back import verilog
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from little64.config import Little64CoreConfig
-from little64.core import Little64Core
+from little64.config import CACHE_TOPOLOGIES, CORE_VARIANTS, Little64CoreConfig
 from little64.litex import LITTLE64_LITEX_MEM_MAP
+from little64.variants import create_core
 
 
 FLASH_RESET_BASE = LITTLE64_LITEX_MEM_MAP['spiflash']
 
 
 class Little64LinuxBootTop(Elaboratable):
-    def __init__(self) -> None:
+    def __init__(self, config: Little64CoreConfig | None = None) -> None:
         self.boot_r1 = Signal(64)
         self.boot_r13 = Signal(64)
 
@@ -59,7 +59,8 @@ class Little64LinuxBootTop(Elaboratable):
         self.commit_valid = Signal()
         self.commit_pc = Signal(64)
 
-        self.core = Little64Core(Little64CoreConfig(reset_vector=FLASH_RESET_BASE))
+        resolved_config = config or Little64CoreConfig(reset_vector=FLASH_RESET_BASE)
+        self.core = create_core(resolved_config)
 
     def elaborate(self, platform):
         m = Module()
@@ -107,12 +108,29 @@ class Little64LinuxBootTop(Elaboratable):
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description='Export the Little-64 Linux-boot Verilator wrapper to Verilog.')
     parser.add_argument('output', type=Path, help='Output Verilog file path')
+    parser.add_argument(
+        '--core-variant',
+        choices=CORE_VARIANTS,
+        default='basic',
+        help='Core variant used by the Linux-boot wrapper.',
+    )
+    parser.add_argument(
+        '--cache-topology',
+        choices=CACHE_TOPOLOGIES,
+        default='none',
+        help='Cache topology used by the Linux-boot wrapper.',
+    )
     return parser
 
 
 def main() -> int:
     args = build_parser().parse_args()
-    top = Little64LinuxBootTop()
+    config = Little64CoreConfig(
+        reset_vector=FLASH_RESET_BASE,
+        core_variant=args.core_variant,
+        cache_topology=args.cache_topology,
+    )
+    top = Little64LinuxBootTop(config)
     verilog_text = verilog.convert(
         top,
         name='little64_linux_boot_top',

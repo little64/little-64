@@ -29,25 +29,30 @@ This file documents practical update paths and maintenance rules for common proj
 ## Temporary Linux Build Script
 
 - A temporary Linux kernel build helper exists at `target/linux_port/build.sh`.
+- The shell entrypoint now delegates to the Python helper `target/linux_port/linux_build.py`.
 - It invokes the Linux kernel `make` target with the Little64 LLVM toolchain from `compilers/bin`.
-- The script is currently not part of the Meson graph and is meant for local Linux port experimentation only.
-- It auto-syncs the defconfig selected by `LITTLE64_LINUX_DEFCONFIG` (default `little64_defconfig`) into a profile-specific build directory when the canonical defconfig changes, the selected defconfig changes, or the build config is missing.
-- Default output directory: `target/linux_port/build/` for `little64_defconfig`.
-- Non-default output directory: `target/linux_port/build-<defconfig>/` unless `LITTLE64_LINUX_BUILD_DIR` overrides it.
-- Usage: `target/linux_port/build.sh [target]` where the default target is `vmlinux`.
-- To build a different machine profile, set `LITTLE64_LINUX_DEFCONFIG=<defconfig-name>`, for example `little64_litex_sim_defconfig`.
-- The script normally passes `-j$(nproc)` to `make` unless a `-j` argument is already provided.
+- The helper is currently not part of the Meson graph and is meant for local Linux port experimentation only.
+- It supports known machine profiles via `--machine virt|litex`, plus explicit overrides via `--defconfig <name>` and `--build-dir <path>`.
+- It auto-syncs the selected defconfig into a profile-specific build directory when the canonical defconfig changes, the selected defconfig changes, or the build config is missing.
+- Known profile output directories: `target/linux_port/build-litex/` for `little64_litex_sim_defconfig` and `target/linux_port/build-virt/` for `little64_defconfig`.
+- Custom defconfigs build into `target/linux_port/build-<defconfig>/` unless `LITTLE64_LINUX_BUILD_DIR` or `--build-dir` overrides it.
+- Usage: `target/linux_port/build.sh [--machine virt|litex] [--defconfig <name>] [--build-dir <path>] [target] [make-args...]` where the default target is `vmlinux`.
+- The default machine profile is `litex`; use `target/linux_port/build.sh --machine virt vmlinux -j1` when you explicitly need the emulator-oriented profile.
+- The helper normally passes `-j$(nproc)` to `make` unless a `-j` argument is already provided.
 - Optional guarded-clang mode can be enabled to catch backend non-termination/memory blowups:
   - `LITTLE64_CLANG_GUARD=1` enables `target/linux_port/clang_guard.sh` wrapper.
   - `LITTLE64_CLANG_TIMEOUT_SEC` sets per-clang timeout (default `120`).
   - `LITTLE64_CLANG_MAX_VMEM_KB` sets per-clang virtual memory cap in KB (default `10485760`, ~10 GB).
   - `LITTLE64_CLANG_GUARD_LOG_DIR` sets log directory (default `/tmp/little64-clang-guard`).
 - Direct ELF boot helper for first Linux bring-up exists at `target/linux_port/boot_direct.sh`:
-  - Default image path: `target/linux_port/build/vmlinux`.
-  - Default rootfs path: `target/linux_port/rootfs/build/rootfs.ext2`.
-  - Usage: `target/linux_port/boot_direct.sh [--mode trace|smoke|rsp] [--rootfs PATH | --no-rootfs] [--max-cycles N] [--port N] [optional-path-to-vmlinux]`.
-  - Default mode `trace` launches the headless emulator in direct mode (`--boot-mode=direct`) with MMIO/control-flow/boot-event capture enabled.
-  - It attaches the default PV block rootfs image read-only unless `--no-rootfs` is used.
+  - Default image path: `target/linux_port/build-litex/vmlinux`.
+  - Default rootfs path: `target/linux_port/rootfs/build/rootfs.ext4`.
+  - Usage: `target/linux_port/boot_direct.sh [--machine virt|litex] [--mode trace|smoke|rsp] [--rootfs PATH | --no-rootfs] [--max-cycles N] [--port N] [optional-path-to-vmlinux]`.
+  - Default machine profile is `litex`.
+  - Default mode `smoke` launches the lower-overhead direct boot flow without boot-event capture.
+  - The `virt` profile attaches the default rootfs image unless `--no-rootfs` is used.
+  - The `litex` profile now generates a bootrom-first LiteX image and launches emulator `--boot-mode=litex-bootrom` so the default path matches the SDRAM-backed hardware-oriented SoC layout.
+  - The `litex` profile regenerates a minimal ext4 rootfs from `target/linux_port/rootfs/init.S` for SD partition 2 unless `--rootfs PATH` or `--no-rootfs` overrides it.
   - In `trace` mode it streams full boot events to `/tmp/little64_boot_events.l64t` via `--boot-events-file`.
   - Default file size cap: 500 MB (override with `LITTLE64_BOOT_EVENTS_MAX_MB`).
   - Supports cycle-window tracing: `LITTLE64_TRACE_START_CYCLE=N LITTLE64_TRACE_END_CYCLE=N`.
@@ -58,9 +63,10 @@ This file documents practical update paths and maintenance rules for common proj
   - `target/linux_port/boot_direct_debugserver.sh` forwards to `target/linux_port/boot_direct.sh --mode=rsp`.
 - Minimal Linux rootfs build helper exists at `target/linux_port/rootfs/build.sh`:
   - Output directory: `target/linux_port/rootfs/build/`.
-  - Default image path: `target/linux_port/rootfs/build/rootfs.ext2`.
+  - Default image path: `target/linux_port/rootfs/build/rootfs.ext4`.
   - Usage: `target/linux_port/rootfs/build.sh` or `target/linux_port/rootfs/build.sh clean`.
-  - It builds a minimal `/init` ELF using the Little64 LLVM tools and packs it into an ext2 image for the PV block device.
+  - It builds a minimal `/init` ELF using the Little64 LLVM tools and packs it into an ext4 image for the PV block device.
+  - The LiteX SD artifact builder reuses this helper when it needs the default SD rootfs payload.
   - This is the main bring-up rootfs path and should remain independent of targeted boot regressions; the dedicated Linux userspace-write smoke test builds its own test-only init/rootfs under `tests/host/boot/`.
 - Boot-event analysis helper exists at `target/linux_port/analyze_lockup_flow.py`:
   - Usage: `target/linux_port/analyze_lockup_flow.py --log /tmp/little64_boot_events.l64t [--tail N] [--defconfig <name>] [--elf <path>]`.
@@ -74,7 +80,7 @@ This file documents practical update paths and maintenance rules for common proj
   - Usage: `l64trace.py watch <file>` for live-tailing (like `tail -f`), survives file recreation between runs.
   - **Important**: Trace files (`.l64t`) are binary and cannot be read directly. Always use `l64trace.py` subcommands to inspect them.
 - PC-to-source lookup helper for Linux kernel debugging exists at `target/linux_port/pc_to_line.sh`:
-  - Default image path: selected profile `vmlinux` under `target/linux_port/build/` or `target/linux_port/build-<defconfig>/`.
+  - Default image path: selected profile `vmlinux` under `target/linux_port/build-litex/`, `target/linux_port/build-virt/`, or `target/linux_port/build-<defconfig>/`.
   - Usage: `target/linux_port/pc_to_line.sh [--defconfig <name>] [--elf <path>] [--context-bytes N] [--no-disasm] <pc>`.
   - It resolves a PC to function/file/line using LLVM tools from `compilers/bin` and can show nearby disassembly.
 - Repeated fast-boot outcome sampler exists at `target/linux_port/sample_fast_boots.py`:
@@ -85,9 +91,9 @@ This file documents practical update paths and maintenance rules for common proj
   - Default output directory is under `/tmp/little64-fastboot-samples/<timestamp>/`.
 - To override core count or pass custom `make` arguments, add them after the target, for example:
   - `target/linux_port/build.sh vmlinux -j4`
-  - `target/linux_port/build.sh vmlinux LOCALVERSION=-custom CONFIG_DEBUG_INFO=y`
+  - `target/linux_port/build.sh --machine virt vmlinux LOCALVERSION=-custom CONFIG_DEBUG_INFO=y`
   - `LITTLE64_CLANG_GUARD=1 LITTLE64_CLANG_TIMEOUT_SEC=90 target/linux_port/build.sh vmlinux -j4`
-  - `LITTLE64_CLANG_GUARD=1 LITTLE64_CLANG_MAX_VMEM_KB=10485760 target/linux_port/build.sh vmlinux -j1`
+  - `LITTLE64_CLANG_GUARD=1 LITTLE64_CLANG_MAX_VMEM_KB=10485760 target/linux_port/build.sh --machine virt vmlinux -j1`
 - If you have made adjustmens to the LLVM toolchain, you **MUST** first clean the Linux build folder:
   - `target/linux_port/build.sh clean`
   - Do **NOT** use mrproper, use `clean`.
@@ -97,6 +103,10 @@ This file documents practical update paths and maintenance rules for common proj
 - LiteX Linux DTS helper: `hdl/tools/generate_litex_linux_dts.py`
 - LiteX LLVM wrapper helper: `hdl/tools/generate_litex_llvm_wrappers.py`
 - LiteX SPI-flash image helper: `hdl/tools/build_litex_flash_image.py`
+- Little64 SD boot artifact helper: `target/linux_port/build_sd_boot_artifacts.py`
+  - Builds the bootrom stage-0 image plus the SD card image used by the emulator's `--machine=litex` path and by the bootrom-first LiteX smoke flows.
+  - Pass `--with-sdram` when a simulation target should emit generated LiteDRAM init support instead of the integrated-RAM-only contract.
+  - Unless `--no-rootfs` or `--rootfs-image PATH` is passed, it regenerates the default ext4 rootfs from `target/linux_port/rootfs/init.S` and installs it into SD partition 2.
 - LiteX-native Linux smoke helper: `hdl/tools/run_litex_linux_boot_smoke.py`
   - Uses LiteX's own simulation builder / `SimPlatform` flow instead of the repo-local custom Verilator harness.
   - Default output directory: `builddir/hdl-litex-linux-boot/`.

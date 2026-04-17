@@ -1,5 +1,7 @@
 #define FLASH_BASE 0x20000000ULL
-#define SERIAL_BASE 0x08000000ULL
+#define LITEUART_BASE 0xF0001000ULL
+#define LITEUART_RXTX_OFFSET 0x00ULL
+#define LITEUART_TXFULL_OFFSET 0x04ULL
 #define FLASH_BOOT_MAGIC 0x4C3634464C415348ULL
 #define FLASH_BOOT_ABI_VERSION 1ULL
 #define FLASH_BOOT_HEADER_OFFSET 0x00002000ULL
@@ -31,12 +33,15 @@ typedef struct Little64LiteXFlashBootHeader {
     u64 reserved4;
 } Little64LiteXFlashBootHeader;
 
-static volatile u8* const serial_port = (volatile u8*)SERIAL_BASE;
+static volatile u8* const liteuart_rxtx = (volatile u8*)(LITEUART_BASE + LITEUART_RXTX_OFFSET);
+static volatile u8* const liteuart_txfull = (volatile u8*)(LITEUART_BASE + LITEUART_TXFULL_OFFSET);
 static const Little64LiteXFlashBootHeader* const flash_header =
     (const Little64LiteXFlashBootHeader*)(FLASH_BASE + FLASH_BOOT_HEADER_OFFSET);
 
 static void serial_putc(char c) {
-    *serial_port = (u8)c;
+    while (*liteuart_txfull != 0) {
+    }
+    *liteuart_rxtx = (u8)c;
 }
 
 static void serial_puts(const char* s) {

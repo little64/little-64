@@ -53,9 +53,11 @@ void dumpFinalRegisters(EmulatorSession& runtime, const char* reason) {
 
 static void printUsage(const char* argv0) {
     std::cerr << "Usage: " << argv0
-              << " [-h | --help] [--boot-mode=auto|bios|direct] [--disk=PATH] [--disk-readonly] [--max-cycles=N] [--trace-mmio] [--trace-control-flow] [--boot-events] [--boot-events-file=PATH] [--boot-events-max-mb=N] [--trace-start-cycle=N] [--trace-end-cycle=N] [--final-registers]"
+              << " [-h | --help] [--boot-mode=auto|bios|direct|litex-bootrom|litex-flash] [--disk=PATH] [--disk-readonly] [--max-cycles=N] [--trace-mmio] [--trace-control-flow] [--boot-events] [--boot-events-file=PATH] [--boot-events-max-mb=N] [--trace-start-cycle=N] [--trace-end-cycle=N] [--final-registers]"
               << " <binary.bin|object.o>\n"
               << "  Runs the assembled binary/ELF object and prints any serial (UART) output to stdout.\n"
+              << "  --boot-mode=litex-bootrom expects a raw LiteX bootrom image and boots it with the LiteX bootrom/UART map.\n"
+              << "  --boot-mode=litex-flash expects a raw LiteX SPI flash image and boots it with the LiteX flash/UART map.\n"
               << "  --max-cycles=N   Stop after N cycles and dump boot event log.\n"
               << "  --disk=PATH      Attach PATH as the paravirtual block root disk.\n"
               << "  --disk-readonly  Expose the attached disk as read-only.\n"
@@ -98,6 +100,8 @@ int main(int argc, char* argv[]) {
             if (mode == "auto") load_options.boot_mode = HeadlessBootMode::Auto;
             else if (mode == "bios") load_options.boot_mode = HeadlessBootMode::Bios;
             else if (mode == "direct") load_options.boot_mode = HeadlessBootMode::Direct;
+            else if (mode == "litex-bootrom") load_options.boot_mode = HeadlessBootMode::LiteXBootRom;
+            else if (mode == "litex-flash") load_options.boot_mode = HeadlessBootMode::LiteXFlash;
             else {
                 std::cerr << "Error: invalid --boot-mode value '" << mode << "'\n";
                 printUsage(argv[0]);

@@ -12,7 +12,7 @@ Reach the first observable Linux boot milestone in the emulator via direct ELF l
 
 The direct boot method is:
 
-- `./builddir/little-64 --boot-mode=direct target/linux_port/build/vmlinux`
+- `./builddir/little-64 --boot-mode=direct target/linux_port/build-litex/vmlinux`
 
 Or via helper script:
 

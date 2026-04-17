@@ -16,6 +16,14 @@ bool EmulatorSession::loadProgramElfDirectPaged(const std::vector<uint8_t>& elf_
     return _cpu.loadProgramElfDirectPaged(elf_bytes, kernel_physical_base, direct_map_virtual_base);
 }
 
+bool EmulatorSession::loadProgramLiteXBootRomImage(const std::vector<uint8_t>& bootrom_bytes) {
+    return _cpu.loadProgramLiteXBootRomImage(bootrom_bytes);
+}
+
+bool EmulatorSession::loadProgramLiteXFlashImage(const std::vector<uint8_t>& flash_bytes) {
+    return _cpu.loadProgramLiteXFlashImage(flash_bytes);
+}
+
 void EmulatorSession::setDiskImage(std::unique_ptr<DiskImage> image) {
     _cpu.setDiskImage(std::move(image));
 }
@@ -114,14 +122,5 @@ bool EmulatorSession::dumpBootLogToFile(const char* reason, const std::string& p
 }
 
 std::string EmulatorSession::drainSerialTx() {
-    SerialDevice* serial = _cpu.getSerial();
-    if (!serial) {
-        return {};
-    }
-
-    std::string output = serial->txBuffer();
-    if (!output.empty()) {
-        serial->clearTxBuffer();
-    }
-    return output;
+    return _cpu.takeConsoleOutput();
 }

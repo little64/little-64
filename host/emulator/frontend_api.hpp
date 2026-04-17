@@ -79,6 +79,8 @@ public:
     virtual bool loadProgramElfDirectPaged(const std::vector<uint8_t>& elf_bytes,
                                            uint64_t kernel_physical_base = 0x100000,
                                            uint64_t direct_map_virtual_base = 0xFFFFFFC000000000ULL) = 0;
+    virtual bool loadProgramLiteXBootRomImage(const std::vector<uint8_t>& bootrom_bytes) = 0;
+    virtual bool loadProgramLiteXFlashImage(const std::vector<uint8_t>& flash_bytes) = 0;
     virtual void cycle() = 0;
     virtual void reset() = 0;
     virtual void assertInterrupt(uint64_t num) = 0;

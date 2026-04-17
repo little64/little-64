@@ -9,7 +9,7 @@ BIN = ROOT / "compilers" / "bin"
 LLVM_MC = BIN / "llvm-mc"
 LD = BIN / "ld.lld"
 BOOT_HELPER = ROOT / "target" / "linux_port" / "boot_direct.sh"
-KERNEL_ELF = ROOT / "target" / "linux_port" / "build" / "vmlinux"
+KERNEL_ELF = ROOT / "target" / "linux_port" / "build-virt" / "vmlinux"
 
 INIT_SOURCE = pathlib.Path(__file__).with_name("linux_userspace_write_init.S")
 INIT_LINKER = pathlib.Path(__file__).with_name("linux_userspace_write_init.ld")
@@ -44,8 +44,8 @@ def run_checked(cmd: list[str]) -> subprocess.CompletedProcess[str]:
 
 
 def build_rootfs(builddir: pathlib.Path) -> pathlib.Path:
-    mkfs_ext2 = find_host_tool("mke2fs") or find_host_tool("mkfs.ext2")
-    if not mkfs_ext2:
+    mkfs_ext4 = find_host_tool("mke2fs") or find_host_tool("mkfs.ext4")
+    if not mkfs_ext4:
         raise SystemExit(77)
 
     for tool in (LLVM_MC, LD):
@@ -56,7 +56,7 @@ def build_rootfs(builddir: pathlib.Path) -> pathlib.Path:
     staging_dir = out_dir / "staging"
     init_obj = out_dir / "init.o"
     init_elf = out_dir / "init"
-    rootfs_image = out_dir / "rootfs.ext2"
+    rootfs_image = out_dir / "rootfs.ext4"
 
     if out_dir.exists():
         shutil.rmtree(out_dir)
@@ -94,11 +94,11 @@ def build_rootfs(builddir: pathlib.Path) -> pathlib.Path:
     )
 
     run_checked([
-        mkfs_ext2,
+        mkfs_ext4,
         "-q",
         "-F",
         "-t",
-        "ext2",
+        "ext4",
         "-L",
         "little64-test-rootfs",
         "-m",
@@ -124,6 +124,7 @@ def main() -> int:
     res = subprocess.run(
         [
             str(BOOT_HELPER),
+            "--machine=virt",
             "--mode=smoke",
             "--rootfs",
             str(rootfs_image),

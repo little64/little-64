@@ -7,12 +7,20 @@ import pathlib
 from typing import Optional
 
 
-DEFAULT_DEFCONFIG_NAME = "little64_defconfig"
+DEFAULT_DEFCONFIG_NAME = "little64_litex_sim_defconfig"
 DEFAULT_SYMBOL_CACHE_NAME = ".analyze_lockup_flow_addr2line_cache.json"
+BUILD_DIR_ALIASES = {
+    "little64_litex_sim_defconfig": "build-litex",
+    "little64_defconfig": "build-virt",
+}
 
 
 def linux_port_dir() -> pathlib.Path:
     return pathlib.Path(__file__).resolve().parent
+
+
+def build_dir_name_for_defconfig(defconfig_name: str) -> str:
+    return BUILD_DIR_ALIASES.get(defconfig_name, f"build-{defconfig_name}")
 
 
 def effective_defconfig_name(defconfig_name: Optional[str] = None) -> str:
@@ -33,9 +41,7 @@ def resolve_build_dir(
         return pathlib.Path(override)
 
     name = effective_defconfig_name(defconfig_name)
-    if name == DEFAULT_DEFCONFIG_NAME:
-        return root / "build"
-    return root / f"build-{name}"
+    return root / build_dir_name_for_defconfig(name)
 
 
 def kernel_path(

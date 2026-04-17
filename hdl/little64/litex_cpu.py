@@ -11,6 +11,7 @@ from litex.soc.interconnect import wishbone
 
 from .config import Little64CoreConfig
 from .litex import Little64LiteXProfile, emit_litex_cpu_verilog
+from .variants import config_for_litex_variant
 
 
 _LITEX_LLVM_WRAPPER_TARGETS = {
@@ -255,6 +256,9 @@ class Little64(CPU):
 
         self.platform = platform
         self.variant = variant
+        platform_mem_map = getattr(platform, 'little64_mem_map', None)
+        self.mem_map = dict(platform_mem_map) if platform_mem_map is not None else dict(self.profile.mem_map)
+        self.profile = Little64LiteXProfile(mem_map=dict(self.mem_map))
         self.reset = Signal()
         self.interrupt = Signal(self.profile.irq_count)
         self.boot_r1 = Signal(64)
@@ -269,7 +273,10 @@ class Little64(CPU):
         self.periph_buses = [self.ibus, self.dbus]
         self.memory_buses = []
 
-        self.core_config = Little64CoreConfig(reset_vector=self.profile.reset_address)
+        self.core_config = config_for_litex_variant(
+            variant,
+            reset_vector=self.profile.reset_address,
+        )
 
         self.cpu_params = dict(
             i_clk=ClockSignal('sys'),

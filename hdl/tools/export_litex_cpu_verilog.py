@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from little64.config import Little64CoreConfig
+from little64.config import CACHE_TOPOLOGIES, CORE_VARIANTS, Little64CoreConfig
 from little64.litex import emit_litex_cpu_verilog
 
 
@@ -25,12 +25,28 @@ def build_parser() -> argparse.ArgumentParser:
         default='little64_litex_cpu_top',
         help='Top-level Verilog module name',
     )
+    parser.add_argument(
+        '--core-variant',
+        choices=CORE_VARIANTS,
+        default='basic',
+        help='Core variant used for the exported CPU wrapper.',
+    )
+    parser.add_argument(
+        '--cache-topology',
+        choices=CACHE_TOPOLOGIES,
+        default='none',
+        help='Cache topology used for the exported CPU wrapper.',
+    )
     return parser
 
 
 def main() -> int:
     args = build_parser().parse_args()
-    config = Little64CoreConfig(reset_vector=args.reset_address)
+    config = Little64CoreConfig(
+        reset_vector=args.reset_address,
+        core_variant=args.core_variant,
+        cache_topology=args.cache_topology,
+    )
     emit_litex_cpu_verilog(args.output, config=config, module_name=args.module_name)
     return 0
 

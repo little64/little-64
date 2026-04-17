@@ -8,17 +8,17 @@ BUILD_DIR="$SCRIPT_DIR/build"
 STAGING_DIR="$BUILD_DIR/staging"
 INIT_OBJ="$BUILD_DIR/init.o"
 INIT_ELF="$BUILD_DIR/init"
-ROOTFS_IMAGE="$BUILD_DIR/rootfs.ext2"
+ROOTFS_IMAGE="$BUILD_DIR/rootfs.ext4"
 ROOTFS_SIZE_MB="${LITTLE64_ROOTFS_SIZE_MB:-8}"
 
 usage() {
     cat <<EOF
 Usage: $0 [clean]
 
-Builds a minimal ext2 rootfs image for the Little64 PV block device.
+Builds a minimal ext4 rootfs image for the Little64 PV block device.
 
 Environment:
-  LITTLE64_ROOTFS_SIZE_MB   Size of the generated ext2 image in MiB (default: 8)
+    LITTLE64_ROOTFS_SIZE_MB   Size of the generated ext4 image in MiB (default: 8)
 EOF
 }
 
@@ -81,13 +81,13 @@ if ! [[ "$ROOTFS_SIZE_MB" =~ ^[0-9]+$ ]] || [[ "$ROOTFS_SIZE_MB" == "0" ]]; then
     exit 1
 fi
 
-MKFS_EXT2=""
-if MKFS_EXT2=$(find_host_tool mke2fs); then
+MKFS_EXT4=""
+if MKFS_EXT4=$(find_host_tool mke2fs); then
     :
-elif MKFS_EXT2=$(find_host_tool mkfs.ext2); then
+elif MKFS_EXT4=$(find_host_tool mkfs.ext4); then
     :
 else
-    echo "error: neither mke2fs nor mkfs.ext2 is available" >&2
+    echo "error: neither mke2fs nor mkfs.ext4 is available" >&2
     exit 1
 fi
 
@@ -108,7 +108,7 @@ This image is a minimal Little-64 test rootfs for the paravirtual block device.
 It exists to get VFS onto a real disk-backed root filesystem during kernel bring-up.
 EOF
 
-"$MKFS_EXT2" -q -F -t ext2 -L little64-rootfs -m 0 -d "$STAGING_DIR" "$ROOTFS_IMAGE" "${ROOTFS_SIZE_MB}M"
+"$MKFS_EXT4" -q -F -t ext4 -L little64-rootfs -m 0 -d "$STAGING_DIR" "$ROOTFS_IMAGE" "${ROOTFS_SIZE_MB}M"
 
 echo "[little64-rootfs] built $ROOTFS_IMAGE"
 echo "[little64-rootfs] init payload: $INIT_ELF"

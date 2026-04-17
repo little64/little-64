@@ -146,6 +146,65 @@ The current Linux `head.S` path expects to:
 4. enable paging,
 5. jump into the virtual kernel path.
 
+## LiteX SPI Flash Boot Path
+
+The current `--boot-mode=litex-flash` path always expects a raw SPI flash image.
+That flash image contains the reset-resident stage-0 loader.
+
+This path is now mainly a compatibility path for explicit manual runs. The
+default LiteX Linux helper launches the bootrom path below so the emulator uses
+the same integrated-ROM plus SDRAM contract as the current hardware-oriented
+LiteX targets.
+
+Without an attached `--disk`, the loader:
+
+1. maps 64 MiB of RAM from physical `0x0`,
+2. maps a 16 MiB flash ROM window at `0x20000000`, padding unused space with `0xff`,
+3. exposes a LiteUART-compatible CSR block at `0xF0001000`,
+4. exposes the existing timer at `0x08001000`,
+5. starts execution at flash base with paging disabled.
+
+With an attached `--disk`, the same boot mode switches to the SD-capable LiteX
+layout used by the current LiteX simulation SoC:
+
+1. the flash ROM window remains at `0x20000000`,
+2. LiteSDCard CSRs are exposed starting at `0xF0000800`,
+3. LiteUART moves to `0xF0003800`,
+4. the timer stays at `0x08001000`,
+5. stage-0 still starts from SPI flash and then loads `VMLINUX` and `BOOT.DTB` from the SD image.
+
+### Entry register contract
+
+| Register / state | Value |
+|---|---|
+| `R15` | `0x20000000` |
+| `cpu_control.IntEnable` | `0` |
+| `cpu_control.PagingEnable` | `0` |
+| `cpu_control.UserMode` | `0` |
+
+The flash-resident stage-0 loader is responsible for either:
+
+1. validating the flash boot header and loading the kernel directly from flash, or
+2. initializing LiteSDCard and loading `VMLINUX` plus `BOOT.DTB` from the SD image,
+
+before transferring control to the kernel entry point.
+
+The Linux helper can still be pointed at this path explicitly for compatibility,
+but `--machine=litex` now defaults to the bootrom path below.
+
+## LiteX Boot ROM Boot Path
+
+The `--boot-mode=litex-bootrom` path expects a raw internal boot ROM image and
+starts execution at physical `0x0` with the LiteX bootrom memory map.
+
+In addition to the integrated ROM, SRAM, RAM, LiteUART, and timer windows, the
+emulator now exposes a minimal LiteDRAM DFII CSR stub at `0xF0003000`. This is
+present so bootrom images built for SDRAM-backed LiteX targets can run the
+generated LiteDRAM initialization sequence under functional emulation before
+continuing to SD or kernel handoff logic.
+
+The Linux helper [target/linux_port/boot_direct.sh](/home/alexander/projects/little-64/target/linux_port/boot_direct.sh) now generates this bootrom image shape by default for `--machine=litex`, along with a DTS/DTB and SD image derived from the Arty A7-35T LiteX target contract. That default helper path now assumes SDRAM at `0x40000000` with a `0x10000000` RAM window so the emulator, stage-0 metadata, and runtime DT agree on the board-sized memory map.
+
 ## ELF Loader Expectations
 
 The current emulator loaders expect:
@@ -170,6 +229,7 @@ core ISA requirement.
 Primary implementation sources:
 
 - `host/emulator/cpu.cpp`
+- `host/emulator/lite_uart_device.cpp`
 - `host/boot/boot_abi.h`
 - `target/linux_port/linux/arch/little64/kernel/head.S`
 

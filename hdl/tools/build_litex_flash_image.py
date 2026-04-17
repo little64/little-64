@@ -30,9 +30,10 @@ def _build_stage0(stage0_source: Path, stage0_linker: Path, work_dir: Path) -> b
     _run([
         str(compilers_bin / 'clang'),
         '-target', 'little64',
-        '-O2',
+        '-O3',
         '-ffreestanding',
         '-fno-builtin',
+        '-fomit-frame-pointer',
         '-fno-stack-protector',
         '-c',
         str(stage0_source),
