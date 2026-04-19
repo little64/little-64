@@ -25,7 +25,6 @@ def _load_module():
 def main() -> int:
     helper = _load_module()
 
-    assert helper.default_defconfig_for_machine('virt') == 'little64_defconfig'
     assert helper.default_defconfig_for_machine('litex') == 'little64_litex_sim_defconfig'
 
     args, extra = helper.parse_args(['--machine', 'litex', '-j1'])
@@ -40,11 +39,6 @@ def main() -> int:
     request = helper.resolve_build_request(args, extra, env={})
     assert request.defconfig_name == 'little64_litex_sim_defconfig'
     assert str(request.build_dir).endswith('target/linux_port/build-litex')
-
-    args, extra = helper.parse_args(['--machine', 'virt'])
-    request = helper.resolve_build_request(args, extra, env={})
-    assert request.defconfig_name == 'little64_defconfig'
-    assert str(request.build_dir).endswith('target/linux_port/build-virt')
 
     args, extra = helper.parse_args(['--machine', 'litex', '--defconfig', 'custom_defconfig', 'vmlinux'])
     request = helper.resolve_build_request(args, extra, env={})

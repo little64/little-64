@@ -91,7 +91,9 @@ def _ls_condition(flags, opcode):
 
 class Little64Core(Elaboratable):
     def __init__(self, config: Little64CoreConfig | None = None) -> None:
-        self.config = config or Little64CoreConfig()
+        self.config = config or Little64CoreConfig(core_variant='basic')
+        if self.config.core_variant != 'basic':
+            raise ValueError('Little64BasicCore requires Little64CoreConfig(core_variant="basic")')
 
         self.i_bus = WishboneMasterInterface(
             data_width=self.config.instruction_bus_width,
@@ -272,38 +274,66 @@ class Little64Core(Elaboratable):
         ]
 
         shift_index = Signal(7)
+        left_shift_input = Signal(128)
+        left_shifted = Signal(128)
+        right_shifted = Signal(64)
+        arithmetic_right_shifted = Signal(64)
+        sll_result = Signal(64)
+        srl_result = Signal(64)
+        sra_result = Signal(64)
         m.d.comb += shift_index.eq(Mux(b >= 64, 64, b[:7]))
+        m.d.comb += [
+            left_shift_input.eq(a),
+            left_shifted.eq(left_shift_input << shift_index),
+            right_shifted.eq(a >> shift_index),
+            arithmetic_right_shifted.eq((a.as_signed() >> shift_index).as_unsigned()),
+            sll_result.eq(Mux(shift_index == 64, 0, left_shifted[:64])),
+            srl_result.eq(Mux(shift_index == 64, 0, right_shifted)),
+            sra_result.eq(Mux(shift_index == 64,
+                              Mux(a[63], Const(0xFFFFFFFFFFFFFFFF, 64), Const(0, 64)),
+                              arithmetic_right_shifted)),
+        ]
 
-        sll_results = Array([
-            a if amount == 0 else Const(0, 64) if amount == 64 else (a << amount)[:64]
-            for amount in range(65)
-        ])
         sll_carries = Array([
             Const(0, 1)
             if amount in (0, 64) else ((a >> (64 - amount)) != 0)
             for amount in range(65)
         ])
-
-        srl_results = Array([
-            a if amount == 0 else Const(0, 64) if amount == 64 else a >> amount
+        sll_zeroes = Array([
+            (a == 0) if amount == 0 else Const(1, 1) if amount == 64 else (a[:64 - amount] == 0)
             for amount in range(65)
         ])
+        sll_signs = Array([
+            a[63] if amount == 0 else Const(0, 1) if amount == 64 else a[63 - amount]
+            for amount in range(65)
+        ])
+
         srl_carries = Array([
             Const(0, 1)
             if amount in (0, 64) else (((a >> (amount - 1)) & 1) != 0)
             for amount in range(65)
         ])
-
-        sra_results = Array([
-            a if amount == 0 else
-            Mux(a[63], Const(0xFFFFFFFFFFFFFFFF, 64), Const(0, 64)) if amount == 64 else
-            (a.as_signed() >> amount).as_unsigned()
+        srl_zeroes = Array([
+            (a == 0) if amount == 0 else Const(1, 1) if amount == 64 else (a[amount:64] == 0)
             for amount in range(65)
         ])
+        srl_signs = Array([
+            a[63] if amount == 0 else Const(0, 1)
+            for amount in range(65)
+        ])
+
         sra_carries = Array([
             Const(0, 1)
             if amount in (0, 64) else (((a >> (amount - 1)) & 1) != 0)
             for amount in range(65)
+        ])
+        sra_zeroes = Array([
+            (a == 0) if amount == 0 else (~a[63]) if amount == 64 else ((~a[63]) & (a[amount:64] == 0))
+            for amount in range(65)
+        ])
+        sra_signs = Array([
+            a[63]
+            for _ in range(65)
         ])
 
         slli_results = Array([
@@ -313,6 +343,14 @@ class Little64Core(Elaboratable):
         slli_carries = Array([
             Const(0, 1)
             if amount == 0 else ((a >> (64 - amount)) != 0)
+            for amount in range(16)
+        ])
+        slli_zeroes = Array([
+            (a == 0) if amount == 0 else (a[:64 - amount] == 0)
+            for amount in range(16)
+        ])
+        slli_signs = Array([
+            a[63] if amount == 0 else a[63 - amount]
             for amount in range(16)
         ])
 
@@ -325,6 +363,14 @@ class Little64Core(Elaboratable):
             if amount == 0 else (((a >> (amount - 1)) & 1) != 0)
             for amount in range(16)
         ])
+        srli_zeroes = Array([
+            (a == 0) if amount == 0 else (a[amount:64] == 0)
+            for amount in range(16)
+        ])
+        srli_signs = Array([
+            a[63] if amount == 0 else Const(0, 1)
+            for amount in range(16)
+        ])
 
         srai_results = Array([
             a if amount == 0 else (a.as_signed() >> amount).as_unsigned()
@@ -335,14 +381,22 @@ class Little64Core(Elaboratable):
             if amount == 0 else (((a >> (amount - 1)) & 1) != 0)
             for amount in range(16)
         ])
+        srai_zeroes = Array([
+            (a == 0) if amount == 0 else ((~a[63]) & (a[amount:64] == 0))
+            for amount in range(16)
+        ])
+        srai_signs = Array([
+            a[63]
+            for _ in range(16)
+        ])
 
         if self.tlb is not None:
             m.d.comb += [
                 self.tlb.lookup_vaddr.eq(tlb_lookup_vaddr),
                 self.tlb.flush_all.eq(self.special_regs.tlb_flush),
                 self.tlb.fill_valid.eq(0),
-                self.tlb.fill_vaddr.eq(self.walk_virtual_addr),
-                self.tlb.fill_paddr.eq(walk_result_phys & Const(~0xFFF & ((1 << self.config.address_width) - 1), self.config.address_width)),
+                self.tlb.fill_vpage.eq(self.walk_virtual_addr[self.tlb.page_offset_bits:]),
+                self.tlb.fill_ppage.eq(walk_result_phys[self.tlb.page_offset_bits:]),
                 self.tlb.fill_perm_read.eq((walk_pte & PTE_R) != 0),
                 self.tlb.fill_perm_write.eq((walk_pte & PTE_W) != 0),
                 self.tlb.fill_perm_execute.eq((walk_pte & PTE_X) != 0),
@@ -989,29 +1043,32 @@ class Little64Core(Elaboratable):
                                 self.state.eq(CoreState.FETCH_TRANSLATE),
                             ]
                         with m.Case(GPOpcode.SLL):
-                            result = sll_results[shift_index]
                             carry = sll_carries[shift_index]
-                            write_reg(rd, result)
+                            zero = sll_zeroes[shift_index]
+                            sign = sll_signs[shift_index]
+                            write_reg(rd, sll_result)
                             m.d.sync += [
-                                self.flags.eq(flag_value(result, carry)),
+                                self.flags.eq(Cat(zero, carry, sign)),
                                 self.register_file[15].eq(post_increment_pc),
                                 self.state.eq(CoreState.FETCH_TRANSLATE),
                             ]
                         with m.Case(GPOpcode.SRL):
-                            result = srl_results[shift_index]
                             carry = srl_carries[shift_index]
-                            write_reg(rd, result)
+                            zero = srl_zeroes[shift_index]
+                            sign = srl_signs[shift_index]
+                            write_reg(rd, srl_result)
                             m.d.sync += [
-                                self.flags.eq(flag_value(result, carry)),
+                                self.flags.eq(Cat(zero, carry, sign)),
                                 self.register_file[15].eq(post_increment_pc),
                                 self.state.eq(CoreState.FETCH_TRANSLATE),
                             ]
                         with m.Case(GPOpcode.SRA):
-                            result = sra_results[shift_index]
                             carry = sra_carries[shift_index]
-                            write_reg(rd, result)
+                            zero = sra_zeroes[shift_index]
+                            sign = sra_signs[shift_index]
+                            write_reg(rd, sra_result)
                             m.d.sync += [
-                                self.flags.eq(flag_value(result, carry)),
+                                self.flags.eq(Cat(zero, carry, sign)),
                                 self.register_file[15].eq(post_increment_pc),
                                 self.state.eq(CoreState.FETCH_TRANSLATE),
                             ]
@@ -1019,9 +1076,11 @@ class Little64Core(Elaboratable):
                             imm = imm4
                             result = slli_results[imm]
                             carry = slli_carries[imm]
+                            zero = slli_zeroes[imm]
+                            sign = slli_signs[imm]
                             write_reg(rd, result)
                             m.d.sync += [
-                                self.flags.eq(flag_value(result, carry)),
+                                self.flags.eq(Cat(zero, carry, sign)),
                                 self.register_file[15].eq(post_increment_pc),
                                 self.state.eq(CoreState.FETCH_TRANSLATE),
                             ]
@@ -1029,9 +1088,11 @@ class Little64Core(Elaboratable):
                             imm = imm4
                             result = srli_results[imm]
                             carry = srli_carries[imm]
+                            zero = srli_zeroes[imm]
+                            sign = srli_signs[imm]
                             write_reg(rd, result)
                             m.d.sync += [
-                                self.flags.eq(flag_value(result, carry)),
+                                self.flags.eq(Cat(zero, carry, sign)),
                                 self.register_file[15].eq(post_increment_pc),
                                 self.state.eq(CoreState.FETCH_TRANSLATE),
                             ]
@@ -1039,9 +1100,11 @@ class Little64Core(Elaboratable):
                             imm = imm4
                             result = srai_results[imm]
                             carry = srai_carries[imm]
+                            zero = srai_zeroes[imm]
+                            sign = srai_signs[imm]
                             write_reg(rd, result)
                             m.d.sync += [
-                                self.flags.eq(flag_value(result, carry)),
+                                self.flags.eq(Cat(zero, carry, sign)),
                                 self.register_file[15].eq(post_increment_pc),
                                 self.state.eq(CoreState.FETCH_TRANSLATE),
                             ]

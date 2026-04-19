@@ -16,11 +16,9 @@ from profile_paths import build_dir_name_for_defconfig, resolve_build_dir
 SCRIPT_FOLDER = Path(__file__).resolve().parent
 COMPILER_BIN = (SCRIPT_FOLDER / '../../compilers/bin').resolve()
 LINUX_TREE = SCRIPT_FOLDER / 'linux'
-DEFAULT_VIRT_DEFCONFIG_NAME = 'little64_defconfig'
 DEFAULT_MACHINE = 'litex'
 DEFAULT_DEBUG_KCFLAGS = '-O2 -g -fno-omit-frame-pointer -fno-optimize-sibling-calls'
 MACHINE_DEFCONFIGS = {
-    'virt': DEFAULT_VIRT_DEFCONFIG_NAME,
     'litex': 'little64_litex_sim_defconfig',
 }
 DEFAULT_DEFCONFIG_NAME = MACHINE_DEFCONFIGS[DEFAULT_MACHINE]

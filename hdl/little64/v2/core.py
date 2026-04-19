@@ -70,6 +70,7 @@ class V2PipelineState(IntEnum):
     INTERRUPT_VECTOR_LOAD = 11
     STALLED = 12
     HALTED = 13
+    EXECUTE_COMPLETE = 14
 
 
 class WalkResumeKind(IntEnum):
@@ -126,6 +127,17 @@ class Little64V2Core(Elaboratable):
         self.decode_pc = Signal(64)
         self.execute_pc = Signal(64)
         self.execute_instruction = Signal(16)
+        self.execute_operand_a = Signal(64)
+        self.execute_operand_b = Signal(64)
+        self.execute_complete_reg_write = Signal()
+        self.execute_complete_reg_index = Signal(4)
+        self.execute_complete_reg_value = Signal(64)
+        self.execute_complete_flags_write = Signal()
+        self.execute_complete_flag_result = Signal(64)
+        self.execute_complete_flag_carry = Signal()
+        self.execute_complete_next_pc = Signal(64)
+        self.execute_complete_lockup = Signal()
+        self.execute_complete_commit_pc = Signal(64)
         self.writeback_reg_write = Signal()
         self.writeback_reg_index = Signal(4)
         self.writeback_reg_value = Signal(64)
@@ -162,6 +174,8 @@ class Little64V2Core(Elaboratable):
         self.mem_chain_store_use_load_result = Signal()
         self.mem_chain_store_value = Signal(64)
         self.mem_result_value = Signal(64)
+        self.translate_virtual_addr = Signal(64)
+        self.translate_access = Signal(2)
 
         self.walk_virtual_addr = Signal(64)
         self.walk_table_addr = Signal(64)
@@ -187,6 +201,8 @@ class Little64V2Core(Elaboratable):
             m.submodules.tlb = self.tlb
 
         current_pc = self.register_file[15]
+        decode_rd = instruction_rd(self.current_instruction)
+        decode_rs1 = instruction_rs1(self.current_instruction)
         execute_rd = instruction_rd(self.execute_instruction)
         execute_rs1 = instruction_rs1(self.execute_instruction)
         execute_top2 = instruction_top2(self.execute_instruction)
@@ -245,6 +261,13 @@ class Little64V2Core(Elaboratable):
         next_mem_chain_store_use_load_result = Signal()
         next_mem_chain_store_value = Signal(64)
         execute_starts_memory = Signal()
+        gp_alu_valid = Signal()
+        gp_alu_reg_write = Signal()
+        gp_alu_result_value = Signal(64)
+        gp_alu_flags_write = Signal()
+        gp_alu_flag_result = Signal(64)
+        gp_alu_flag_carry = Signal()
+        gp_alu_flags_value = Signal(3)
 
         sum_value = Signal(65)
         sub_value = Signal(64)
@@ -299,7 +322,6 @@ class Little64V2Core(Elaboratable):
         pending_irq_available = Signal()
         pending_irq_vector = Signal(64)
         can_preempt_pending_irq = Signal()
-        interrupt_vector_table_addr = Signal(64)
 
         lsu_request_valid = Signal()
         lsu_request_addr = Signal(64)
@@ -395,8 +417,8 @@ class Little64V2Core(Elaboratable):
                 self.tlb.lookup_vaddr.eq(tlb_lookup_vaddr),
                 self.tlb.flush_all.eq(self.special_regs.tlb_flush),
                 self.tlb.fill_valid.eq(0),
-                self.tlb.fill_vaddr.eq(self.walk_virtual_addr),
-                self.tlb.fill_paddr.eq(walk_result_phys & Const(~0xFFF & ((1 << self.config.address_width) - 1), self.config.address_width)),
+                self.tlb.fill_vpage.eq(self.walk_virtual_addr[self.tlb.page_offset_bits:]),
+                self.tlb.fill_ppage.eq(walk_result_phys[self.tlb.page_offset_bits:]),
                 self.tlb.fill_perm_read.eq((walk_pte & PTE_R) != 0),
                 self.tlb.fill_perm_write.eq((walk_pte & PTE_W) != 0),
                 self.tlb.fill_perm_execute.eq((walk_pte & PTE_X) != 0),
@@ -441,8 +463,8 @@ class Little64V2Core(Elaboratable):
             ]
 
         m.d.comb += [
-            operand_a.eq(self.regs[execute_rd]),
-            operand_b.eq(self.regs[execute_rs1]),
+            operand_a.eq(self.execute_operand_a),
+            operand_b.eq(self.execute_operand_b),
             ls_rd_value.eq(Mux(execute_rd == 15, execute_post_increment_pc, operand_a)),
             ls_rs1_value.eq(Mux(execute_rs1 == 15, execute_post_increment_pc, operand_b)),
             ls_addr.eq(ls_rs1_value + (execute_ls_offset2 << 1)),
@@ -488,17 +510,12 @@ class Little64V2Core(Elaboratable):
             can_preempt_pending_irq.eq((~self.special_regs.cpu_control[1]) |
                                        (current_interrupt_vector == 0) |
                                        (current_interrupt_vector > pending_irq_vector)),
-            interrupt_vector_table_addr.eq(self.special_regs.interrupt_table_base + (self.interrupt_entry_vector << 3)),
-            tlb_lookup_vaddr.eq(Mux(self.state == V2PipelineState.FETCH_TRANSLATE,
-                               current_pc,
-                               Mux(self.state == V2PipelineState.INTERRUPT_VECTOR_TRANSLATE,
-                                   interrupt_vector_table_addr,
-                                   self.mem_virtual_addr))),
-            tlb_perm_ok.eq(Mux(self.state == V2PipelineState.FETCH_TRANSLATE,
+            tlb_lookup_vaddr.eq(self.translate_virtual_addr),
+            tlb_perm_ok.eq(Mux(self.translate_access == ACCESS_EXECUTE,
                                tlb_lookup_perm_execute,
-                               Mux(self.state == V2PipelineState.INTERRUPT_VECTOR_TRANSLATE,
-                                   tlb_lookup_perm_read,
-                                   Mux(self.mem_write, tlb_lookup_perm_write, tlb_lookup_perm_read)))),
+                               Mux(self.translate_access == ACCESS_WRITE,
+                                   tlb_lookup_perm_write,
+                                   tlb_lookup_perm_read))),
             tlb_user_ok.eq((~self.special_regs.cpu_control[17]) | tlb_lookup_perm_user),
             tlb_hit_ok.eq(tlb_lookup_hit & tlb_perm_ok & tlb_user_ok),
             walk_index.eq(Mux(self.walk_level == 2, self.walk_virtual_addr[30:39],
@@ -602,6 +619,13 @@ class Little64V2Core(Elaboratable):
             next_mem_chain_store_use_load_result.eq(0),
             next_mem_chain_store_value.eq(0),
             execute_starts_memory.eq(0),
+            gp_alu_valid.eq(0),
+            gp_alu_reg_write.eq(0),
+            gp_alu_result_value.eq(0),
+            gp_alu_flags_write.eq(0),
+            gp_alu_flag_result.eq(0),
+            gp_alu_flag_carry.eq(0),
+            gp_alu_flags_value.eq(self.flags),
             self.special_regs.user_mode.eq(self.special_regs.cpu_control[17]),
             self.special_regs.read_selector.eq(operand_b[:16]),
             self.special_regs.write_stb.eq(special_write_active),
@@ -642,6 +666,114 @@ class Little64V2Core(Elaboratable):
             core_trap_aux_data.eq(0),
             self.frontend.invalidate.eq(0),
         ]
+
+        with m.Switch(execute_gp_opcode):
+            with m.Case(GPOpcode.ADD):
+                m.d.comb += [
+                    gp_alu_valid.eq(1),
+                    gp_alu_reg_write.eq(1),
+                    gp_alu_result_value.eq(sum_value[:64]),
+                    gp_alu_flags_write.eq(1),
+                    gp_alu_flag_result.eq(sum_value[:64]),
+                    gp_alu_flag_carry.eq(sum_value[64]),
+                ]
+            with m.Case(GPOpcode.SUB):
+                m.d.comb += [
+                    gp_alu_valid.eq(1),
+                    gp_alu_reg_write.eq(1),
+                    gp_alu_result_value.eq(sub_value),
+                    gp_alu_flags_write.eq(1),
+                    gp_alu_flag_result.eq(sub_value),
+                    gp_alu_flag_carry.eq(operand_b > operand_a),
+                ]
+            with m.Case(GPOpcode.TEST):
+                m.d.comb += [
+                    gp_alu_valid.eq(1),
+                    gp_alu_flags_write.eq(1),
+                    gp_alu_flag_result.eq(sub_value),
+                    gp_alu_flag_carry.eq(operand_b > operand_a),
+                ]
+            with m.Case(GPOpcode.AND):
+                m.d.comb += [
+                    gp_alu_valid.eq(1),
+                    gp_alu_reg_write.eq(1),
+                    gp_alu_result_value.eq(operand_a & operand_b),
+                    gp_alu_flags_write.eq(1),
+                    gp_alu_flag_result.eq(operand_a & operand_b),
+                ]
+            with m.Case(GPOpcode.OR):
+                m.d.comb += [
+                    gp_alu_valid.eq(1),
+                    gp_alu_reg_write.eq(1),
+                    gp_alu_result_value.eq(operand_a | operand_b),
+                    gp_alu_flags_write.eq(1),
+                    gp_alu_flag_result.eq(operand_a | operand_b),
+                ]
+            with m.Case(GPOpcode.XOR):
+                m.d.comb += [
+                    gp_alu_valid.eq(1),
+                    gp_alu_reg_write.eq(1),
+                    gp_alu_result_value.eq(operand_a ^ operand_b),
+                    gp_alu_flags_write.eq(1),
+                    gp_alu_flag_result.eq(operand_a ^ operand_b),
+                ]
+            with m.Case(GPOpcode.SLL):
+                m.d.comb += [
+                    gp_alu_valid.eq(1),
+                    gp_alu_reg_write.eq(1),
+                    gp_alu_result_value.eq(sll_results[shift_index]),
+                    gp_alu_flags_write.eq(1),
+                    gp_alu_flag_result.eq(sll_results[shift_index]),
+                    gp_alu_flag_carry.eq(sll_carries[shift_index]),
+                ]
+            with m.Case(GPOpcode.SRL):
+                m.d.comb += [
+                    gp_alu_valid.eq(1),
+                    gp_alu_reg_write.eq(1),
+                    gp_alu_result_value.eq(srl_results[shift_index]),
+                    gp_alu_flags_write.eq(1),
+                    gp_alu_flag_result.eq(srl_results[shift_index]),
+                    gp_alu_flag_carry.eq(srl_carries[shift_index]),
+                ]
+            with m.Case(GPOpcode.SRA):
+                m.d.comb += [
+                    gp_alu_valid.eq(1),
+                    gp_alu_reg_write.eq(1),
+                    gp_alu_result_value.eq(sra_results[shift_index]),
+                    gp_alu_flags_write.eq(1),
+                    gp_alu_flag_result.eq(sra_results[shift_index]),
+                    gp_alu_flag_carry.eq(sra_carries[shift_index]),
+                ]
+            with m.Case(GPOpcode.SLLI):
+                m.d.comb += [
+                    gp_alu_valid.eq(1),
+                    gp_alu_reg_write.eq(1),
+                    gp_alu_result_value.eq(slli_results[execute_imm4]),
+                    gp_alu_flags_write.eq(1),
+                    gp_alu_flag_result.eq(slli_results[execute_imm4]),
+                    gp_alu_flag_carry.eq(slli_carries[execute_imm4]),
+                ]
+            with m.Case(GPOpcode.SRLI):
+                m.d.comb += [
+                    gp_alu_valid.eq(1),
+                    gp_alu_reg_write.eq(1),
+                    gp_alu_result_value.eq(srli_results[execute_imm4]),
+                    gp_alu_flags_write.eq(1),
+                    gp_alu_flag_result.eq(srli_results[execute_imm4]),
+                    gp_alu_flag_carry.eq(srli_carries[execute_imm4]),
+                ]
+            with m.Case(GPOpcode.SRAI):
+                m.d.comb += [
+                    gp_alu_valid.eq(1),
+                    gp_alu_reg_write.eq(1),
+                    gp_alu_result_value.eq(srai_results[execute_imm4]),
+                    gp_alu_flags_write.eq(1),
+                    gp_alu_flag_result.eq(srai_results[execute_imm4]),
+                    gp_alu_flag_carry.eq(srai_carries[execute_imm4]),
+                ]
+
+        with m.If(gp_alu_flags_write):
+            m.d.comb += gp_alu_flags_value.eq(flag_value(gp_alu_flag_result, gp_alu_flag_carry))
 
         with m.Switch(mem_byte_offset):
             for offset in range(8):
@@ -716,6 +848,8 @@ class Little64V2Core(Elaboratable):
             m.d.sync += [
                 self.interrupt_entry_vector.eq(vector),
                 self.interrupt_entry_epc.eq(epc),
+                self.translate_virtual_addr.eq(self.special_regs.interrupt_table_base + (vector << 3)),
+                self.translate_access.eq(ACCESS_READ),
                 self.lsu_started.eq(0),
                 self.state.eq(V2PipelineState.INTERRUPT_VECTOR_TRANSLATE),
             ]
@@ -757,7 +891,18 @@ class Little64V2Core(Elaboratable):
                     self.fetch_phys_addr.eq(self.config.reset_vector),
                     self.current_instruction.eq(0),
                     self.execute_instruction.eq(0),
+                    self.execute_operand_a.eq(0),
+                    self.execute_operand_b.eq(0),
                     self.decode_pc.eq(0),
+                    self.execute_complete_reg_write.eq(0),
+                    self.execute_complete_reg_index.eq(0),
+                    self.execute_complete_reg_value.eq(0),
+                    self.execute_complete_flags_write.eq(0),
+                    self.execute_complete_flag_result.eq(0),
+                    self.execute_complete_flag_carry.eq(0),
+                    self.execute_complete_next_pc.eq(0),
+                    self.execute_complete_lockup.eq(0),
+                    self.execute_complete_commit_pc.eq(0),
                     self.execute_pc.eq(0),
                     self.writeback_reg_write.eq(0),
                     self.writeback_reg_index.eq(0),
@@ -794,6 +939,8 @@ class Little64V2Core(Elaboratable):
                     self.mem_chain_store_use_load_result.eq(0),
                     self.mem_chain_store_value.eq(0),
                     self.mem_result_value.eq(0),
+                    self.translate_virtual_addr.eq(self.config.reset_vector),
+                    self.translate_access.eq(ACCESS_EXECUTE),
                     self.walk_virtual_addr.eq(0),
                     self.walk_table_addr.eq(0),
                     self.walk_level.eq(0),
@@ -808,21 +955,21 @@ class Little64V2Core(Elaboratable):
                 ]
 
             with m.Case(V2PipelineState.FETCH_TRANSLATE):
-                with m.If(current_pc[0]):
-                    raise_sync_trap(TrapVector.EXEC_ALIGN, current_pc, fault_addr=current_pc, access=ACCESS_EXECUTE, aux=encode_aux(AUX_SUBTYPE_NONE, 0))
+                with m.If(self.translate_virtual_addr[0]):
+                    raise_sync_trap(TrapVector.EXEC_ALIGN, self.translate_virtual_addr, fault_addr=self.translate_virtual_addr, access=ACCESS_EXECUTE, aux=encode_aux(AUX_SUBTYPE_NONE, 0))
                 with m.Elif(paging_enabled & ~Const(1 if self.config.enable_mmu else 0, 1)):
                     enter_lockup()
                 with m.Elif(pending_irq_available & self.special_regs.cpu_control[0] & can_preempt_pending_irq):
-                    begin_interrupt_entry(pending_irq_vector, current_pc)
+                    begin_interrupt_entry(pending_irq_vector, self.translate_virtual_addr)
                 with m.Elif(~paging_enabled):
                     m.d.sync += [
-                        self.fetch_phys_addr.eq(current_pc),
+                        self.fetch_phys_addr.eq(self.translate_virtual_addr),
                         self.state.eq(V2PipelineState.FETCH_REQUEST),
                     ]
-                with m.Elif(~is_canonical39(current_pc)):
-                    raise_sync_trap(TrapVector.PAGE_FAULT_CANONICAL, current_pc, fault_addr=current_pc, access=ACCESS_EXECUTE, aux=encode_aux(AUX_SUBTYPE_CANONICAL, 2))
+                with m.Elif(~is_canonical39(self.translate_virtual_addr)):
+                    raise_sync_trap(TrapVector.PAGE_FAULT_CANONICAL, self.translate_virtual_addr, fault_addr=self.translate_virtual_addr, access=ACCESS_EXECUTE, aux=encode_aux(AUX_SUBTYPE_CANONICAL, 2))
                 with m.Elif((self.special_regs.page_table_root_physical & 0xFFF) != 0):
-                    raise_sync_trap(TrapVector.PAGE_FAULT_RESERVED, current_pc, fault_addr=current_pc, access=ACCESS_EXECUTE, aux=encode_aux(AUX_SUBTYPE_RESERVED_BIT, 2))
+                    raise_sync_trap(TrapVector.PAGE_FAULT_RESERVED, self.translate_virtual_addr, fault_addr=self.translate_virtual_addr, access=ACCESS_EXECUTE, aux=encode_aux(AUX_SUBTYPE_RESERVED_BIT, 2))
                 with m.Elif(tlb_hit_ok):
                     m.d.sync += [
                         self.fetch_phys_addr.eq(tlb_lookup_paddr),
@@ -830,12 +977,12 @@ class Little64V2Core(Elaboratable):
                     ]
                 with m.Else():
                     m.d.sync += [
-                        self.walk_virtual_addr.eq(current_pc),
+                        self.walk_virtual_addr.eq(self.translate_virtual_addr),
                         self.walk_table_addr.eq(self.special_regs.page_table_root_physical),
                         self.walk_level.eq(2),
                         self.walk_access.eq(ACCESS_EXECUTE),
                         self.walk_resume_kind.eq(WalkResumeKind.FETCH),
-                        self.mem_fault_pc.eq(current_pc),
+                        self.mem_fault_pc.eq(self.translate_virtual_addr),
                         self.lsu_started.eq(0),
                         self.state.eq(V2PipelineState.WALK),
                     ]
@@ -854,6 +1001,8 @@ class Little64V2Core(Elaboratable):
             with m.Case(V2PipelineState.DECODE):
                 m.d.sync += [
                     self.execute_instruction.eq(self.current_instruction),
+                    self.execute_operand_a.eq(self.regs[decode_rd]),
+                    self.execute_operand_b.eq(self.regs[decode_rs1]),
                     self.execute_pc.eq(self.decode_pc),
                     self.state.eq(V2PipelineState.EXECUTE),
                 ]
@@ -927,6 +1076,8 @@ class Little64V2Core(Elaboratable):
                             self.register_file[15].eq(self.special_regs.interrupt_epc),
                             self.fetch_pc.eq(self.special_regs.interrupt_epc),
                             self.flags.eq(self.special_regs.interrupt_eflags[:3]),
+                            self.translate_virtual_addr.eq(self.special_regs.interrupt_epc),
+                            self.translate_access.eq(ACCESS_EXECUTE),
                             self.state.eq(V2PipelineState.FETCH_TRANSLATE),
                         ]
                 with m.Elif((execute_top3 == 0b110) & (execute_gp_opcode == GPOpcode.STOP)):
@@ -1104,166 +1255,131 @@ class Little64V2Core(Elaboratable):
                             with m.Case(0b111):
                                 m.d.comb += next_pc.eq(execute_ujump_target)
                             with m.Case(0b110):
-                                with m.Switch(execute_gp_opcode):
-                                    with m.Case(GPOpcode.ADD):
-                                        m.d.comb += [
-                                            next_reg_write.eq(1),
-                                            next_reg_value.eq(sum_value[:64]),
-                                            next_flags_write.eq(1),
-                                            next_flags_value.eq(flag_value(sum_value[:64], sum_value[64])),
-                                        ]
-                                    with m.Case(GPOpcode.SUB):
-                                        m.d.comb += [
-                                            next_reg_write.eq(1),
-                                            next_reg_value.eq(sub_value),
-                                            next_flags_write.eq(1),
-                                            next_flags_value.eq(flag_value(sub_value, operand_b > operand_a)),
-                                        ]
-                                    with m.Case(GPOpcode.TEST):
-                                        m.d.comb += [
-                                            next_flags_write.eq(1),
-                                            next_flags_value.eq(flag_value(sub_value, operand_b > operand_a)),
-                                        ]
-                                    with m.Case(GPOpcode.AND):
-                                        m.d.comb += [
-                                            next_reg_write.eq(1),
-                                            next_reg_value.eq(operand_a & operand_b),
-                                            next_flags_write.eq(1),
-                                            next_flags_value.eq(flag_value(operand_a & operand_b, 0)),
-                                        ]
-                                    with m.Case(GPOpcode.OR):
-                                        m.d.comb += [
-                                            next_reg_write.eq(1),
-                                            next_reg_value.eq(operand_a | operand_b),
-                                            next_flags_write.eq(1),
-                                            next_flags_value.eq(flag_value(operand_a | operand_b, 0)),
-                                        ]
-                                    with m.Case(GPOpcode.XOR):
-                                        m.d.comb += [
-                                            next_reg_write.eq(1),
-                                            next_reg_value.eq(operand_a ^ operand_b),
-                                            next_flags_write.eq(1),
-                                            next_flags_value.eq(flag_value(operand_a ^ operand_b, 0)),
-                                        ]
-                                    with m.Case(GPOpcode.SLL):
-                                        m.d.comb += [
-                                            next_reg_write.eq(1),
-                                            next_reg_value.eq(sll_results[shift_index]),
-                                            next_flags_write.eq(1),
-                                            next_flags_value.eq(flag_value(sll_results[shift_index], sll_carries[shift_index])),
-                                        ]
-                                    with m.Case(GPOpcode.SRL):
-                                        m.d.comb += [
-                                            next_reg_write.eq(1),
-                                            next_reg_value.eq(srl_results[shift_index]),
-                                            next_flags_write.eq(1),
-                                            next_flags_value.eq(flag_value(srl_results[shift_index], srl_carries[shift_index])),
-                                        ]
-                                    with m.Case(GPOpcode.SRA):
-                                        m.d.comb += [
-                                            next_reg_write.eq(1),
-                                            next_reg_value.eq(sra_results[shift_index]),
-                                            next_flags_write.eq(1),
-                                            next_flags_value.eq(flag_value(sra_results[shift_index], sra_carries[shift_index])),
-                                        ]
-                                    with m.Case(GPOpcode.SLLI):
-                                        m.d.comb += [
-                                            next_reg_write.eq(1),
-                                            next_reg_value.eq(slli_results[execute_imm4]),
-                                            next_flags_write.eq(1),
-                                            next_flags_value.eq(flag_value(slli_results[execute_imm4], slli_carries[execute_imm4])),
-                                        ]
-                                    with m.Case(GPOpcode.SRLI):
-                                        m.d.comb += [
-                                            next_reg_write.eq(1),
-                                            next_reg_value.eq(srli_results[execute_imm4]),
-                                            next_flags_write.eq(1),
-                                            next_flags_value.eq(flag_value(srli_results[execute_imm4], srli_carries[execute_imm4])),
-                                        ]
-                                    with m.Case(GPOpcode.SRAI):
-                                        m.d.comb += [
-                                            next_reg_write.eq(1),
-                                            next_reg_value.eq(srai_results[execute_imm4]),
-                                            next_flags_write.eq(1),
-                                            next_flags_value.eq(flag_value(srai_results[execute_imm4], srai_carries[execute_imm4])),
-                                        ]
-                                    with m.Case(GPOpcode.LLR):
+                                with m.If(gp_alu_valid):
+                                    m.d.comb += [
+                                        next_reg_write.eq(gp_alu_reg_write),
+                                        next_reg_value.eq(gp_alu_result_value),
+                                        next_flags_write.eq(gp_alu_flags_write),
+                                        next_flags_value.eq(gp_alu_flags_value),
+                                    ]
+                                with m.Elif(execute_gp_opcode == GPOpcode.LLR):
+                                    m.d.comb += [
+                                        execute_starts_memory.eq(1),
+                                        next_mem_start.eq(1),
+                                        next_mem_addr.eq(operand_b),
+                                        next_mem_virtual_addr.eq(operand_b),
+                                        next_mem_width_bytes.eq(8),
+                                        next_mem_write.eq(0),
+                                        next_mem_rd.eq(execute_rd),
+                                        next_mem_next_pc.eq(execute_post_increment_pc),
+                                        next_mem_fault_pc.eq(self.execute_pc),
+                                        next_mem_set_reservation.eq(1),
+                                        next_mem_reservation_addr.eq(operand_b),
+                                    ]
+                                with m.Elif(execute_gp_opcode == GPOpcode.SCR):
+                                    with m.If(self.ll_reservation_valid & (self.ll_reservation_addr == operand_b)):
                                         m.d.comb += [
                                             execute_starts_memory.eq(1),
                                             next_mem_start.eq(1),
                                             next_mem_addr.eq(operand_b),
                                             next_mem_virtual_addr.eq(operand_b),
                                             next_mem_width_bytes.eq(8),
-                                            next_mem_write.eq(0),
-                                            next_mem_rd.eq(execute_rd),
+                                            next_mem_write.eq(1),
+                                            next_mem_store_value.eq(operand_a),
                                             next_mem_next_pc.eq(execute_post_increment_pc),
                                             next_mem_fault_pc.eq(self.execute_pc),
-                                            next_mem_set_reservation.eq(1),
-                                            next_mem_reservation_addr.eq(operand_b),
+                                            next_mem_flags_write.eq(1),
+                                            next_mem_flags_value.eq(Cat(Const(1, 1), self.flags[1], self.flags[2])),
                                         ]
-                                    with m.Case(GPOpcode.SCR):
-                                        with m.If(self.ll_reservation_valid & (self.ll_reservation_addr == operand_b)):
-                                            m.d.comb += [
-                                                execute_starts_memory.eq(1),
-                                                next_mem_start.eq(1),
-                                                next_mem_addr.eq(operand_b),
-                                                next_mem_virtual_addr.eq(operand_b),
-                                                next_mem_width_bytes.eq(8),
-                                                next_mem_write.eq(1),
-                                                next_mem_store_value.eq(operand_a),
-                                                next_mem_next_pc.eq(execute_post_increment_pc),
-                                                next_mem_fault_pc.eq(self.execute_pc),
-                                                next_mem_flags_write.eq(1),
-                                                next_mem_flags_value.eq(Cat(Const(1, 1), self.flags[1], self.flags[2])),
-                                            ]
-                                        with m.Else():
-                                            m.d.comb += [
-                                                next_flags_write.eq(1),
-                                                next_flags_value.eq(Cat(Const(0, 1), self.flags[1], self.flags[2])),
-                                            ]
-                                    with m.Default():
-                                        m.d.comb += next_lockup.eq(1)
+                                    with m.Else():
+                                        m.d.comb += [
+                                            next_flags_write.eq(1),
+                                            next_flags_value.eq(Cat(Const(0, 1), self.flags[1], self.flags[2])),
+                                        ]
+                                with m.Else():
+                                    m.d.comb += next_lockup.eq(1)
                             with m.Default():
                                 m.d.comb += next_lockup.eq(1)
 
-                    m.d.sync += [
-                        self.writeback_reg_write.eq(next_reg_write),
-                        self.writeback_reg_index.eq(next_reg_index),
-                        self.writeback_reg_value.eq(next_reg_value),
-                        self.writeback_aux_reg_write.eq(0),
-                        self.writeback_aux_reg_index.eq(0),
-                        self.writeback_aux_reg_value.eq(0),
-                        self.writeback_flags_write.eq(next_flags_write),
-                        self.writeback_flags_value.eq(next_flags_value),
-                        self.writeback_next_pc.eq(next_pc),
-                        self.writeback_halt.eq(0),
-                        self.writeback_lockup.eq(next_lockup),
-                        self.writeback_commit_pc.eq(self.execute_pc),
-                        self.lsu_started.eq(0),
-                        self.mem_addr.eq(next_mem_addr),
-                        self.mem_virtual_addr.eq(next_mem_virtual_addr),
-                        self.mem_width_bytes.eq(next_mem_width_bytes),
-                        self.mem_write.eq(next_mem_write),
-                        self.mem_store_value.eq(next_mem_store_value),
-                        self.mem_rd.eq(next_mem_rd),
-                        self.mem_next_pc.eq(next_mem_next_pc),
-                        self.mem_fault_pc.eq(next_mem_fault_pc),
-                        self.mem_flags_write.eq(next_mem_flags_write),
-                        self.mem_flags_value.eq(next_mem_flags_value),
-                        self.mem_set_reservation.eq(next_mem_set_reservation),
-                        self.mem_reservation_addr.eq(next_mem_reservation_addr),
-                        self.mem_post_reg_write.eq(next_mem_post_reg_write),
-                        self.mem_post_reg_index.eq(next_mem_post_reg_index),
-                        self.mem_post_reg_value.eq(next_mem_post_reg_value),
-                        self.mem_post_reg_delta.eq(next_mem_post_reg_delta),
-                        self.mem_post_reg_use_load_result.eq(next_mem_post_reg_use_load_result),
-                        self.mem_chain_store.eq(next_mem_chain_store),
-                        self.mem_chain_store_addr.eq(next_mem_chain_store_addr),
-                        self.mem_chain_store_use_load_result.eq(next_mem_chain_store_use_load_result),
-                        self.mem_chain_store_value.eq(next_mem_chain_store_value),
-                        self.mem_result_value.eq(0),
-                        self.state.eq(Mux(execute_starts_memory, V2PipelineState.MEM_TRANSLATE, V2PipelineState.WRITEBACK)),
-                    ]
+                    with m.If(gp_alu_valid):
+                        m.d.sync += [
+                            self.execute_complete_reg_write.eq(next_reg_write),
+                            self.execute_complete_reg_index.eq(next_reg_index),
+                            self.execute_complete_reg_value.eq(next_reg_value),
+                            self.execute_complete_flags_write.eq(next_flags_write),
+                            self.execute_complete_flag_result.eq(gp_alu_flag_result),
+                            self.execute_complete_flag_carry.eq(gp_alu_flag_carry),
+                            self.execute_complete_next_pc.eq(next_pc),
+                            self.execute_complete_lockup.eq(next_lockup),
+                            self.execute_complete_commit_pc.eq(self.execute_pc),
+                            self.lsu_started.eq(0),
+                            self.mem_addr.eq(next_mem_addr),
+                            self.mem_virtual_addr.eq(next_mem_virtual_addr),
+                            self.translate_virtual_addr.eq(next_mem_virtual_addr),
+                            self.translate_access.eq(Mux(next_mem_write, ACCESS_WRITE, ACCESS_READ)),
+                            self.mem_width_bytes.eq(next_mem_width_bytes),
+                            self.mem_write.eq(next_mem_write),
+                            self.mem_store_value.eq(next_mem_store_value),
+                            self.mem_rd.eq(next_mem_rd),
+                            self.mem_next_pc.eq(next_mem_next_pc),
+                            self.mem_fault_pc.eq(next_mem_fault_pc),
+                            self.mem_flags_write.eq(next_mem_flags_write),
+                            self.mem_flags_value.eq(next_mem_flags_value),
+                            self.mem_set_reservation.eq(next_mem_set_reservation),
+                            self.mem_reservation_addr.eq(next_mem_reservation_addr),
+                            self.mem_post_reg_write.eq(next_mem_post_reg_write),
+                            self.mem_post_reg_index.eq(next_mem_post_reg_index),
+                            self.mem_post_reg_value.eq(next_mem_post_reg_value),
+                            self.mem_post_reg_delta.eq(next_mem_post_reg_delta),
+                            self.mem_post_reg_use_load_result.eq(next_mem_post_reg_use_load_result),
+                            self.mem_chain_store.eq(next_mem_chain_store),
+                            self.mem_chain_store_addr.eq(next_mem_chain_store_addr),
+                            self.mem_chain_store_use_load_result.eq(next_mem_chain_store_use_load_result),
+                            self.mem_chain_store_value.eq(next_mem_chain_store_value),
+                            self.mem_result_value.eq(0),
+                            self.state.eq(V2PipelineState.EXECUTE_COMPLETE),
+                        ]
+                    with m.Else():
+                        m.d.sync += [
+                            self.writeback_reg_write.eq(next_reg_write),
+                            self.writeback_reg_index.eq(next_reg_index),
+                            self.writeback_reg_value.eq(next_reg_value),
+                            self.writeback_aux_reg_write.eq(0),
+                            self.writeback_aux_reg_index.eq(0),
+                            self.writeback_aux_reg_value.eq(0),
+                            self.writeback_flags_write.eq(next_flags_write),
+                            self.writeback_flags_value.eq(next_flags_value),
+                            self.writeback_next_pc.eq(next_pc),
+                            self.writeback_halt.eq(0),
+                            self.writeback_lockup.eq(next_lockup),
+                            self.writeback_commit_pc.eq(self.execute_pc),
+                            self.lsu_started.eq(0),
+                            self.mem_addr.eq(next_mem_addr),
+                            self.mem_virtual_addr.eq(next_mem_virtual_addr),
+                            self.translate_virtual_addr.eq(next_mem_virtual_addr),
+                            self.translate_access.eq(Mux(next_mem_write, ACCESS_WRITE, ACCESS_READ)),
+                            self.mem_width_bytes.eq(next_mem_width_bytes),
+                            self.mem_write.eq(next_mem_write),
+                            self.mem_store_value.eq(next_mem_store_value),
+                            self.mem_rd.eq(next_mem_rd),
+                            self.mem_next_pc.eq(next_mem_next_pc),
+                            self.mem_fault_pc.eq(next_mem_fault_pc),
+                            self.mem_flags_write.eq(next_mem_flags_write),
+                            self.mem_flags_value.eq(next_mem_flags_value),
+                            self.mem_set_reservation.eq(next_mem_set_reservation),
+                            self.mem_reservation_addr.eq(next_mem_reservation_addr),
+                            self.mem_post_reg_write.eq(next_mem_post_reg_write),
+                            self.mem_post_reg_index.eq(next_mem_post_reg_index),
+                            self.mem_post_reg_value.eq(next_mem_post_reg_value),
+                            self.mem_post_reg_delta.eq(next_mem_post_reg_delta),
+                            self.mem_post_reg_use_load_result.eq(next_mem_post_reg_use_load_result),
+                            self.mem_chain_store.eq(next_mem_chain_store),
+                            self.mem_chain_store_addr.eq(next_mem_chain_store_addr),
+                            self.mem_chain_store_use_load_result.eq(next_mem_chain_store_use_load_result),
+                            self.mem_chain_store_value.eq(next_mem_chain_store_value),
+                            self.mem_result_value.eq(0),
+                            self.state.eq(Mux(execute_starts_memory, V2PipelineState.MEM_TRANSLATE, V2PipelineState.WRITEBACK)),
+                        ]
 
             with m.Case(V2PipelineState.MEM_TRANSLATE):
                 with m.If(paging_enabled & ~Const(1 if self.config.enable_mmu else 0, 1)):
@@ -1286,7 +1402,7 @@ class Little64V2Core(Elaboratable):
                     ]
                 with m.Else():
                     m.d.sync += [
-                        self.walk_virtual_addr.eq(self.mem_virtual_addr),
+                        self.walk_virtual_addr.eq(self.translate_virtual_addr),
                         self.walk_table_addr.eq(self.special_regs.page_table_root_physical),
                         self.walk_level.eq(2),
                         self.walk_access.eq(Mux(self.mem_write, ACCESS_WRITE, ACCESS_READ)),
@@ -1355,12 +1471,13 @@ class Little64V2Core(Elaboratable):
                                 self.lsu_started.eq(0),
                                 self.mem_addr.eq(self.mem_chain_store_addr),
                                 self.mem_virtual_addr.eq(self.mem_chain_store_addr),
+                                self.translate_virtual_addr.eq(self.mem_chain_store_addr),
+                                self.translate_access.eq(ACCESS_WRITE),
                                 self.mem_width_bytes.eq(8),
                                 self.mem_write.eq(1),
                                 self.mem_store_value.eq(Mux(self.mem_chain_store_use_load_result, self.lsu.response_load_value, self.mem_chain_store_value)),
                                 self.mem_rd.eq(0),
                                 self.mem_set_reservation.eq(0),
-                                self.mem_post_reg_write.eq(0),
                                 self.mem_chain_store.eq(0),
                                 self.mem_chain_store_use_load_result.eq(0),
                                 self.mem_chain_store_value.eq(0),
@@ -1384,6 +1501,23 @@ class Little64V2Core(Elaboratable):
                                 self.state.eq(V2PipelineState.WRITEBACK),
                             ]
 
+            with m.Case(V2PipelineState.EXECUTE_COMPLETE):
+                m.d.sync += [
+                    self.writeback_reg_write.eq(self.execute_complete_reg_write),
+                    self.writeback_reg_index.eq(self.execute_complete_reg_index),
+                    self.writeback_reg_value.eq(self.execute_complete_reg_value),
+                    self.writeback_aux_reg_write.eq(0),
+                    self.writeback_aux_reg_index.eq(0),
+                    self.writeback_aux_reg_value.eq(0),
+                    self.writeback_flags_write.eq(self.execute_complete_flags_write),
+                    self.writeback_flags_value.eq(flag_value(self.execute_complete_flag_result, self.execute_complete_flag_carry)),
+                    self.writeback_next_pc.eq(self.execute_complete_next_pc),
+                    self.writeback_halt.eq(0),
+                    self.writeback_lockup.eq(self.execute_complete_lockup),
+                    self.writeback_commit_pc.eq(self.execute_complete_commit_pc),
+                    self.state.eq(V2PipelineState.WRITEBACK),
+                ]
+
             with m.Case(V2PipelineState.WRITEBACK):
                 m.d.comb += [
                     self.commit_valid.eq(1),
@@ -1398,6 +1532,8 @@ class Little64V2Core(Elaboratable):
                 m.d.sync += [
                     self.register_file[15].eq(self.writeback_next_pc),
                     self.fetch_pc.eq(self.writeback_next_pc),
+                    self.translate_virtual_addr.eq(self.writeback_next_pc),
+                    self.translate_access.eq(ACCESS_EXECUTE),
                 ]
                 with m.If(self.writeback_lockup):
                     enter_lockup()
@@ -1497,11 +1633,11 @@ class Little64V2Core(Elaboratable):
                     enter_lockup()
                 with m.Elif(~paging_enabled):
                     m.d.sync += [
-                        self.interrupt_vector_phys.eq(interrupt_vector_table_addr),
+                        self.interrupt_vector_phys.eq(self.translate_virtual_addr),
                         self.lsu_started.eq(0),
                         self.state.eq(V2PipelineState.INTERRUPT_VECTOR_LOAD),
                     ]
-                with m.Elif(~is_canonical39(interrupt_vector_table_addr)):
+                with m.Elif(~is_canonical39(self.translate_virtual_addr)):
                     enter_lockup()
                 with m.Elif((self.special_regs.page_table_root_physical & 0xFFF) != 0):
                     enter_lockup()
@@ -1513,7 +1649,7 @@ class Little64V2Core(Elaboratable):
                     ]
                 with m.Else():
                     m.d.sync += [
-                        self.walk_virtual_addr.eq(interrupt_vector_table_addr),
+                        self.walk_virtual_addr.eq(self.translate_virtual_addr),
                         self.walk_table_addr.eq(self.special_regs.page_table_root_physical),
                         self.walk_level.eq(2),
                         self.walk_access.eq(ACCESS_READ),
@@ -1538,6 +1674,8 @@ class Little64V2Core(Elaboratable):
                         m.d.sync += [
                             self.register_file[15].eq(self.lsu.response_load_value),
                             self.fetch_pc.eq(self.lsu.response_load_value),
+                            self.translate_virtual_addr.eq(self.lsu.response_load_value),
+                            self.translate_access.eq(ACCESS_EXECUTE),
                             self.state.eq(V2PipelineState.FETCH_TRANSLATE),
                         ]
 

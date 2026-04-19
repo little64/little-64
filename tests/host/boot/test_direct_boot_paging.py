@@ -14,8 +14,8 @@ def main() -> int:
     builddir.mkdir(parents=True, exist_ok=True)
 
     # Note: renamed from test_direct_boot_highhalf to test_direct_boot_physical
-    # The direct boot mode now boots with paging OFF, so the ELF must link at
-    # the physical address (0x100000) not a virtual address.
+    # The direct boot mode now uses the LiteX SDRAM contract, so the ELF must
+    # link at the physical RAM base (0x40000000) not a virtual address.
     asm = builddir / "test_direct_boot_physical.s"
     linker = builddir / "test_direct_boot_physical.ld"
     obj = builddir / "test_direct_boot_physical.o"
@@ -33,7 +33,7 @@ def main() -> int:
         "ENTRY(_start)\n"
         "SECTIONS\n"
         "{\n"
-        "  . = 0x100000;\n"
+        "  . = 0x40000000;\n"
         "  .text : { *(.text*) }\n"
         "  .rodata : { *(.rodata*) }\n"
         "  .data : { *(.data*) }\n"

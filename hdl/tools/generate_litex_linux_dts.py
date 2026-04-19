@@ -24,7 +24,7 @@ def _dependency_paths() -> list[Path]:
 
 
 FLAG_BOOTARGS: dict[str, str] = {
-    'with_sdcard': 'root=/dev/mmcblk0p2 rootwait',
+    'with_sdcard': 'root=/dev/mmcblk0p2 rootwait init=/init',
 }
 
 
@@ -133,6 +133,7 @@ def _generate_dts_text(args: argparse.Namespace, output_path: Path) -> str:
         boot_source=args.boot_source,
     )
     soc.platform.output_dir = str(output_path.parent / 'litex-sim-build')
+    soc.finalize()
     csr = cast(Any, soc.csr)
     csr_regions = cast(dict[str, Any], csr.regions)
     uart_region = csr_regions.get('uart')
@@ -170,7 +171,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         '--cpu-variant',
         default='standard',
-        help='LiteX CPU variant to model when instantiating the simulation SoC.',
+        help='LiteX CPU variant to model when instantiating the simulation SoC. `standard` selects the V2 core; use `standard-basic` for the legacy core.',
     )
     parser.add_argument(
         '--litex-target',

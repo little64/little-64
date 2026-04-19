@@ -98,14 +98,16 @@ The emulator BIOS-oriented path currently assumes:
 
 ## Direct Linux Boot Path
 
-The current `--boot-mode=direct` path is a Linux-oriented physical-entry loader.
+The current `--boot-mode=direct` path is a Linux-oriented physical-entry loader
+that now instantiates the same LiteX-compatible board contract used by the
+current emulator DTB instead of the older low-memory `virt` machine.
 
 The loader:
 
 1. parses PT_LOAD segments,
-2. loads them into RAM,
+2. loads them into LiteX SDRAM,
 3. zero-fills `.bss`,
-4. instantiates the default virtual platform,
+4. instantiates the default LiteX-compatible virtual platform,
 5. places the embedded DTB after the image with a conservative scratch gap,
 6. resolves the entry point to a physical address,
 7. enters the kernel with paging disabled.
@@ -145,6 +147,9 @@ The current Linux `head.S` path expects to:
 3. construct initial page tables,
 4. enable paging,
 5. jump into the virtual kernel path.
+
+The default direct-loader physical RAM base is now `0x40000000`, matching the
+LiteX SDRAM contract used by the Linux boot helpers and HDL smoke flows.
 
 ## LiteX SPI Flash Boot Path
 
@@ -189,6 +194,12 @@ The flash-resident stage-0 loader is responsible for either:
 
 before transferring control to the kernel entry point.
 
+For hardware-oriented LiteX targets that expose a programmable `uart_phy` CSR
+bank, the current stage-0 code also programs the LiteUART PHY tuning word for
+`115200` baud before printing its first serial status line. The emulator's
+simulation UART model does not expose that PHY CSR, so the same code path
+naturally skips the write there.
+
 The Linux helper can still be pointed at this path explicitly for compatibility,
 but `--machine=litex` now defaults to the bootrom path below.
 
@@ -203,7 +214,7 @@ present so bootrom images built for SDRAM-backed LiteX targets can run the
 generated LiteDRAM initialization sequence under functional emulation before
 continuing to SD or kernel handoff logic.
 
-The Linux helper [target/linux_port/boot_direct.sh](/home/alexander/projects/little-64/target/linux_port/boot_direct.sh) now generates this bootrom image shape by default for `--machine=litex`, along with a DTS/DTB and SD image derived from the Arty A7-35T LiteX target contract. That default helper path now assumes SDRAM at `0x40000000` with a `0x10000000` RAM window so the emulator, stage-0 metadata, and runtime DT agree on the board-sized memory map.
+The Linux helper `target/linux_port/boot_direct.sh` now generates this bootrom image shape by default for `--machine=litex`, along with a DTS/DTB and SD image derived from the Arty A7-35T LiteX target contract. That default helper path now assumes SDRAM at `0x40000000` with a `0x10000000` RAM window so the emulator, stage-0 metadata, and runtime DT agree on the board-sized memory map.
 
 ## ELF Loader Expectations
 
@@ -230,6 +241,7 @@ Primary implementation sources:
 
 - `host/emulator/cpu.cpp`
 - `host/emulator/lite_uart_device.cpp`
+- `host/emulator/little64.dts`
 - `host/boot/boot_abi.h`
 - `target/linux_port/linux/arch/little64/kernel/head.S`
 

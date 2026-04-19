@@ -3,15 +3,20 @@ from __future__ import annotations
 from .basic import Little64BasicCore
 from .config import CACHE_TOPOLOGIES, CORE_VARIANTS, Little64CoreConfig
 from .v2 import Little64V2Core
+from .v3 import Little64V3Core
 
 
 LITEX_CPU_VARIANT_CONFIGS = {
-    'standard': ('basic', 'none'),
+    'standard': ('v2', 'none'),
     'standard-basic': ('basic', 'none'),
     'standard-v2': ('v2', 'none'),
     'standard-v2-none': ('v2', 'none'),
     'standard-v2-unified': ('v2', 'unified'),
     'standard-v2-split': ('v2', 'split'),
+    'standard-v3': ('v3', 'none'),
+    'standard-v3-none': ('v3', 'none'),
+    'standard-v3-unified': ('v3', 'unified'),
+    'standard-v3-split': ('v3', 'split'),
 }
 
 
@@ -20,6 +25,8 @@ def core_class_for_variant(core_variant: str):
         return Little64BasicCore
     if core_variant == 'v2':
         return Little64V2Core
+    if core_variant == 'v3':
+        return Little64V3Core
     raise ValueError(f'Unsupported Little64 core variant: {core_variant}')
 
 
@@ -56,6 +63,7 @@ __all__ = [
     'LITEX_CPU_VARIANT_CONFIGS',
     'Little64BasicCore',
     'Little64V2Core',
+    'Little64V3Core',
     'config_for_litex_variant',
     'core_class_for_variant',
     'create_core',

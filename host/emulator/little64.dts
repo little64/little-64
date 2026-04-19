@@ -3,8 +3,13 @@
 / {
     #address-cells = <2>;
     #size-cells = <2>;
-    compatible = "little64,virt";
-    model = "Little-64 Virtual Machine";
+    compatible = "little64,litex-sim", "little64,bootrom";
+    model = "Little64 LiteX Emulator Machine";
+
+    aliases {
+        serial0 = &uart0;
+        sdcard0 = &mmc0;
+    };
 
     cpus {
         #address-cells = <1>;
@@ -14,7 +19,7 @@
             compatible = "little64";
             device_type = "cpu";
             reg = <0>;
-            clock-frequency = <1000000000>;  /* 1 GHz */
+            clock-frequency = <1000000>;
         };
     };
 
@@ -24,35 +29,74 @@
         #interrupt-cells = <1>;
     };
 
-    memory@100000 {
+    sys_clk: clock {
+        compatible = "fixed-clock";
+        #clock-cells = <0>;
+        clock-frequency = <1000000>;
+    };
+
+    vreg_mmc: vreg_mmc {
+        compatible = "regulator-fixed";
+        regulator-name = "vreg_mmc";
+        regulator-min-microvolt = <3300000>;
+        regulator-max-microvolt = <3300000>;
+        regulator-always-on;
+    };
+
+    memory@40000000 {
         device_type = "memory";
-        reg = <0x0 0x100000 0x0 0x4000000>;  /* 1 MiB base, 64 MiB size */
+        reg = <0x00000000 0x40000000 0x00000000 0x10000000>;
     };
 
     chosen {
-        bootargs = "console=ttyS0,115200 earlycon=uart8250,mmio,0x08000000,115200n8 ignore_loglevel loglevel=8 root=/dev/l64blk0 rootfstype=ext2 ro rootwait init=/init";
-        stdout-path = "/uart@8000000";
+        bootargs = "console=liteuart earlycon=liteuart,0xf0004000 ignore_loglevel loglevel=8 root=/dev/mmcblk0p2 rootwait init=/init";
+        stdout-path = "serial0:115200n8";
     };
 
-    uart@8000000 {
-        compatible = "ns16550a";
-        reg = <0x0 0x08000000  0x0 0x8>;
-        interrupt-parent = <&intc>;
-        interrupts = <65>;
-        clock-frequency = <1843200>;
-    };
+    soc {
+        compatible = "simple-bus";
+        #address-cells = <2>;
+        #size-cells = <2>;
+        ranges;
 
-    timer@8001000 {
-        compatible = "little64,timer";
-        reg = <0x0 0x08001000  0x0 0x20>;
-        interrupt-parent = <&intc>;
-        interrupts = <66>;
-    };
+        uart0: serial@f0004000 {
+            compatible = "litex,liteuart";
+            reg = <0x00000000 0xf0004000 0x00000000 0x00000100>;
+            interrupt-parent = <&intc>;
+            interrupts = <65>;
+        };
 
-    block@8002000 {
-        compatible = "little64,pvblk";
-        reg = <0x0 0x08002000  0x0 0x100>;
-        interrupt-parent = <&intc>;
-        interrupts = <67>;
+        flash0: flash@20000000 {
+            compatible = "jedec-flash";
+            reg = <0x00000000 0x20000000 0x00000000 0x01000000>;
+            bank-width = <1>;
+        };
+
+        bootrom0: rom@0 {
+            compatible = "little64,bootrom";
+            reg = <0x00000000 0x00000000 0x00000000 0x00008000>;
+        };
+
+        mmc0: mmc@f0002800 {
+            compatible = "litex,mmc";
+            reg = <0x00000000 0xf0002800 0x00000000 0x00000100>,
+                  <0x00000000 0xf0001000 0x00000000 0x00000100>,
+                  <0x00000000 0xf0000800 0x00000000 0x00000100>,
+                  <0x00000000 0xf0002000 0x00000000 0x00000100>,
+                  <0x00000000 0xf0001800 0x00000000 0x00000100>;
+            reg-names = "phy", "core", "reader", "writer", "irq";
+            clocks = <&sys_clk>;
+            vmmc-supply = <&vreg_mmc>;
+            bus-width = <4>;
+            interrupt-parent = <&intc>;
+            interrupts = <67>;
+        };
+
+        timer0: timer@8001000 {
+            compatible = "little64,timer";
+            reg = <0x00000000 0x08001000 0x00000000 0x00000020>;
+            interrupt-parent = <&intc>;
+            interrupts = <66>;
+        };
     };
 };

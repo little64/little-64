@@ -9,7 +9,7 @@ from amaranth.back import verilog
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from little64.config import CACHE_TOPOLOGIES, CORE_VARIANTS, Little64CoreConfig
+from little64.config import CACHE_TOPOLOGIES, Little64CoreConfig, SUPPORTED_CORE_VARIANTS
 from little64.litex import LITTLE64_LITEX_MEM_MAP
 from little64.variants import create_core
 
@@ -110,8 +110,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('output', type=Path, help='Output Verilog file path')
     parser.add_argument(
         '--core-variant',
-        choices=CORE_VARIANTS,
-        default='basic',
+        choices=SUPPORTED_CORE_VARIANTS,
+        default='v2',
         help='Core variant used by the Linux-boot wrapper.',
     )
     parser.add_argument(

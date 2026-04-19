@@ -65,8 +65,8 @@ def _build_mapping(memory: dict[int, int], *, root: int, l1: int, l0: int, va: i
     _write_u64(memory, l0 + (((va >> 12) & 0x1FF) * 8), _leaf_pte(pa, r=r, w=w, x=x, user=user))
 
 
-def test_supervisor_syscall_without_handler_locks_with_vector4() -> None:
-    observed = run_program_source('SYSCALL', max_cycles=32)
+def test_supervisor_syscall_without_handler_locks_with_vector4(shared_core_config) -> None:
+    observed = run_program_source('SYSCALL', config=shared_core_config, max_cycles=32)
 
     assert observed['halted'] == 0
     assert observed['locked_up'] == 1
@@ -74,10 +74,10 @@ def test_supervisor_syscall_without_handler_locks_with_vector4() -> None:
     assert observed['trap_pc'] == 0
 
 
-def test_invalid_gp_opcode_raises_invalid_instruction_trap() -> None:
+def test_invalid_gp_opcode_raises_invalid_instruction_trap(shared_core_config) -> None:
     reserved_gp_opcode = (0b110 << 13) | (5 << 8)
 
-    observed = run_program_words([reserved_gp_opcode], max_cycles=32)
+    observed = run_program_words([reserved_gp_opcode], config=shared_core_config, max_cycles=32)
 
     assert observed['halted'] == 0
     assert observed['locked_up'] == 1
@@ -88,12 +88,13 @@ def test_invalid_gp_opcode_raises_invalid_instruction_trap() -> None:
     assert observed['trap_aux'] == 0
 
 
-def test_load_into_r15_redirects_control_flow() -> None:
+def test_load_into_r15_redirects_control_flow(shared_core_config) -> None:
     target = 0x20
     stop = encode_gp_imm('STOP', 0, 0)
 
     observed = run_program_words(
         [encode_ls_reg('LOAD', 0, 5, 15), stop],
+        config=shared_core_config,
         initial_registers={5: 0x80},
         extra_code_words={target: stop},
         initial_data_memory={
@@ -109,7 +110,7 @@ def test_load_into_r15_redirects_control_flow() -> None:
     assert observed['registers'][15] == target + 2
 
 
-def test_ls_register_form_reads_r15_as_post_incremented_pc() -> None:
+def test_ls_register_form_reads_r15_as_post_incremented_pc(shared_core_config) -> None:
     stop = encode_gp_imm('STOP', 0, 0)
 
     observed = run_program_words(
@@ -119,6 +120,7 @@ def test_ls_register_form_reads_r15_as_post_incremented_pc() -> None:
             stop,
             stop,
         ],
+        config=shared_core_config,
         max_cycles=32,
     )
 
@@ -129,7 +131,7 @@ def test_ls_register_form_reads_r15_as_post_incremented_pc() -> None:
     assert observed['registers'][15] == 0x8
 
 
-def test_move_into_r15_reaches_higher_half_target_when_paging_enabled() -> None:
+def test_move_into_r15_reaches_higher_half_target_when_paging_enabled(shared_core_config) -> None:
     root = 0x4000
     l1_low = 0x5000
     l0_low = 0x6000
@@ -149,6 +151,7 @@ def test_move_into_r15_reaches_higher_half_target_when_paging_enabled() -> None:
 
     observed = run_program_words(
         [encode_ls_reg('MOVE', 0, 3, 15), stop],
+        config=shared_core_config,
         extra_code_words={0x100: stop},
         initial_registers={3: high_target_va, 15: 0},
         initial_special_registers={
@@ -156,7 +159,7 @@ def test_move_into_r15_reaches_higher_half_target_when_paging_enabled() -> None:
             'page_table_root_physical': root,
         },
         initial_data_memory=memory,
-        max_cycles=32,
+        max_cycles=64,
     )
 
     assert observed['locked_up'] == 0
@@ -165,7 +168,7 @@ def test_move_into_r15_reaches_higher_half_target_when_paging_enabled() -> None:
     assert observed['registers'][15] == high_target_va + 2
 
 
-def test_l2_superpage_translation_preserves_non_aligned_phys_base() -> None:
+def test_l2_superpage_translation_preserves_non_aligned_phys_base(shared_core_config) -> None:
     root = 0x4000
     program_va = 0xFFFF_FFC0_0052_A100
     program_pa = 0x0062_A100
@@ -180,6 +183,7 @@ def test_l2_superpage_translation_preserves_non_aligned_phys_base() -> None:
 
     observed = run_program_words(
         [],
+        config=shared_core_config,
         extra_code_words={program_pa: stop},
         initial_registers={15: program_va},
         initial_special_registers={
@@ -196,11 +200,12 @@ def test_l2_superpage_translation_preserves_non_aligned_phys_base() -> None:
     assert observed['registers'][15] == program_va + 2
 
 
-def test_noncanonical_fetch_raises_canonical_page_fault() -> None:
+def test_noncanonical_fetch_raises_canonical_page_fault(shared_core_config) -> None:
     noncanonical_pc = 0x0000_0080_0000_0000
 
     observed = run_program_words(
         [],
+        config=shared_core_config,
         initial_registers={15: noncanonical_pc},
         initial_special_registers={
             'cpu_control': CPU_CONTROL_PAGING_ENABLE,
@@ -218,12 +223,13 @@ def test_noncanonical_fetch_raises_canonical_page_fault() -> None:
     assert observed['trap_aux'] == _aux_code(AUX_CANONICAL, 2)
 
 
-def test_missing_l2_pte_raises_not_present_page_fault() -> None:
+def test_missing_l2_pte_raises_not_present_page_fault(shared_core_config) -> None:
     root = 0x4000
     program_va = 0xFFFF_FFC0_0000_0000
 
     observed = run_program_words(
         [],
+        config=shared_core_config,
         initial_registers={15: program_va},
         initial_special_registers={
             'cpu_control': CPU_CONTROL_PAGING_ENABLE,
@@ -241,7 +247,7 @@ def test_missing_l2_pte_raises_not_present_page_fault() -> None:
     assert observed['trap_aux'] == _aux_code(AUX_NO_VALID_PTE, 2)
 
 
-def test_execute_without_x_permission_raises_permission_page_fault() -> None:
+def test_execute_without_x_permission_raises_permission_page_fault(shared_core_config) -> None:
     root = 0x4000
     l1 = 0x5000
     l0 = 0x6000
@@ -252,6 +258,7 @@ def test_execute_without_x_permission_raises_permission_page_fault() -> None:
 
     observed = run_program_words(
         [],
+        config=shared_core_config,
         initial_registers={15: program_va},
         initial_special_registers={
             'cpu_control': CPU_CONTROL_PAGING_ENABLE,
@@ -270,7 +277,7 @@ def test_execute_without_x_permission_raises_permission_page_fault() -> None:
     assert observed['trap_aux'] == _aux_code(AUX_PERMISSION, 0)
 
 
-def test_reserved_pte_bits_raise_reserved_fault_subtype() -> None:
+def test_reserved_pte_bits_raise_reserved_fault_subtype(shared_core_config) -> None:
     root = 0x4000
     l1 = 0x5000
     l0 = 0x6000
@@ -283,6 +290,7 @@ def test_reserved_pte_bits_raise_reserved_fault_subtype() -> None:
 
     observed = run_program_words(
         [],
+        config=shared_core_config,
         initial_registers={15: program_va},
         initial_special_registers={
             'cpu_control': CPU_CONTROL_PAGING_ENABLE,
@@ -301,9 +309,10 @@ def test_reserved_pte_bits_raise_reserved_fault_subtype() -> None:
     assert observed['trap_aux'] == _aux_code(AUX_RESERVED, 0)
 
 
-def test_user_syscall_without_handler_locks_with_vector3() -> None:
+def test_user_syscall_without_handler_locks_with_vector3(shared_core_config) -> None:
     observed = run_program_source(
         'SYSCALL',
+        config=shared_core_config,
         initial_special_registers={'cpu_control': CPU_CONTROL_USER_MODE},
         max_cycles=32,
     )
@@ -314,13 +323,14 @@ def test_user_syscall_without_handler_locks_with_vector3() -> None:
     assert observed['trap_pc'] == 0
 
 
-def test_supervisor_iret_restores_saved_context() -> None:
+def test_supervisor_iret_restores_saved_context(shared_core_config) -> None:
     observed = run_program_source(
         '\n'.join([
             'IRET',
             'LDI #0xEE, R1',
             'STOP',
         ]),
+        config=shared_core_config,
         initial_special_registers={
             'interrupt_epc': 4,
             'interrupt_eflags': 0b101,
@@ -335,9 +345,10 @@ def test_supervisor_iret_restores_saved_context() -> None:
     assert observed['registers'][1] == 0
 
 
-def test_user_iret_without_handler_raises_privileged_trap() -> None:
+def test_user_iret_without_handler_raises_privileged_trap(shared_core_config) -> None:
     observed = run_program_source(
         'IRET',
+        config=shared_core_config,
         initial_special_registers={'cpu_control': CPU_CONTROL_USER_MODE},
         max_cycles=32,
     )
@@ -348,9 +359,10 @@ def test_user_iret_without_handler_raises_privileged_trap() -> None:
     assert observed['trap_pc'] == 0
 
 
-def test_user_stop_without_handler_raises_privileged_trap() -> None:
+def test_user_stop_without_handler_raises_privileged_trap(shared_core_config) -> None:
     observed = run_program_source(
         'STOP',
+        config=shared_core_config,
         initial_special_registers={'cpu_control': CPU_CONTROL_USER_MODE},
         max_cycles=32,
     )
@@ -361,7 +373,7 @@ def test_user_stop_without_handler_raises_privileged_trap() -> None:
     assert observed['trap_pc'] == 0
 
 
-def test_supervisor_syscall_enters_handler_and_iret_returns() -> None:
+def test_supervisor_syscall_enters_handler_and_iret_returns(shared_core_config) -> None:
     handler_addr = 0x40
     vector_base = 0x100
     handler_words = assemble_source(
@@ -380,6 +392,7 @@ def test_supervisor_syscall_enters_handler_and_iret_returns() -> None:
             'SYSCALL',
             'STOP',
         ]),
+        config=shared_core_config,
         initial_special_registers={'interrupt_table_base': vector_base},
         extra_code_words={handler_addr + index * 2: word for index, word in enumerate(handler_words)},
         initial_data_memory=_vector_entry(vector_base, TrapVector.SYSCALL_FROM_SUPERVISOR, handler_addr),
@@ -394,7 +407,7 @@ def test_supervisor_syscall_enters_handler_and_iret_returns() -> None:
     assert observed['special_registers']['interrupt_cpu_control'] == 0
 
 
-def test_user_syscall_handler_can_adjust_return_mode_before_iret() -> None:
+def test_user_syscall_handler_can_adjust_return_mode_before_iret(shared_core_config) -> None:
     handler_addr = 0x40
     vector_base = 0x100
     handler_words = assemble_source(
@@ -416,6 +429,7 @@ def test_user_syscall_handler_can_adjust_return_mode_before_iret() -> None:
             'SYSCALL',
             'STOP',
         ]),
+        config=shared_core_config,
         initial_special_registers={
             'cpu_control': CPU_CONTROL_USER_MODE,
             'interrupt_table_base': vector_base,
@@ -433,7 +447,7 @@ def test_user_syscall_handler_can_adjust_return_mode_before_iret() -> None:
     assert observed['special_registers']['cpu_control'] == 0
 
 
-def test_maskable_irq_enters_handler_and_iret_returns() -> None:
+def test_maskable_irq_enters_handler_and_iret_returns(shared_core_config) -> None:
     handler_addr = 0x40
     vector_base = 0x100
     irq_vector = 65
@@ -456,6 +470,7 @@ def test_maskable_irq_enters_handler_and_iret_returns() -> None:
             'spin:',
             'JUMP @spin',
         ]),
+        config=shared_core_config,
         initial_special_registers={
             'cpu_control': CPU_CONTROL_INT_ENABLE,
             'interrupt_table_base': vector_base,
@@ -511,7 +526,7 @@ def test_lower_irq_vector_wins_and_pending_bits_are_not_cleared_on_entry() -> No
     assert ((observed['special_registers']['cpu_control'] >> CPU_CONTROL_CUR_INT_SHIFT) & 0x7F) == 65
 
 
-def test_user_syscall_fetches_paged_interrupt_vector_in_supervisor_mode() -> None:
+def test_user_syscall_fetches_paged_interrupt_vector_in_supervisor_mode(shared_core_config) -> None:
     root = 0x4000
     l1 = 0x5000
     l0 = 0x6000
@@ -534,6 +549,7 @@ def test_user_syscall_fetches_paged_interrupt_vector_in_supervisor_mode() -> Non
 
     observed = run_program_words(
         [],
+        config=shared_core_config,
         initial_registers={15: program_va},
         initial_special_registers={
             'cpu_control': CPU_CONTROL_USER_MODE | CPU_CONTROL_PAGING_ENABLE,
@@ -554,7 +570,7 @@ def test_user_syscall_fetches_paged_interrupt_vector_in_supervisor_mode() -> Non
     assert observed['special_registers']['interrupt_cpu_control'] & CPU_CONTROL_USER_MODE
 
 
-def test_paged_interrupt_table_fetch_failure_enters_lockup() -> None:
+def test_paged_interrupt_table_fetch_failure_enters_lockup(shared_core_config) -> None:
     root = 0x4000
     l1 = 0x5000
     l0 = 0x6000
@@ -569,6 +585,7 @@ def test_paged_interrupt_table_fetch_failure_enters_lockup() -> None:
 
     observed = run_program_words(
         [],
+        config=shared_core_config,
         initial_registers={15: program_va},
         initial_special_registers={
             'cpu_control': CPU_CONTROL_PAGING_ENABLE,
@@ -661,7 +678,7 @@ def test_exception_that_cannot_preempt_active_exception_enters_lockup() -> None:
     assert observed['trap_pc'] == 0
 
 
-def test_invalid_nonleaf_l0_entry_raises_reserved_fault_subtype() -> None:
+def test_invalid_nonleaf_l0_entry_raises_reserved_fault_subtype(shared_core_config) -> None:
     root = 0x4000
     l1 = 0x5000
     l0 = 0x6000
@@ -674,6 +691,7 @@ def test_invalid_nonleaf_l0_entry_raises_reserved_fault_subtype() -> None:
 
     observed = run_program_words(
         [],
+        config=shared_core_config,
         initial_registers={15: program_va},
         initial_special_registers={
             'cpu_control': CPU_CONTROL_PAGING_ENABLE,

@@ -32,12 +32,12 @@ This file documents practical update paths and maintenance rules for common proj
 - The shell entrypoint now delegates to the Python helper `target/linux_port/linux_build.py`.
 - It invokes the Linux kernel `make` target with the Little64 LLVM toolchain from `compilers/bin`.
 - The helper is currently not part of the Meson graph and is meant for local Linux port experimentation only.
-- It supports known machine profiles via `--machine virt|litex`, plus explicit overrides via `--defconfig <name>` and `--build-dir <path>`.
+- It supports the canonical `--machine litex` profile, plus explicit overrides via `--defconfig <name>` and `--build-dir <path>`.
 - It auto-syncs the selected defconfig into a profile-specific build directory when the canonical defconfig changes, the selected defconfig changes, or the build config is missing.
-- Known profile output directories: `target/linux_port/build-litex/` for `little64_litex_sim_defconfig` and `target/linux_port/build-virt/` for `little64_defconfig`.
-- Custom defconfigs build into `target/linux_port/build-<defconfig>/` unless `LITTLE64_LINUX_BUILD_DIR` or `--build-dir` overrides it.
-- Usage: `target/linux_port/build.sh [--machine virt|litex] [--defconfig <name>] [--build-dir <path>] [target] [make-args...]` where the default target is `vmlinux`.
-- The default machine profile is `litex`; use `target/linux_port/build.sh --machine virt vmlinux -j1` when you explicitly need the emulator-oriented profile.
+- The default LiteX profile output directory is `target/linux_port/build-litex/`.
+- Explicit defconfigs build into `target/linux_port/build-<defconfig>/` unless `LITTLE64_LINUX_BUILD_DIR` or `--build-dir` overrides it.
+- Usage: `target/linux_port/build.sh [--machine litex] [--defconfig <name>] [--build-dir <path>] [target] [make-args...]` where the default target is `vmlinux`.
+- The default machine profile is `litex`; use `--defconfig <name>` only when you explicitly need a separate non-default kernel config.
 - The helper normally passes `-j$(nproc)` to `make` unless a `-j` argument is already provided.
 - Optional guarded-clang mode can be enabled to catch backend non-termination/memory blowups:
   - `LITTLE64_CLANG_GUARD=1` enables `target/linux_port/clang_guard.sh` wrapper.
@@ -47,10 +47,9 @@ This file documents practical update paths and maintenance rules for common proj
 - Direct ELF boot helper for first Linux bring-up exists at `target/linux_port/boot_direct.sh`:
   - Default image path: `target/linux_port/build-litex/vmlinux`.
   - Default rootfs path: `target/linux_port/rootfs/build/rootfs.ext4`.
-  - Usage: `target/linux_port/boot_direct.sh [--machine virt|litex] [--mode trace|smoke|rsp] [--rootfs PATH | --no-rootfs] [--max-cycles N] [--port N] [optional-path-to-vmlinux]`.
-  - Default machine profile is `litex`.
+  - Usage: `target/linux_port/boot_direct.sh [--machine litex] [--mode trace|smoke|rsp] [--rootfs PATH | --no-rootfs] [--max-cycles N] [--port N] [optional-path-to-vmlinux]`.
+  - The helper now targets the LiteX machine profile only.
   - Default mode `smoke` launches the lower-overhead direct boot flow without boot-event capture.
-  - The `virt` profile attaches the default rootfs image unless `--no-rootfs` is used.
   - The `litex` profile now generates a bootrom-first LiteX image and launches emulator `--boot-mode=litex-bootrom` so the default path matches the SDRAM-backed hardware-oriented SoC layout.
   - The `litex` profile regenerates a minimal ext4 rootfs from `target/linux_port/rootfs/init.S` for SD partition 2 unless `--rootfs PATH` or `--no-rootfs` overrides it.
   - In `trace` mode it streams full boot events to `/tmp/little64_boot_events.l64t` via `--boot-events-file`.
@@ -65,7 +64,7 @@ This file documents practical update paths and maintenance rules for common proj
   - Output directory: `target/linux_port/rootfs/build/`.
   - Default image path: `target/linux_port/rootfs/build/rootfs.ext4`.
   - Usage: `target/linux_port/rootfs/build.sh` or `target/linux_port/rootfs/build.sh clean`.
-  - It builds a minimal `/init` ELF using the Little64 LLVM tools and packs it into an ext4 image for the PV block device.
+  - It builds a minimal `/init` ELF using the Little64 LLVM tools and packs it into an ext4 image used by the LiteX SD boot helpers.
   - The LiteX SD artifact builder reuses this helper when it needs the default SD rootfs payload.
   - This is the main bring-up rootfs path and should remain independent of targeted boot regressions; the dedicated Linux userspace-write smoke test builds its own test-only init/rootfs under `tests/host/boot/`.
 - Boot-event analysis helper exists at `target/linux_port/analyze_lockup_flow.py`:
@@ -80,7 +79,7 @@ This file documents practical update paths and maintenance rules for common proj
   - Usage: `l64trace.py watch <file>` for live-tailing (like `tail -f`), survives file recreation between runs.
   - **Important**: Trace files (`.l64t`) are binary and cannot be read directly. Always use `l64trace.py` subcommands to inspect them.
 - PC-to-source lookup helper for Linux kernel debugging exists at `target/linux_port/pc_to_line.sh`:
-  - Default image path: selected profile `vmlinux` under `target/linux_port/build-litex/`, `target/linux_port/build-virt/`, or `target/linux_port/build-<defconfig>/`.
+  - Default image path: selected profile `vmlinux` under `target/linux_port/build-litex/` or `target/linux_port/build-<defconfig>/`.
   - Usage: `target/linux_port/pc_to_line.sh [--defconfig <name>] [--elf <path>] [--context-bytes N] [--no-disasm] <pc>`.
   - It resolves a PC to function/file/line using LLVM tools from `compilers/bin` and can show nearby disassembly.
 - Repeated fast-boot outcome sampler exists at `target/linux_port/sample_fast_boots.py`:
@@ -91,9 +90,9 @@ This file documents practical update paths and maintenance rules for common proj
   - Default output directory is under `/tmp/little64-fastboot-samples/<timestamp>/`.
 - To override core count or pass custom `make` arguments, add them after the target, for example:
   - `target/linux_port/build.sh vmlinux -j4`
-  - `target/linux_port/build.sh --machine virt vmlinux LOCALVERSION=-custom CONFIG_DEBUG_INFO=y`
+  - `target/linux_port/build.sh --defconfig <name> vmlinux LOCALVERSION=-custom CONFIG_DEBUG_INFO=y`
   - `LITTLE64_CLANG_GUARD=1 LITTLE64_CLANG_TIMEOUT_SEC=90 target/linux_port/build.sh vmlinux -j4`
-  - `LITTLE64_CLANG_GUARD=1 LITTLE64_CLANG_MAX_VMEM_KB=10485760 target/linux_port/build.sh --machine virt vmlinux -j1`
+  - `LITTLE64_CLANG_GUARD=1 LITTLE64_CLANG_MAX_VMEM_KB=10485760 target/linux_port/build.sh --defconfig <name> vmlinux -j1`
 - If you have made adjustmens to the LLVM toolchain, you **MUST** first clean the Linux build folder:
   - `target/linux_port/build.sh clean`
   - Do **NOT** use mrproper, use `clean`.
@@ -103,6 +102,14 @@ This file documents practical update paths and maintenance rules for common proj
 - LiteX Linux DTS helper: `hdl/tools/generate_litex_linux_dts.py`
 - LiteX LLVM wrapper helper: `hdl/tools/generate_litex_llvm_wrappers.py`
 - LiteX SPI-flash image helper: `hdl/tools/build_litex_flash_image.py`
+- LiteX Arty hardware bitstream helper: `hdl/tools/build_litex_arty_bitstream.py`
+  - Builds a real LiteX/Vivado hardware project for the Digilent Arty A7-35T and can also program the board.
+  - Supports `--program volatile` for JTAG bitstream loads, `--program flash` for persistent configuration-flash writes, and `--program-only` to reuse existing artifacts.
+  - Supports `--vivado-stop-after synthesis|implementation|bitstream` to stop after the synth checkpoint, after routed implementation reports/checkpoints, or after full bitstream generation.
+  - Uses the repo's Arty wrapper around `litex-boards` and supports configurable SPI-mode SD wiring through either the Arduino header preset or PMOD mappings.
+  - Each non-`--program-only` build also cleans stale `gateware/`, `software/`, and `boot/` outputs and regenerates staged SD boot artifacts under `builddir/hdl-litex-arty/boot/`.
+  - The staged SD bootrom is built from `target/c_boot/litex_sd_boot.c`, which now supports both the native LiteSDCard and SPI-mode SD backends from the same C source via generated register-header selection.
+  - The Arty hardware path now preloads the SPI-mode build of that stage-0 into the integrated boot ROM. Linux DT/rootfs support for SPI-mode SD remains separate follow-up work.
 - Little64 SD boot artifact helper: `target/linux_port/build_sd_boot_artifacts.py`
   - Builds the bootrom stage-0 image plus the SD card image used by the emulator's `--machine=litex` path and by the bootrom-first LiteX smoke flows.
   - Pass `--with-sdram` when a simulation target should emit generated LiteDRAM init support instead of the integrated-RAM-only contract.
@@ -114,11 +121,66 @@ This file documents practical update paths and maintenance rules for common proj
   - Requires host development headers for `json-c` and `libevent` in addition to the Python packages from `requirements-hdl.txt`.
 - LiteX SPI-flash stage-0 entry source: `target/c_boot/litex_spi_boot.c`
 - LiteX SPI-flash linker script: `target/c_boot/linker_litex_spi_boot.ld`
-- The stage-0 entry now establishes a temporary low-RAM stack and clears its own `.bss` before entering C.
+- The stage-0 entry now establishes a temporary integrated-SRAM stack and clears its own `.bss` before entering C.
 - The stage-0 handoff contract to Linux is physical-entry only:
   - `R1 = dtb_phys`
   - `R13 = kernel_boot_stack_top`
   - `PC = kernel_entry_physical`
+
+## HDL Timing Improvement Loop
+
+Use this loop for Arty timing work on any Little64 CPU variant. The goal is to make timing experiments comparable and reversible instead of mixing architectural changes, cleanup, and measurement.
+
+1. Pick one CPU variant and keep the rest of the build shape fixed for that loop.
+2. Use a dedicated output directory and build name per experiment so reports and checkpoints do not overwrite another variant's artifacts.
+3. Prefer `--vivado-stop-after synthesis` until synthesis metrics and failing-path families are moving in the right direction.
+4. Make one structural timing hypothesis per loop. Do not mix unrelated refactors, renames, or behavior changes into the same synthesis comparison.
+5. Run the smallest relevant HDL regression slice before synthesis so you do not spend Vivado time on a broken RTL experiment.
+6. After each synthesis, capture all of the following before deciding whether the change helped:
+   - timing summary (`WNS`, `TNS`, failing endpoints),
+   - top failing path families,
+   - logic-level distribution,
+   - high-fanout nets,
+   - hierarchical utilization.
+7. Compare path families, not just headline `WNS`. A change that slightly improves `WNS` but creates a much deeper or broader failing family is usually a losing trade.
+8. Revert experiments that clearly worsen the dominant family or explode endpoint count, even if they are logically clean and tests still pass.
+9. Only move on to implementation/place-route after synthesis has stopped pointing at obviously broken cones.
+10. Treat directory layout as a maintenance concern, not a timing tool. Splitting files or subtrees does nothing by itself unless it comes with real RTL divergence.
+11. Only duplicate or specialize shared blocks after the reports show that a shared microarchitectural block is actually part of the critical path for that core variant.
+12. When specializing for one variant, keep architectural helpers shared where practical and split only timing-sensitive microarchitecture such as frontend, LSU, cache integration, or TLB/update plumbing if the reports justify it.
+
+Recommended Arty synthesis loop:
+
+```bash
+./.venv/bin/python hdl/tools/build_litex_arty_bitstream.py \
+  --cpu-variant <variant> \
+  --output-dir builddir/hdl-litex-arty-<tag> \
+  --build-name little64_arty_a7_35_<tag> \
+  --vivado-settings /path/to/Vivado/settings64.sh \
+  --vivado-stop-after synthesis
+```
+
+Recommended post-synthesis checkpoint analysis:
+
+```bash
+cd builddir/hdl-litex-arty-<tag>/gateware
+vivado -mode tcl <<'EOF'
+open_checkpoint little64_arty_a7_35_<tag>_synth.dcp
+report_high_fanout_nets -max_nets 30
+report_design_analysis -logic_level_distribution -setup -max_paths 30
+report_timing -delay_type max -slack_lesser_than 0 -max_paths 20 -input_pins
+report_qor_suggestions
+report_utilization -hierarchical
+close_design
+quit
+EOF
+```
+
+Variant-comparison rules:
+
+- Never compare two variants if they reuse the same output directory or report filenames.
+- Keep cache-topology, MMU/TLB enablement, and other major build-time knobs explicit in the experiment notes.
+- If you are evaluating whether shared RTL should diverge for one core, first prove that the shared block appears in the dominant failing family. Do not split modules based on code organization preference alone.
 
 ## Instruction Change Guide
 
@@ -177,8 +239,36 @@ Note: `host/tools/new_device.py` currently instructs contributors to add new dev
 - Generic test macros: `tests/support/test_harness.hpp`
 - CPU-specific helpers: `tests/support/cpu_test_helpers.hpp`
 - Backward-compat include shim: `tests/test_harness.hpp`
+- Shared HDL pytest suites under `hdl/tests/` default to the V2 core; run `./.venv/bin/python -m pytest hdl/tests --core-variants basic|v2|all` when you need the generic HDL coverage against a specific core or both cores.
 
 When adding CPU tests, prefer including `tests/support/cpu_test_helpers.hpp` directly.
+
+## HDL Snippet Debugging
+
+- For one-off HDL core debugging, prefer an in-process Python snippet over ad-hoc terminal fragments so you can import `shared_program.py`, `test_*` helpers, and inspect `run_program_*` results directly.
+- If you use `mcp_pylance_mcp_s_pylanceRunCodeSnippet`, set `workspaceRoot` to the repo root and `workingDirectory` to the repo root as well.
+- Standalone snippets do **not** load `hdl/tests/conftest.py`, so you must replicate its path bootstrap before importing `little64` or `shared_program`:
+
+```python
+import sys
+from pathlib import Path
+
+repo = Path.cwd()
+sys.path.insert(0, str(repo / "hdl"))
+sys.path.insert(0, str(repo / "hdl/tests"))
+```
+
+- After that bootstrap, the usual helpers work as expected, for example:
+
+```python
+from little64.config import Little64CoreConfig
+from shared_program import run_program_words, encode_ls_reg, encode_gp_imm
+```
+
+- Use `run_program_source(...)` or `run_program_words(...)` first when you only need architectural outcomes (`halted`, `locked_up`, `trap_*`, `registers`, `special_registers`, `commit_count`).
+- Drop to `amaranth.sim.Simulator(...)` only when you need per-cycle internal signals such as V2 pipeline state, frontend fetch state, or LSU handshakes.
+- When reproducing a pytest failure in a snippet, copy the same memory image and helper functions from the failing test module (for example `_write_u64`, `_table_pte`, `_leaf_pte` from `hdl/tests/test_traps.py`) instead of rebuilding the setup from scratch.
+- A missing bootstrap typically fails with `ModuleNotFoundError: No module named 'little64'`; fix the import path first before assuming the HDL behavior is wrong.
 
 ## Documentation Update Contract
 

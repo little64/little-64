@@ -1,20 +1,15 @@
 from __future__ import annotations
 
-import pytest
-
-from little64.config import Little64CoreConfig
 from mmio_trace import run_program_with_mmio_trace
 
 
-CACHE_TOPOLOGIES = ('none', 'unified', 'split')
 UART_MMIO_BASE = 0xF0001000
 
 
-@pytest.mark.parametrize('cache_topology', CACHE_TOPOLOGIES)
-def test_v2_mmio_byte_store_commits_once_and_writes_once(cache_topology: str) -> None:
+def test_mmio_byte_store_commits_once_and_writes_once(shared_core_config) -> None:
     observed = run_program_with_mmio_trace(
         'BYTE_STORE [R2], R1\nSTOP',
-        config=Little64CoreConfig(core_variant='v2', cache_topology=cache_topology, reset_vector=0),
+        config=shared_core_config,
         initial_registers={1: 0x41, 2: UART_MMIO_BASE, 15: 0},
     )
 
@@ -25,11 +20,10 @@ def test_v2_mmio_byte_store_commits_once_and_writes_once(cache_topology: str) ->
     assert observed['pc'] == 0x4
 
 
-@pytest.mark.parametrize('cache_topology', CACHE_TOPOLOGIES)
-def test_v2_mmio_branch_to_store_has_single_terminal_write(cache_topology: str) -> None:
+def test_mmio_branch_to_store_has_single_terminal_write(shared_core_config) -> None:
     observed = run_program_with_mmio_trace(
         'BYTE_LOAD [R3], R1\nTEST R0, R1\nJUMP.Z @emit\nSTOP\nemit:\nBYTE_STORE [R2], R1\nSTOP',
-        config=Little64CoreConfig(core_variant='v2', cache_topology=cache_topology, reset_vector=0),
+        config=shared_core_config,
         initial_registers={2: UART_MMIO_BASE, 3: 0x2000, 15: 0},
         initial_data_memory={0x2000: 0x00},
         max_cycles=160,
@@ -42,11 +36,10 @@ def test_v2_mmio_branch_to_store_has_single_terminal_write(cache_topology: str) 
     assert observed['pc'] == 0xC
 
 
-@pytest.mark.parametrize('cache_topology', CACHE_TOPOLOGIES)
-def test_v2_aligned_load_completes_with_single_delayed_ack(cache_topology: str) -> None:
+def test_aligned_load_completes_with_single_delayed_ack(shared_core_config) -> None:
     observed = run_program_with_mmio_trace(
         'LOAD [R2], R1\nSTOP',
-        config=Little64CoreConfig(core_variant='v2', cache_topology=cache_topology, reset_vector=0),
+        config=shared_core_config,
         initial_registers={2: 0x2000, 15: 0},
         initial_data_memory={
             0x2000: 0x88,
@@ -68,11 +61,10 @@ def test_v2_aligned_load_completes_with_single_delayed_ack(cache_topology: str) 
     assert observed['pc'] == 0x4
 
 
-@pytest.mark.parametrize('cache_topology', CACHE_TOPOLOGIES)
-def test_v2_split_load_completes_with_held_bus_request(cache_topology: str) -> None:
+def test_split_load_completes_with_held_bus_request(shared_core_config) -> None:
     observed = run_program_with_mmio_trace(
         'LOAD [R2], R1\nSTOP',
-        config=Little64CoreConfig(core_variant='v2', cache_topology=cache_topology, reset_vector=0),
+        config=shared_core_config,
         initial_registers={2: 0x2003, 15: 0},
         initial_data_memory={0x2000 + index: index for index in range(16)},
         max_cycles=192,

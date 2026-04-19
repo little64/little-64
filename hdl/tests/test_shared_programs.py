@@ -9,8 +9,8 @@ def _u64_bytes(value: int) -> dict[int, int]:
     return {byte_index: (value >> (8 * byte_index)) & 0xFF for byte_index in range(8)}
 
 
-def _assert_case(case) -> None:
-    observed = run_program_source(case.source)
+def _assert_case(case, shared_core_config) -> None:
+    observed = run_program_source(case.source, config=shared_core_config)
     assert observed['locked_up'] == 0
     assert observed['halted'] == 1
 
@@ -23,18 +23,19 @@ def _assert_case(case) -> None:
 
 
 @pytest.mark.parametrize('case', load_jump_program_cases(), ids=lambda case: case.description)
-def test_shared_jump_program_cases(case) -> None:
-    _assert_case(case)
+def test_shared_jump_program_cases(case, shared_core_config) -> None:
+    _assert_case(case, shared_core_config)
 
 
 @pytest.mark.parametrize('case', load_memory_program_cases(), ids=lambda case: case.description)
-def test_shared_memory_program_cases(case) -> None:
-    _assert_case(case)
+def test_shared_memory_program_cases(case, shared_core_config) -> None:
+    _assert_case(case, shared_core_config)
 
 
-def test_push_and_pop_preserve_flags_and_stack_value() -> None:
+def test_push_and_pop_preserve_flags_and_stack_value(shared_core_config) -> None:
     observed = run_program_source(
         'PUSH R1, R13\nPOP R2, R13\nSTOP',
+        config=shared_core_config,
         initial_registers={1: 0x1122_3344_5566_7788, 13: 0x2000},
         initial_flags=0x7,
     )
@@ -48,9 +49,10 @@ def test_push_and_pop_preserve_flags_and_stack_value() -> None:
     assert observed['data_memory'][0x1FFF] == 0x11
 
 
-def test_push_r0_writes_zero_and_preserves_r0() -> None:
+def test_push_r0_writes_zero_and_preserves_r0(shared_core_config) -> None:
     observed = run_program_source(
         'PUSH R0, R13\nLOAD [R13], R2\nSTOP',
+        config=shared_core_config,
         initial_registers={13: 0x2000},
         initial_flags=0x5,
     )
@@ -63,9 +65,10 @@ def test_push_r0_writes_zero_and_preserves_r0() -> None:
     assert observed['flags'] == 0x5
 
 
-def test_pop_into_r0_leaves_r0_zero_and_increments_stack_pointer() -> None:
+def test_pop_into_r0_leaves_r0_zero_and_increments_stack_pointer(shared_core_config) -> None:
     observed = run_program_source(
         'POP R0, R13\nSTOP',
+        config=shared_core_config,
         initial_registers={13: 0x2000},
         initial_data_memory={0x2000 + offset: byte for offset, byte in _u64_bytes(0xCAFE_BABE_DEAD_BEEF).items()},
     )
@@ -76,9 +79,10 @@ def test_pop_into_r0_leaves_r0_zero_and_increments_stack_pointer() -> None:
     assert observed['registers'][13] == 0x2008
 
 
-def test_pop_same_register_matches_emulator_alias_semantics() -> None:
+def test_pop_same_register_matches_emulator_alias_semantics(shared_core_config) -> None:
     observed = run_program_source(
         'POP R13, R13\nSTOP',
+        config=shared_core_config,
         initial_registers={13: 0x2000},
         initial_data_memory={0x2000 + offset: byte for offset, byte in _u64_bytes(0x1000).items()},
     )
@@ -97,9 +101,10 @@ def test_pop_same_register_matches_emulator_alias_semantics() -> None:
         ('WORD_LOAD', 0xDEAD_BEEF, 0xDEAD_BEEF),
     ],
 )
-def test_pc_relative_load_variants_use_post_increment_pc(opcode: str, value: int, expected: int) -> None:
+def test_pc_relative_load_variants_use_post_increment_pc(opcode: str, value: int, expected: int, shared_core_config) -> None:
     observed = run_program_source(
         f'{opcode} @2, R1\nMOVE @1, R2\nSTOP',
+        config=shared_core_config,
         initial_data_memory={6 + offset: byte for offset, byte in _u64_bytes(value).items()},
     )
 
@@ -118,9 +123,10 @@ def test_pc_relative_load_variants_use_post_increment_pc(opcode: str, value: int
         ('WORD_STORE', 0xDEAD_BEEF, {0: 0xEF, 1: 0xBE, 2: 0xAD, 3: 0xDE}),
     ],
 )
-def test_pc_relative_store_variants_write_effective_address(opcode: str, value: int, expected_bytes: dict[int, int]) -> None:
+def test_pc_relative_store_variants_write_effective_address(opcode: str, value: int, expected_bytes: dict[int, int], shared_core_config) -> None:
     observed = run_program_source(
         f'{opcode} @2, R1\nSTOP',
+        config=shared_core_config,
         initial_registers={1: value},
     )
 
@@ -130,9 +136,10 @@ def test_pc_relative_store_variants_write_effective_address(opcode: str, value: 
         assert observed['data_memory'][6 + offset] == byte
 
 
-def test_pc_relative_push_reads_memory_then_pushes_to_stack() -> None:
+def test_pc_relative_push_reads_memory_then_pushes_to_stack(shared_core_config) -> None:
     observed = run_program_source(
         'PUSH @2, R13\nSTOP',
+        config=shared_core_config,
         initial_registers={13: 0x2000},
         initial_data_memory={6 + offset: byte for offset, byte in _u64_bytes(0xCAFE_BABE_DEAD_BEEF).items()},
     )
@@ -144,9 +151,10 @@ def test_pc_relative_push_reads_memory_then_pushes_to_stack() -> None:
     assert observed['data_memory'][0x1FFF] == 0xCA
 
 
-def test_pc_relative_pop_writes_popped_value_to_effective_address() -> None:
+def test_pc_relative_pop_writes_popped_value_to_effective_address(shared_core_config) -> None:
     observed = run_program_source(
         'POP @2, R13\nSTOP',
+        config=shared_core_config,
         initial_registers={13: 0x2000},
         initial_data_memory={
             **{0x2000 + offset: byte for offset, byte in _u64_bytes(0x0123_4567_89AB_CDEF).items()},

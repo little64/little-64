@@ -15,6 +15,7 @@ EXPECTED_SDRAM_INIT_MARKER = "stage0: initializing sdram"
 EXPECTED_SDRAM_READY_MARKER = "stage0: sdram ready"
 EXPECTED_SD_MARKER = "stage0: sdcard ready"
 EXPECTED_RAM_DT_REG = "reg = <0x00000000 0x40000000 0x00000000 0x10000000>;"
+EXPECTED_BOOTARGS = 'bootargs = "console=liteuart earlycon=liteuart,0xf0004000 ignore_loglevel loglevel=8 root=/dev/mmcblk0p2 rootwait init=/init";'
 EXPECTED_STAGE0_RAM_SIZE_DEFINE = "#define L64_RAM_SIZE 0x0000000010000000ULL"
 
 
@@ -26,6 +27,7 @@ def main() -> int:
 
     builddir = ROOT / "builddir"
     builddir.mkdir(parents=True, exist_ok=True)
+    litex_output_dir = builddir / "boot-direct-litex-flash-smoke"
 
     asm = builddir / "test_litex_flash_boot.s"
     linker = builddir / "test_litex_flash_boot.ld"
@@ -44,7 +46,7 @@ def main() -> int:
         "ENTRY(_start)\n"
         "SECTIONS\n"
         "{\n"
-        "  . = 0x100000;\n"
+        "  . = 0x40000000;\n"
         "  .text : { *(.text*) }\n"
         "  .rodata : { *(.rodata*) }\n"
         "  .data : { *(.data*) }\n"
@@ -84,6 +86,7 @@ def main() -> int:
     env = os.environ.copy()
     env["LITTLE64_PYTHON"] = str(PYTHON_ENV)
     env["LITTLE64_SKIP_LITEX_KERNEL_CONFIG_CHECK"] = "1"
+    env["LITTLE64_LITEX_OUTPUT_DIR"] = str(litex_output_dir)
 
     res = subprocess.run(
         [
@@ -112,8 +115,8 @@ def main() -> int:
             f"{res.stdout}"
         )
 
-    dts_path = ROOT / "builddir" / "boot-direct-litex" / "little64-litex-sim.dts"
-    regs_path = ROOT / "builddir" / "boot-direct-litex" / "little64-sd-stage0-bootrom.work" / "litex_sd_boot_regs.h"
+    dts_path = litex_output_dir / "little64-litex-sim.dts"
+    regs_path = litex_output_dir / "little64-sd-stage0-bootrom.work" / "litex_sd_boot_regs.h"
 
     dts_text = dts_path.read_text(encoding="utf-8")
     regs_text = regs_path.read_text(encoding="utf-8")
@@ -121,6 +124,12 @@ def main() -> int:
     if EXPECTED_RAM_DT_REG not in dts_text:
         raise RuntimeError(
             "LiteX boot helper generated an unexpected RAM DT region:\n"
+            f"{dts_text}"
+        )
+
+    if EXPECTED_BOOTARGS not in dts_text:
+        raise RuntimeError(
+            "LiteX boot helper dropped the expected console bootargs:\n"
             f"{dts_text}"
         )
 

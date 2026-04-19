@@ -28,7 +28,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         '--core-variant',
         choices=CORE_VARIANTS,
-        default='basic',
+        default='v2',
         help='Core variant used for the exported CPU wrapper.',
     )
     parser.add_argument(

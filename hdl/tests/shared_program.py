@@ -10,7 +10,9 @@ from amaranth.sim import Simulator
 
 from little64.config import Little64CoreConfig
 from little64.core import CoreState
+from little64.mmu import ACCESS_EXECUTE
 from little64.v2 import V2PipelineState
+from little64.v3 import V3PipelineState
 from little64.variants import create_core
 
 
@@ -311,109 +313,133 @@ def run_program_words(words: list[int],
     def read_data_qword(addr: int) -> int:
         return sum((data_memory.get(addr + byte_index, 0) & 0xFF) << (8 * byte_index) for byte_index in range(8))
 
-    def bus_process():
+    async def bus_process(ctx):
+        ctx.set(dut.i_bus.ack, 0)
+        ctx.set(dut.d_bus.ack, 0)
         while True:
-            if ready['value'] and (yield dut.i_bus.cyc) and (yield dut.i_bus.stb):
-                yield dut.i_bus.dat_r.eq(read_code_qword((yield dut.i_bus.adr)))
-                yield dut.i_bus.ack.eq(1)
-            else:
-                yield dut.i_bus.ack.eq(0)
+            await ctx.tick()
 
-            if ready['value'] and (yield dut.d_bus.cyc) and (yield dut.d_bus.stb):
-                d_addr = (yield dut.d_bus.adr)
-                if (yield dut.d_bus.we):
-                    d_value = (yield dut.d_bus.dat_w)
-                    d_sel = (yield dut.d_bus.sel)
+            if ready['value'] and ctx.get(dut.i_bus.cyc) and ctx.get(dut.i_bus.stb):
+                ctx.set(dut.i_bus.dat_r, read_code_qword(ctx.get(dut.i_bus.adr)))
+                ctx.set(dut.i_bus.ack, 1)
+            else:
+                ctx.set(dut.i_bus.ack, 0)
+
+            if ready['value'] and ctx.get(dut.d_bus.cyc) and ctx.get(dut.d_bus.stb):
+                d_addr = ctx.get(dut.d_bus.adr)
+                if ctx.get(dut.d_bus.we):
+                    d_value = ctx.get(dut.d_bus.dat_w)
+                    d_sel = ctx.get(dut.d_bus.sel)
                     for byte_index in range(8):
                         if d_sel & (1 << byte_index):
                             data_memory[d_addr + byte_index] = (d_value >> (8 * byte_index)) & 0xFF
                 else:
-                    yield dut.d_bus.dat_r.eq(read_data_qword(d_addr))
-                yield dut.d_bus.ack.eq(1)
+                    ctx.set(dut.d_bus.dat_r, read_data_qword(d_addr))
+                ctx.set(dut.d_bus.ack, 1)
             else:
-                yield dut.d_bus.ack.eq(0)
-            yield
+                ctx.set(dut.d_bus.ack, 0)
 
-    def observe_process():
-        def seed_core_state():
+    async def observe_process(ctx):
+        seeded_special_registers = initial_special_registers or {}
+
+        def seed_core_state() -> None:
             initial_pc = (initial_registers or {}).get(15, resolved_config.reset_vector)
             if initial_registers:
                 for index, value in initial_registers.items():
-                    yield dut.register_file[index].eq(value)
-            yield dut.flags.eq(initial_flags)
+                    ctx.set(dut.register_file[index], value)
+            ctx.set(dut.flags, initial_flags)
             if initial_special_registers:
                 for name, value in initial_special_registers.items():
-                    yield getattr(dut.special_regs, name).eq(value)
-            yield dut.locked_up.eq(0)
+                    ctx.set(getattr(dut.special_regs, name), value)
+            ctx.set(dut.locked_up, 0)
             if 'trap_cause' not in seeded_special_registers:
-                yield dut.special_regs.trap_cause.eq(0)
+                ctx.set(dut.special_regs.trap_cause, 0)
             if 'trap_fault_addr' not in seeded_special_registers:
-                yield dut.special_regs.trap_fault_addr.eq(0)
+                ctx.set(dut.special_regs.trap_fault_addr, 0)
             if 'trap_access' not in seeded_special_registers:
-                yield dut.special_regs.trap_access.eq(0)
+                ctx.set(dut.special_regs.trap_access, 0)
             if 'trap_pc' not in seeded_special_registers:
-                yield dut.special_regs.trap_pc.eq(0)
+                ctx.set(dut.special_regs.trap_pc, 0)
             if 'trap_aux' not in seeded_special_registers:
-                yield dut.special_regs.trap_aux.eq(0)
-            yield dut.irq_lines.eq(0)
+                ctx.set(dut.special_regs.trap_aux, 0)
+            ctx.set(dut.irq_lines, 0)
             if resolved_config.core_variant == 'basic':
-                yield dut.halted.eq(0)
-                yield dut.state.eq(CoreState.FETCH_TRANSLATE)
-            else:
-                yield dut.frontend.line_valid.eq(0)
-                yield dut.fetch_pc.eq(initial_pc)
-                yield dut.fetch_phys_addr.eq(initial_pc)
-                yield dut.register_file[15].eq(initial_pc)
-                yield dut.current_instruction.eq(0)
-                yield dut.execute_instruction.eq(0)
-                yield dut.state.eq(V2PipelineState.FETCH_TRANSLATE)
+                ctx.set(dut.halted, 0)
+                ctx.set(dut.state, CoreState.FETCH_TRANSLATE)
+            elif resolved_config.core_variant == 'v2':
+                ctx.set(dut.frontend.line_valid, 0)
+                ctx.set(dut.fetch_pc, initial_pc)
+                ctx.set(dut.fetch_phys_addr, initial_pc)
+                ctx.set(dut.register_file[15], initial_pc)
+                ctx.set(dut.current_instruction, 0)
+                ctx.set(dut.execute_instruction, 0)
+                ctx.set(dut.translate_virtual_addr, initial_pc)
+                ctx.set(dut.translate_access, ACCESS_EXECUTE)
+                ctx.set(dut.state, V2PipelineState.FETCH_TRANSLATE)
+            elif resolved_config.core_variant == 'v3':
+                ctx.set(dut.halted, 0)
+                ctx.set(dut.frontend.line_valid, 0)
+                ctx.set(dut.fetch_pc, initial_pc)
+                ctx.set(dut.fetch_phys_addr, initial_pc)
+                ctx.set(dut.register_file[15], initial_pc)
+                ctx.set(dut.current_instruction, 0)
+                ctx.set(dut.execute_instruction, 0)
+                ctx.set(dut.execute_operand_a, 0)
+                ctx.set(dut.execute_operand_b, 0)
+                ctx.set(dut.execute_flags, 0)
+                ctx.set(dut.translate_virtual_addr, initial_pc)
+                ctx.set(dut.translate_access, ACCESS_EXECUTE)
+                ctx.set(dut.state, V3PipelineState.FETCH)
 
-        yield
-        seeded_special_registers = initial_special_registers or {}
-        yield from seed_core_state()
-        yield
-        yield from seed_core_state()
-        ready['value'] = True
+        await ctx.tick()
+        seed_core_state()
+        if resolved_config.core_variant == 'v3':
+            await ctx.tick()
+            ready['value'] = True
+        else:
+            await ctx.tick()
+            seed_core_state()
+            ready['value'] = True
 
         for cycle in range(max_cycles):
             if irq_schedule and cycle in irq_schedule:
                 current_irq_lines['value'] = irq_schedule[cycle]
-                yield dut.irq_lines.eq(current_irq_lines['value'])
-            yield
-            if (yield dut.commit_valid):
+                ctx.set(dut.irq_lines, current_irq_lines['value'])
+            await ctx.tick()
+            if ctx.get(dut.commit_valid):
                 commit_count['value'] += 1
-            if (yield dut.halted) or (yield dut.locked_up):
+            if ctx.get(dut.halted) or ctx.get(dut.locked_up):
                 break
 
         registers = []
         for index in range(16):
-            registers.append((yield dut.register_file[index]))
+            registers.append(ctx.get(dut.register_file[index]))
         observed['registers'] = registers
-        observed['flags'] = (yield dut.flags)
-        observed['halted'] = (yield dut.halted)
-        observed['locked_up'] = (yield dut.locked_up)
-        observed['trap_cause'] = (yield dut.special_regs.trap_cause)
-        observed['trap_fault_addr'] = (yield dut.special_regs.trap_fault_addr)
-        observed['trap_access'] = (yield dut.special_regs.trap_access)
-        observed['trap_pc'] = (yield dut.special_regs.trap_pc)
-        observed['trap_aux'] = (yield dut.special_regs.trap_aux)
+        observed['flags'] = ctx.get(dut.flags)
+        observed['halted'] = ctx.get(dut.halted)
+        observed['locked_up'] = ctx.get(dut.locked_up)
+        observed['trap_cause'] = ctx.get(dut.special_regs.trap_cause)
+        observed['trap_fault_addr'] = ctx.get(dut.special_regs.trap_fault_addr)
+        observed['trap_access'] = ctx.get(dut.special_regs.trap_access)
+        observed['trap_pc'] = ctx.get(dut.special_regs.trap_pc)
+        observed['trap_aux'] = ctx.get(dut.special_regs.trap_aux)
         observed['special_registers'] = {
-            'cpu_control': (yield dut.special_regs.cpu_control),
-            'interrupt_table_base': (yield dut.special_regs.interrupt_table_base),
-            'interrupt_mask': (yield dut.special_regs.interrupt_mask),
-            'interrupt_mask_high': (yield dut.special_regs.interrupt_mask_high),
-            'interrupt_states': (yield dut.special_regs.interrupt_states),
-            'interrupt_states_high': (yield dut.special_regs.interrupt_states_high),
-            'interrupt_epc': (yield dut.special_regs.interrupt_epc),
-            'interrupt_eflags': (yield dut.special_regs.interrupt_eflags),
-            'interrupt_cpu_control': (yield dut.special_regs.interrupt_cpu_control),
+            'cpu_control': ctx.get(dut.special_regs.cpu_control),
+            'interrupt_table_base': ctx.get(dut.special_regs.interrupt_table_base),
+            'interrupt_mask': ctx.get(dut.special_regs.interrupt_mask),
+            'interrupt_mask_high': ctx.get(dut.special_regs.interrupt_mask_high),
+            'interrupt_states': ctx.get(dut.special_regs.interrupt_states),
+            'interrupt_states_high': ctx.get(dut.special_regs.interrupt_states_high),
+            'interrupt_epc': ctx.get(dut.special_regs.interrupt_epc),
+            'interrupt_eflags': ctx.get(dut.special_regs.interrupt_eflags),
+            'interrupt_cpu_control': ctx.get(dut.special_regs.interrupt_cpu_control),
         }
         observed['data_memory'] = dict(data_memory)
         observed['commit_count'] = commit_count['value']
 
-    sim.add_sync_process(bus_process)
-    sim.add_sync_process(observe_process)
-    sim.run_until((max_cycles + 8) * 1e-6)
+    sim.add_testbench(bus_process, background=True)
+    sim.add_testbench(observe_process)
+    sim.run()
     return observed
 
 

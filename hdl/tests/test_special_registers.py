@@ -161,3 +161,52 @@ def test_page_table_root_is_ignored_when_mmu_disabled() -> None:
 
     sim.add_sync_process(process)
     sim.run()
+
+
+def test_core_trap_write_updates_isolated_trap_bank() -> None:
+    dut = Little64SpecialRegisterFile(Little64CoreConfig())
+    sim = Simulator(dut)
+    sim.add_clock(1e-6)
+
+    def process():
+        yield dut.write_stb.eq(1)
+        yield dut.write_selector.eq(SpecialRegister.TRAP_CAUSE)
+        yield dut.write_data.eq(0x11)
+        yield
+
+        yield dut.write_stb.eq(1)
+        yield dut.write_selector.eq(SpecialRegister.TRAP_CAUSE)
+        yield dut.write_data.eq(0x22)
+        yield dut.core_trap_write.eq(1)
+        yield dut.core_trap_cause_data.eq(0xAA)
+        yield dut.core_trap_fault_addr_data.eq(0xBB)
+        yield dut.core_trap_access_data.eq(0xCC)
+        yield dut.core_trap_pc_data.eq(0xDD)
+        yield dut.core_trap_aux_data.eq(0xEE)
+        yield
+
+        yield dut.write_stb.eq(0)
+        yield dut.core_trap_write.eq(0)
+
+        yield dut.read_selector.eq(SpecialRegister.TRAP_CAUSE)
+        yield Settle()
+        assert (yield dut.read_data) == 0xAA
+
+        yield dut.read_selector.eq(SpecialRegister.TRAP_FAULT_ADDR)
+        yield Settle()
+        assert (yield dut.read_data) == 0xBB
+
+        yield dut.read_selector.eq(SpecialRegister.TRAP_ACCESS)
+        yield Settle()
+        assert (yield dut.read_data) == 0xCC
+
+        yield dut.read_selector.eq(SpecialRegister.TRAP_PC)
+        yield Settle()
+        assert (yield dut.read_data) == 0xDD
+
+        yield dut.read_selector.eq(SpecialRegister.TRAP_AUX)
+        yield Settle()
+        assert (yield dut.read_data) == 0xEE
+
+    sim.add_sync_process(process)
+    sim.run()

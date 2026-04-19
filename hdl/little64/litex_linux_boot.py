@@ -511,7 +511,7 @@ def build_litex_flash_image(
     stage0_bytes: bytes,
     kernel_elf_bytes: bytes,
     dtb_bytes: bytes,
-    ram_base: int = 0,
+    ram_base: int = LITTLE64_LINUX_RAM_BASE,
     ram_size: int = 0x0400_0000,
     kernel_physical_base: int = LITTLE64_LINUX_RAM_BASE,
     header_offset: int = LITTLE64_LITEX_FLASH_BOOT_HEADER_OFFSET,

@@ -1355,16 +1355,25 @@ bool Little64CPU::loadProgramElfDirectPaged(const std::vector<uint8_t>& elf_byte
         std::memcpy(ram_bytes.data() + off, elf_bytes.data() + ph->p_offset, static_cast<size_t>(ph->p_filesz));
     }
 
-    constexpr uint64_t RAM_EXTRA = 64 * 1024 * 1024;
-    const uint64_t total_ram = image_span + RAM_EXTRA;
+    const uint64_t total_ram = LITEX_BOOTROM_RAM_SIZE;
+    if (image_span > total_ram) {
+        return false;
+    }
+
+    std::vector<uint8_t> bootrom_window(static_cast<size_t>(LITEX_BOOTROM_SIZE), 0x00);
+    std::vector<uint8_t> flash_window(static_cast<size_t>(LITEX_FLASH_WINDOW_SIZE), 0xFF);
+    const std::string disk_path = (_disk_image && _disk_image->isValid()) ? _disk_image->path() : std::string();
+    const bool disk_read_only = !_disk_image || _disk_image->isReadOnly();
 
     MachineConfig cfg;
-    cfg.addPreloadedRam(kernel_physical_base, std::move(ram_bytes), total_ram, "MEM")
-        .addSerial(SERIAL_BASE, "SERIAL")
+    cfg.addRom(LITEX_BOOTROM_BASE, std::move(bootrom_window), "BOOTROM")
+        .addRom(LITEX_FLASH_BASE, std::move(flash_window), "FLASH")
+        .addRam(LITEX_SRAM_BASE, LITEX_SRAM_SIZE, "SRAM")
+        .addPreloadedRam(kernel_physical_base, std::move(ram_bytes), total_ram, "RAM")
+        .addLiteDramDfiiStub(LITEX_SDRAM_CSR_BASE, "LITEDRAM")
+        .addLiteSdCard(LITEX_SDCARD_BASE, disk_path, disk_read_only, "LITESDCARD")
+        .addLiteUart(LITEX_BOOTROM_SD_UART_BASE, "LITEUART")
         .addTimer(TIMER_BASE, "TIMER");
-    if (_disk_image && _disk_image->isValid()) {
-        cfg.addPvBlock(PVBLK_BASE, _disk_image->path(), _disk_image->isReadOnly(), "PVBLK");
-    }
     cfg.applyTo(_bus, _devices, this, &_clock);
 
     _mem_base = kernel_physical_base;
@@ -1426,6 +1435,10 @@ bool Little64CPU::loadProgramElfDirectPaged(const std::vector<uint8_t>& elf_byte
     _clock.resume();  // Start the virtual clock so timer devices can fire
     _recordBootEvent("direct-boot-load", kernel_physical_base, total_ram, entry_physical);
     _recordBootEvent("direct-boot-dtb", dtb_phys, static_cast<uint64_t>(dtb_span.size()), registers.regs[1]);
+    if (_disk_image && _disk_image->isValid()) {
+        _recordBootEvent("litex-sd-attach", LITEX_SDCARD_BASE, _disk_image->sectorCount(),
+                         LITEX_BOOTROM_SD_UART_BASE);
+    }
     return true;
 }
 

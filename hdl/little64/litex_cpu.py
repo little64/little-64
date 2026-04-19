@@ -91,6 +91,9 @@ class Little64WishboneDataBridge(Module):
         latched_sel = Signal(8)
         latched_we = Signal()
         first_read_data = Signal(64)
+        response_valid = Signal()
+        response_error = Signal()
+        response_data = Signal(64)
 
         shifted_sel = Signal(16)
         shifted_dat_w = Signal(128)
@@ -156,9 +159,9 @@ class Little64WishboneDataBridge(Module):
             self.bus.we.eq(0),
             self.bus.cti.eq(0),
             self.bus.bte.eq(0),
-            self.cpu_dat_r.eq(0),
-            self.cpu_ack.eq(0),
-            self.cpu_err.eq(0),
+            self.cpu_dat_r.eq(response_data),
+            self.cpu_ack.eq(response_valid & ~response_error),
+            self.cpu_err.eq(response_valid & response_error),
         ]
 
         self.comb += If(state == state_beat0,
@@ -168,12 +171,6 @@ class Little64WishboneDataBridge(Module):
             self.bus.cyc.eq(1),
             self.bus.stb.eq(1),
             self.bus.we.eq(latched_we),
-            If(self.bus.err,
-                self.cpu_err.eq(1),
-            ).Elif(self.bus.ack & ~split_access,
-                self.cpu_ack.eq(1),
-                self.cpu_dat_r.eq(single_read_data),
-            ),
         ).Elif(state == state_beat1,
             self.bus.adr.eq(second_bus_adr),
             self.bus.dat_w.eq(second_bus_dat_w),
@@ -181,15 +178,11 @@ class Little64WishboneDataBridge(Module):
             self.bus.cyc.eq(1),
             self.bus.stb.eq(1),
             self.bus.we.eq(latched_we),
-            If(self.bus.err,
-                self.cpu_err.eq(1),
-            ).Elif(self.bus.ack,
-                self.cpu_ack.eq(1),
-                self.cpu_dat_r.eq(combined_read_data),
-            ),
         )
 
-        self.sync += If(state == state_idle,
+        self.sync += If(response_valid,
+            response_valid.eq(0),
+        ).Elif(state == state_idle,
             If(self.cpu_cyc & self.cpu_stb,
                 latched_adr.eq(self.cpu_adr),
                 latched_dat_w.eq(self.cpu_dat_w),
@@ -199,17 +192,31 @@ class Little64WishboneDataBridge(Module):
             ),
         ).Elif(state == state_beat0,
             If(self.bus.err,
+                response_valid.eq(1),
+                response_error.eq(1),
+                response_data.eq(0),
                 state.eq(state_idle),
             ).Elif(self.bus.ack,
                 If(split_access,
                     first_read_data.eq(self.bus.dat_r),
                     state.eq(state_beat1),
                 ).Else(
+                    response_valid.eq(1),
+                    response_error.eq(0),
+                    response_data.eq(single_read_data),
                     state.eq(state_idle),
                 ),
             ),
         ).Elif(state == state_beat1,
-            If(self.bus.err | self.bus.ack,
+            If(self.bus.err,
+                response_valid.eq(1),
+                response_error.eq(1),
+                response_data.eq(0),
+                state.eq(state_idle),
+            ).Elif(self.bus.ack,
+                response_valid.eq(1),
+                response_error.eq(0),
+                response_data.eq(combined_read_data),
                 state.eq(state_idle),
             ),
         )

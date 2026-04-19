@@ -1,6 +1,9 @@
 litex
 litedram
 litespi
+git+https://github.com/litex-hub/litex-boards.git
+git+https://github.com/litex-hub/pythondata-software-picolibc.git
+git+https://github.com/litex-hub/pythondata-software-compiler_rt.git
 git+https://github.com/enjoy-digital/litesdcard.git
 git+https://github.com/litex-hub/pythondata-misc-tapcfg.git
 amaranth>=0.5,<0.6

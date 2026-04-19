@@ -68,11 +68,12 @@ def _store_cases():
 # ──── load tests ─────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize(('opcode', 'addr', 'value', 'width'), list(_load_cases()))
-def test_unaligned_load(opcode: str, addr: int, value: int, width: int) -> None:
+def test_unaligned_load(opcode: str, addr: int, value: int, width: int, shared_core_config) -> None:
     """Load *width* bytes from *addr* and verify the result in R1."""
     data_mem = {addr + i: b for i, b in _bytes_of(value, width).items()}
     observed = run_program_source(
         f'{opcode} [R2], R1\nSTOP',
+        config=shared_core_config,
         initial_registers={2: addr},
         initial_data_memory=data_mem,
         max_cycles=64,
@@ -87,10 +88,11 @@ def test_unaligned_load(opcode: str, addr: int, value: int, width: int) -> None:
 # ──── store tests ────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize(('opcode', 'addr', 'value', 'width'), list(_store_cases()))
-def test_unaligned_store(opcode: str, addr: int, value: int, width: int) -> None:
+def test_unaligned_store(opcode: str, addr: int, value: int, width: int, shared_core_config) -> None:
     """Store *width* bytes to *addr* and verify memory contents."""
     observed = run_program_source(
         f'{opcode} [R2], R1\nSTOP',
+        config=shared_core_config,
         initial_registers={1: value, 2: addr},
         max_cycles=64,
     )
@@ -108,12 +110,13 @@ def test_unaligned_store(opcode: str, addr: int, value: int, width: int) -> None
 # ──── round-trip tests ───────────────────────────────────────────────────
 
 @pytest.mark.parametrize('offset', range(8), ids=[f'off{i}' for i in range(8)])
-def test_unaligned_qword_store_then_load_roundtrip(offset: int) -> None:
+def test_unaligned_qword_store_then_load_roundtrip(offset: int, shared_core_config) -> None:
     """Store a qword at an unaligned address, then load it back."""
     addr = 0x1000 + offset
     value = 0xCAFE_BABE_DEAD_BEEF
     observed = run_program_source(
         'STORE [R2], R1\nLOAD [R2], R3\nSTOP',
+        config=shared_core_config,
         initial_registers={1: value, 2: addr},
         max_cycles=64,
     )
@@ -125,12 +128,13 @@ def test_unaligned_qword_store_then_load_roundtrip(offset: int) -> None:
 
 
 @pytest.mark.parametrize('offset', range(8), ids=[f'off{i}' for i in range(8)])
-def test_unaligned_word_store_then_load_roundtrip(offset: int) -> None:
+def test_unaligned_word_store_then_load_roundtrip(offset: int, shared_core_config) -> None:
     """Store a 32-bit word at an unaligned address, then load it back."""
     addr = 0x1000 + offset
     value = 0xDEAD_BEEF
     observed = run_program_source(
         'WORD_STORE [R2], R1\nWORD_LOAD [R2], R3\nSTOP',
+        config=shared_core_config,
         initial_registers={1: value, 2: addr},
         max_cycles=64,
     )
@@ -141,12 +145,13 @@ def test_unaligned_word_store_then_load_roundtrip(offset: int) -> None:
 
 
 @pytest.mark.parametrize('offset', range(8), ids=[f'off{i}' for i in range(8)])
-def test_unaligned_short_store_then_load_roundtrip(offset: int) -> None:
+def test_unaligned_short_store_then_load_roundtrip(offset: int, shared_core_config) -> None:
     """Store a 16-bit short at an unaligned address, then load it back."""
     addr = 0x1000 + offset
     value = 0xBEEF
     observed = run_program_source(
         'SHORT_STORE [R2], R1\nSHORT_LOAD [R2], R3\nSTOP',
+        config=shared_core_config,
         initial_registers={1: value, 2: addr},
         max_cycles=64,
     )
@@ -158,13 +163,14 @@ def test_unaligned_short_store_then_load_roundtrip(offset: int) -> None:
 
 # ──── boundary crossing validation ───────────────────────────────────────
 
-def test_qword_load_at_offset7_crosses_boundary() -> None:
+def test_qword_load_at_offset7_crosses_boundary(shared_core_config) -> None:
     """A LOAD at byte offset 7 must split: 1 byte from word N, 7 from word N+1."""
     addr = 0x1007
     value = 0x0102_0304_0506_0708
     data_mem = {addr + i: b for i, b in _bytes_of(value, 8).items()}
     observed = run_program_source(
         'LOAD [R2], R1\nSTOP',
+        config=shared_core_config,
         initial_registers={2: addr},
         initial_data_memory=data_mem,
         max_cycles=64,
@@ -175,12 +181,13 @@ def test_qword_load_at_offset7_crosses_boundary() -> None:
     assert observed['registers'][1] == value
 
 
-def test_qword_store_at_offset7_crosses_boundary() -> None:
+def test_qword_store_at_offset7_crosses_boundary(shared_core_config) -> None:
     """A STORE at byte offset 7 must split across two Wishbone words."""
     addr = 0x1007
     value = 0x0102_0304_0506_0708
     observed = run_program_source(
         'STORE [R2], R1\nSTOP',
+        config=shared_core_config,
         initial_registers={1: value, 2: addr},
         max_cycles=64,
     )
@@ -192,13 +199,14 @@ def test_qword_store_at_offset7_crosses_boundary() -> None:
         assert mem.get(addr + i, 0) == (value >> (8 * i)) & 0xFF
 
 
-def test_word_load_at_offset6_crosses_boundary() -> None:
+def test_word_load_at_offset6_crosses_boundary(shared_core_config) -> None:
     """A WORD_LOAD at offset 6 reads 2 bytes from word N and 2 from word N+1."""
     addr = 0x1006
     value = 0xDEAD_BEEF
     data_mem = {addr + i: b for i, b in _bytes_of(value, 4).items()}
     observed = run_program_source(
         'WORD_LOAD [R2], R1\nSTOP',
+        config=shared_core_config,
         initial_registers={2: addr},
         initial_data_memory=data_mem,
         max_cycles=64,
@@ -209,13 +217,14 @@ def test_word_load_at_offset6_crosses_boundary() -> None:
     assert observed['registers'][1] == value
 
 
-def test_short_load_at_offset7_crosses_boundary() -> None:
+def test_short_load_at_offset7_crosses_boundary(shared_core_config) -> None:
     """A SHORT_LOAD at offset 7 reads 1 byte from word N and 1 from word N+1."""
     addr = 0x1007
     value = 0xBEEF
     data_mem = {addr + i: b for i, b in _bytes_of(value, 2).items()}
     observed = run_program_source(
         'SHORT_LOAD [R2], R1\nSTOP',
+        config=shared_core_config,
         initial_registers={2: addr},
         initial_data_memory=data_mem,
         max_cycles=64,
@@ -229,12 +238,13 @@ def test_short_load_at_offset7_crosses_boundary() -> None:
 # ──── push/pop unaligned stack ───────────────────────────────────────────
 
 @pytest.mark.parametrize('offset', range(8), ids=[f'off{i}' for i in range(8)])
-def test_push_pop_with_unaligned_stack(offset: int) -> None:
+def test_push_pop_with_unaligned_stack(offset: int, shared_core_config) -> None:
     """PUSH/POP should work with any stack alignment."""
     sp = 0x2000 + offset
     value = 0xCAFE_BABE_DEAD_BEEF
     observed = run_program_source(
         'PUSH R1, R13\nPOP R3, R13\nSTOP',
+        config=shared_core_config,
         initial_registers={1: value, 13: sp},
         max_cycles=64,
     )

@@ -172,11 +172,13 @@ class Little64LinuxTimer(Module):
         ]
 
 
-class Little64LiteXSimSoC(SoCCore):
+class Little64LiteXSoC(SoCCore):
     def __init__(
         self,
+        platform,
         *,
         sys_clk_freq: int = int(1e6),
+        uart_name: str = 'serial',
         integrated_rom_size: int = 0,
         integrated_rom_init: list[int] | None = None,
         integrated_sram_size: int = 0x4000,
@@ -185,6 +187,7 @@ class Little64LiteXSimSoC(SoCCore):
         with_sdram: bool = False,
         with_spi_flash: bool = False,
         with_sdcard: bool = False,
+        sdcard_mode: str = 'native',
         sdram_module: str = 'MT48LC16M16',
         sdram_data_width: int = 64,
         sdram_init: list[int] | None = None,
@@ -203,6 +206,9 @@ class Little64LiteXSimSoC(SoCCore):
     ) -> None:
         register_little64_with_litex()
         _install_litex_csr_name_fallback()
+
+        if not hasattr(self, 'crg'):
+            raise ValueError('Little64LiteXSoC subclasses must create self.crg before SoCCore initialization')
 
         self.litex_target = resolve_litex_target(litex_target)
         requested_boot_source = normalize_litex_boot_source(boot_source or self.litex_target.boot_source)
@@ -237,11 +243,10 @@ class Little64LiteXSimSoC(SoCCore):
             else integrated_main_ram_size if main_ram_size is None else main_ram_size
         )
 
-        platform = Little64LiteXSimPlatform()
         platform.little64_mem_map = litex_mem_map_for_target(self.litex_target, boot_source=self.boot_source)
-        self.crg = Little64LiteXSimCRG(platform.request('sys_clk'), platform.request('sys_rst'))
         self.sys_clk_freq = int(sys_clk_freq)
         integrated_rom_init = [] if integrated_rom_init is None else integrated_rom_init
+        kwargs.setdefault('uart_with_dynamic_baudrate', True)
 
         SoCCore.__init__(
             self,
@@ -262,7 +267,7 @@ class Little64LiteXSimSoC(SoCCore):
             integrated_sram_size=integrated_sram_size,
             integrated_main_ram_size=integrated_main_ram_size,
             with_uart=True,
-            uart_name='sim',
+            uart_name=uart_name,
             with_timer=False,
             with_ctrl=False,
             **kwargs,
@@ -279,43 +284,21 @@ class Little64LiteXSimSoC(SoCCore):
             self.comb += self.cpu.interrupt[self.irq.locs['little64_timer']].eq(self.linux_timer.irq)
 
         if resolved_with_sdram and not self.integrated_main_ram_size:
-            sdram_init = [] if sdram_init is None else sdram_init
-            sdram_module_cls = getattr(litedram_modules, resolved_sdram_module)
-            sdram_rate = f"1:{sdram_module_nphases[sdram_module_cls.memtype]}"
-            sdram_module_inst = sdram_module_cls(int(100e6), sdram_rate)
-            self.sdrphy = SDRAMPHYModel(
-                module=sdram_module_inst,
-                data_width=sdram_data_width,
-                clk_freq=int(100e6),
-                init=sdram_init,
+            self._configure_main_ram(
+                sdram_module=resolved_sdram_module,
+                sdram_data_width=sdram_data_width,
+                sdram_init=sdram_init,
+                main_ram_size=resolved_main_ram_size,
             )
-            self.add_sdram(
-                'sdram',
-                phy=self.sdrphy,
-                module=sdram_module_inst,
-                l2_cache_size=0,
-            )
-            if 'main_ram' in self.bus.regions and resolved_main_ram_size:
-                self.bus.regions['main_ram'].size = resolved_main_ram_size
 
         if resolved_with_spi_flash:
-            if spi_flash_init is None and spi_flash_image_path is not None:
-                spi_flash_init = _load_spi_flash_init(spi_flash_image_path)
-            spi_flash_init = [] if spi_flash_init is None else spi_flash_init
-            spiflash_module = S25FL128L(Codes.READ_1_1_4)
-            self.spiflash_phy = LiteSPIPHYModel(spiflash_module, init=spi_flash_init)
-            self.add_spi_flash(
-                phy=self.spiflash_phy,
-                mode='4x',
-                module=spiflash_module,
-                with_master=True,
+            self._configure_spi_flash(
+                spi_flash_init=spi_flash_init,
+                spi_flash_image_path=spi_flash_image_path,
             )
 
         if resolved_with_sdcard:
-            if sdcard_image_path is None:
-                self.add_sdcard('sdcard', use_emulator=True)
-            else:
-                self._add_sdcard_with_image_emulator('sdcard')
+            self._configure_sdcard(mode=sdcard_mode, sdcard_image_path=sdcard_image_path)
 
         if boot_stack_address is None:
             if 'sram' in self.bus.regions:
@@ -330,6 +313,145 @@ class Little64LiteXSimSoC(SoCCore):
             self.cpu.boot_r1.eq(boot_r1),
             self.cpu.boot_r13.eq(boot_stack_address),
         ]
+
+    def _configure_main_ram(
+        self,
+        *,
+        sdram_module: str,
+        sdram_data_width: int,
+        sdram_init: list[int] | None,
+        main_ram_size: int,
+    ) -> None:
+        raise NotImplementedError()
+
+    def _configure_spi_flash(
+        self,
+        *,
+        spi_flash_init: list[int] | None,
+        spi_flash_image_path: str | Path | None,
+    ) -> None:
+        raise NotImplementedError()
+
+    def _configure_sdcard(self, *, mode: str, sdcard_image_path: str | Path | None) -> None:
+        if mode == 'native':
+            if sdcard_image_path is None:
+                self.add_sdcard('sdcard', use_emulator=True)
+            else:
+                self._add_sdcard_with_image_emulator('sdcard')
+            return
+        if mode == 'spi':
+            if sdcard_image_path is not None:
+                raise ValueError('sdcard_image_path is only supported for native LiteSDCard mode')
+            self.add_spi_sdcard('spisdcard')
+            return
+        raise ValueError(f'Unsupported Little64 LiteX SD card mode: {mode}')
+
+
+class Little64LiteXSimSoC(Little64LiteXSoC):
+    def __init__(
+        self,
+        *,
+        sys_clk_freq: int = int(1e6),
+        integrated_rom_size: int = 0,
+        integrated_rom_init: list[int] | None = None,
+        integrated_sram_size: int = 0x4000,
+        integrated_main_ram_size: int = 0,
+        main_ram_size: int | None = None,
+        with_sdram: bool = False,
+        with_spi_flash: bool = False,
+        with_sdcard: bool = False,
+        sdram_module: str = 'MT48LC16M16',
+        sdram_data_width: int = 64,
+        sdram_init: list[int] | None = None,
+        spi_flash_init: list[int] | None = None,
+        spi_flash_image_path: str | Path | None = None,
+        sdcard_image_path: str | Path | None = None,
+        ident: str | None = None,
+        cpu_variant: str = 'standard',
+        cpu_reset_address: int | None = None,
+        litex_target: str | Little64LiteXTarget = 'sim-flash',
+        boot_source: str | None = None,
+        boot_r1: int = 0,
+        boot_stack_address: int | None = None,
+        with_timer: bool = False,
+        **kwargs,
+    ) -> None:
+        platform = Little64LiteXSimPlatform()
+        self.crg = Little64LiteXSimCRG(platform.request('sys_clk'), platform.request('sys_rst'))
+        super().__init__(
+            platform,
+            sys_clk_freq=sys_clk_freq,
+            uart_name='sim',
+            integrated_rom_size=integrated_rom_size,
+            integrated_rom_init=integrated_rom_init,
+            integrated_sram_size=integrated_sram_size,
+            integrated_main_ram_size=integrated_main_ram_size,
+            main_ram_size=main_ram_size,
+            with_sdram=with_sdram,
+            with_spi_flash=with_spi_flash,
+            with_sdcard=with_sdcard,
+            sdcard_mode='native',
+            sdram_module=sdram_module,
+            sdram_data_width=sdram_data_width,
+            sdram_init=sdram_init,
+            spi_flash_init=spi_flash_init,
+            spi_flash_image_path=spi_flash_image_path,
+            sdcard_image_path=sdcard_image_path,
+            ident=ident,
+            cpu_variant=cpu_variant,
+            cpu_reset_address=cpu_reset_address,
+            litex_target=litex_target,
+            boot_source=boot_source,
+            boot_r1=boot_r1,
+            boot_stack_address=boot_stack_address,
+            with_timer=with_timer,
+            **kwargs,
+        )
+
+    def _configure_main_ram(
+        self,
+        *,
+        sdram_module: str,
+        sdram_data_width: int,
+        sdram_init: list[int] | None,
+        main_ram_size: int,
+    ) -> None:
+        sdram_init = [] if sdram_init is None else sdram_init
+        sdram_module_cls = getattr(litedram_modules, sdram_module)
+        sdram_rate = f"1:{sdram_module_nphases[sdram_module_cls.memtype]}"
+        sdram_module_inst = sdram_module_cls(int(100e6), sdram_rate)
+        self.sdrphy = SDRAMPHYModel(
+            module=sdram_module_inst,
+            data_width=sdram_data_width,
+            clk_freq=int(100e6),
+            init=sdram_init,
+        )
+        self.add_sdram(
+            'sdram',
+            phy=self.sdrphy,
+            module=sdram_module_inst,
+            l2_cache_size=0,
+        )
+        if 'main_ram' in self.bus.regions and main_ram_size:
+            self.bus.regions['main_ram'].size = main_ram_size
+
+    def _configure_spi_flash(
+        self,
+        *,
+        spi_flash_init: list[int] | None,
+        spi_flash_image_path: str | Path | None,
+    ) -> None:
+        if spi_flash_init is None and spi_flash_image_path is not None:
+            spi_flash_init = _load_spi_flash_init(spi_flash_image_path)
+        spi_flash_init = [] if spi_flash_init is None else spi_flash_init
+        spiflash_module = S25FL128L(Codes.READ_1_1_4)
+        self.spiflash_phy = LiteSPIPHYModel(spiflash_module, init=spi_flash_init)
+        self.add_spi_flash(
+            phy=self.spiflash_phy,
+            mode='4x',
+            module=spiflash_module,
+            with_master=True,
+        )
 
     def _add_sdcard_with_image_emulator(self, name: str) -> None:
         from litex.soc.interconnect.csr_eventmanager import EventManager, EventSourceLevel, EventSourcePulse
@@ -393,7 +515,7 @@ def _dt_reg(origin: int, size: int) -> str:
     return f'<0x{origin >> 32:08x} 0x{origin & 0xFFFF_FFFF:08x} 0x{size >> 32:08x} 0x{size & 0xFFFF_FFFF:08x}>'
 
 
-def _dt_irq_vector(soc: Little64LiteXSimSoC, name: str) -> int | None:
+def _dt_irq_vector(soc: Little64LiteXSoC, name: str) -> int | None:
     if not hasattr(soc, 'irq'):
         return None
     irq_index = soc.irq.locs.get(name)
@@ -403,7 +525,7 @@ def _dt_irq_vector(soc: Little64LiteXSimSoC, name: str) -> int | None:
 
 
 def generate_linux_dts(
-    soc: Little64LiteXSimSoC,
+    soc: Little64LiteXSoC,
     *,
     model: str | None = None,
     compatible: tuple[str, ...] | None = None,

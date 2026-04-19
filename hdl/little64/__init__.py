@@ -8,6 +8,7 @@ from .litex_soc import Little64LiteXSimSoC, generate_linux_dts
 from .special_registers import Little64SpecialRegisterFile
 from .tlb import Little64TLB
 from .v2 import Little64V2Core, Little64V2FetchFrontend, V2PipelineState
+from .v3 import Little64V3Core, V3PipelineState
 from .variants import CACHE_TOPOLOGIES, CORE_VARIANTS, core_class_for_variant, create_core, resolve_litex_core_variant
 
 __all__ = [
@@ -24,6 +25,7 @@ __all__ = [
     'Little64WishboneDataBridge',
     'Little64V2Core',
     'Little64V2FetchFrontend',
+    'Little64V3Core',
     'Little64SpecialRegisterFile',
     'Little64TLB',
     'CACHE_TOPOLOGIES',
@@ -37,4 +39,5 @@ __all__ = [
     'register_little64_with_litex',
     'resolve_litex_core_variant',
     'V2PipelineState',
+    'V3PipelineState',
 ]

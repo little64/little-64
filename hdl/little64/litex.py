@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+import re
 
 from amaranth import Elaboratable, Module, Signal
 from amaranth.back import verilog
@@ -19,22 +20,30 @@ LITTLE64_LITEX_MEM_MAP = {
     'rom': 0x0000_0000,
     'sram': 0x1000_0000,
     'spiflash': 0x2000_0000,
-    'main_ram': 0x0000_0000,
+    'main_ram': 0x4000_0000,
     'csr': 0xF000_0000,
 }
-LITTLE64_LINUX_RAM_BASE = 0x0010_0000
+LITTLE64_LINUX_RAM_BASE = 0x4000_0000
 LITTLE64_LINUX_TIMER_BASE = 0x0800_1000
 LITTLE64_LITEX_FLASH_BOOT_MAGIC = 0x4C3634464C415348
 LITTLE64_LITEX_FLASH_BOOT_HEADER_OFFSET = 0x0000_2000
 LITTLE64_LITEX_FLASH_BOOT_ABI_VERSION = 1
 LITTLE64_LITEX_BOOTROM_SIZE = 0x0000_8000
-LITTLE64_LITEX_BOOTROM_MAIN_RAM_BASE = 0x4000_0000
+LITTLE64_LITEX_BOOTROM_MAIN_RAM_BASE = LITTLE64_LITEX_MEM_MAP['main_ram']
 LITTLE64_LITEX_BOOT_SOURCE_BOOTROM = 'bootrom'
 LITTLE64_LITEX_BOOT_SOURCE_SPIFLASH = 'spiflash'
 LITTLE64_LITEX_BOOT_SOURCES = (
     LITTLE64_LITEX_BOOT_SOURCE_BOOTROM,
     LITTLE64_LITEX_BOOT_SOURCE_SPIFLASH,
 )
+
+_DANGLING_FULL_CASE_RE = re.compile(
+    r"(?m)^[ \t]*\(\* full_case = 32'd1 \*\)[ \t]*\n(?:^[ \t]*\n)*(?=[ \t]*end\b)"
+)
+
+
+def _sanitize_generated_verilog(verilog_text: str) -> str:
+    return _DANGLING_FULL_CASE_RE.sub('', verilog_text)
 
 
 @dataclass(frozen=True, slots=True)
@@ -288,6 +297,7 @@ def emit_litex_cpu_verilog(
         name=module_name,
         ports=top.ports(),
     )
+    verilog_text = _sanitize_generated_verilog(verilog_text)
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(verilog_text, encoding='utf-8')

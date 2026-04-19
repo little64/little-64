@@ -11,7 +11,6 @@ DEFAULT_DEFCONFIG_NAME = "little64_litex_sim_defconfig"
 DEFAULT_SYMBOL_CACHE_NAME = ".analyze_lockup_flow_addr2line_cache.json"
 BUILD_DIR_ALIASES = {
     "little64_litex_sim_defconfig": "build-litex",
-    "little64_defconfig": "build-virt",
 }
 
 

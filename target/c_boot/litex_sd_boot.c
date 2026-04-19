@@ -27,11 +27,28 @@
 #define SDCARD_CTRL_RESPONSE_LONG 2U
 #define SDCARD_CTRL_RESPONSE_SHORT_BUSY 3U
 
+#if defined(L64_SDCARD_INTERFACE_SPI)
+#define SDCARD_SPI_R1_IDLE 0x01U
+#define SDCARD_SPI_R1_ILLEGAL_COMMAND 0x04U
+#define SDCARD_SPI_DATA_TOKEN_START_BLOCK 0xFEU
+#define SDCARD_SPI_CONTROL_START 0x00000001U
+#define SDCARD_SPI_CONTROL_LENGTH_SHIFT 8U
+#define SDCARD_SPI_STATUS_DONE 0x00000001U
+#define SDCARD_SPI_CS_SELECT_CHIP0 0x00000001U
+#define SDCARD_SPI_CS_MODE_MANUAL 0x00010000U
+#define SDCARD_SPI_CS_ASSERT (SDCARD_SPI_CS_MODE_MANUAL | SDCARD_SPI_CS_SELECT_CHIP0)
+#define SDCARD_SPI_CS_DEASSERT SDCARD_SPI_CS_MODE_MANUAL
+#endif
+
 typedef unsigned char u8;
 typedef unsigned short u16;
 typedef unsigned int u32;
 typedef unsigned long long u64;
 typedef long long s64;
+
+#ifndef L64_UART_EVENT_MASK
+#define L64_UART_EVENT_MASK 0x00000003U
+#endif
 
 extern u8 __bss_start[];
 extern u8 __bss_end[];
@@ -52,6 +69,16 @@ typedef struct Stage0Fat32Volume {
 
 static volatile u8* const liteuart_rxtx = (volatile u8*)L64_UART_RXTX_ADDR;
 static volatile u32* const liteuart_txfull = (volatile u32*)L64_UART_TXFULL_ADDR;
+#if defined(L64_UART_EV_PENDING_ADDR)
+static volatile u32* const liteuart_ev_pending = (volatile u32*)L64_UART_EV_PENDING_ADDR;
+#endif
+#if defined(L64_UART_EV_ENABLE_ADDR)
+static volatile u32* const liteuart_ev_enable = (volatile u32*)L64_UART_EV_ENABLE_ADDR;
+#endif
+#if defined(L64_UART_PHY_TUNING_WORD_ADDR)
+static volatile u32* const liteuart_phy_tuning_word = (volatile u32*)L64_UART_PHY_TUNING_WORD_ADDR;
+#endif
+#if defined(L64_SDCARD_INTERFACE_NATIVE)
 static volatile u32* const sdcard_block2mem_dma_base_hi = (volatile u32*)L64_SDCARD_BLOCK2MEM_DMA_BASE_ADDR;
 static volatile u32* const sdcard_block2mem_dma_base_lo = (volatile u32*)(L64_SDCARD_BLOCK2MEM_DMA_BASE_ADDR + 4ULL);
 static volatile u32* const sdcard_block2mem_dma_length = (volatile u32*)L64_SDCARD_BLOCK2MEM_DMA_LENGTH_ADDR;
@@ -67,6 +94,18 @@ static volatile u32* const sdcard_core_block_length = (volatile u32*)L64_SDCARD_
 static volatile u32* const sdcard_core_block_count = (volatile u32*)L64_SDCARD_CORE_BLOCK_COUNT_ADDR;
 static volatile u32* const sdcard_phy_clock_divider = (volatile u32*)L64_SDCARD_PHY_CLOCK_DIVIDER_ADDR;
 static volatile u32* const sdcard_phy_initialize = (volatile u32*)L64_SDCARD_PHY_INITIALIZE_ADDR;
+#elif defined(L64_SDCARD_INTERFACE_SPI)
+static volatile u32* const sdcard_spi_control = (volatile u32*)L64_SDCARD_SPI_CONTROL_ADDR;
+static volatile u32* const sdcard_spi_status = (volatile u32*)L64_SDCARD_SPI_STATUS_ADDR;
+static volatile u32* const sdcard_spi_mosi = (volatile u32*)L64_SDCARD_SPI_MOSI_ADDR;
+static volatile u32* const sdcard_spi_miso = (volatile u32*)L64_SDCARD_SPI_MISO_ADDR;
+static volatile u32* const sdcard_spi_cs = (volatile u32*)L64_SDCARD_SPI_CS_ADDR;
+static volatile u32* const sdcard_spi_loopback = (volatile u32*)L64_SDCARD_SPI_LOOPBACK_ADDR;
+static volatile u32* const sdcard_spi_clk_divider = (volatile u32*)L64_SDCARD_SPI_CLK_DIVIDER_ADDR;
+static u32 sdcard_spi_uses_block_addressing;
+#else
+#error "stage0 requires either L64_SDCARD_INTERFACE_NATIVE or L64_SDCARD_INTERFACE_SPI"
+#endif
 static Stage0Fat32Volume fat32_volume;
 static u8 sector_buffer[SD_BLOCK_SIZE];
 static u8 elf_header_scratch[ELF_HEADER_SCRATCH_SIZE];
@@ -99,6 +138,18 @@ s64 __muldi3(s64 a, s64 b) {
     }
 
     return negate ? -(s64)result : (s64)result;
+}
+
+static void liteuart_initialize(void) {
+#if defined(L64_UART_EV_ENABLE_ADDR)
+    *liteuart_ev_enable = 0U;
+#endif
+#if defined(L64_UART_EV_PENDING_ADDR)
+    *liteuart_ev_pending = L64_UART_EVENT_MASK;
+#endif
+#if defined(L64_UART_PHY_TUNING_WORD_ADDR)
+    *liteuart_phy_tuning_word = L64_UART_PHY_TUNING_WORD_VALUE;
+#endif
 }
 
 static void serial_putc(char c) {
@@ -278,6 +329,7 @@ static u32 pow2_round_up(u32 value) {
     return value + 1U;
 }
 
+#if defined(L64_SDCARD_INTERFACE_NATIVE)
 static void sdcard_set_clk_freq(u32 clk_freq) {
     u32 divider = clk_freq != 0U ? ((u32)L64_SYS_CLK_FREQ / clk_freq) : 256U;
     divider = pow2_round_up(divider);
@@ -339,7 +391,109 @@ static u32 sdcard_send_command(u32 argument, u32 cmd, u32 response_type, u32 dat
     return sdcard_wait_cmd_done();
 }
 
+#elif defined(L64_SDCARD_INTERFACE_SPI)
+static void sdcard_set_clk_freq(u32 clk_freq) {
+    u32 divider = clk_freq != 0U ? (u32)((L64_SYS_CLK_FREQ + clk_freq - 1U) / clk_freq) : 0xFFFFU;
+    if (divider < 2U) {
+        divider = 2U;
+    }
+    if (divider > 0xFFFFU) {
+        divider = 0xFFFFU;
+    }
+    *sdcard_spi_clk_divider = divider;
+}
+
+static u8 sdcard_spi_transfer_byte(u8 value) {
+    u32 timeout = 100000U;
+
+    *sdcard_spi_mosi = value;
+    *sdcard_spi_control = SDCARD_SPI_CONTROL_START | (8U << SDCARD_SPI_CONTROL_LENGTH_SHIFT);
+    while (timeout != 0U) {
+        if ((*sdcard_spi_status & SDCARD_SPI_STATUS_DONE) != 0U) {
+            return (u8)(*sdcard_spi_miso & 0xFFU);
+        }
+        spin_delay(8U);
+        --timeout;
+    }
+
+    fail_hard("spisdcard transfer timed out");
+}
+
+static void sdcard_spi_deselect(void) {
+    *sdcard_spi_cs = SDCARD_SPI_CS_DEASSERT;
+    (void)sdcard_spi_transfer_byte(0xFFU);
+}
+
+static void sdcard_spi_select(void) {
+    *sdcard_spi_cs = SDCARD_SPI_CS_ASSERT;
+}
+
+static u8 sdcard_spi_compute_crc7(const u8* data, u32 size) {
+    u8 crc = 0U;
+    while (size != 0U) {
+        u8 current = *data;
+        u32 bit_index = 0U;
+        while (bit_index < 8U) {
+            crc <<= 1U;
+            if (((current ^ crc) & 0x80U) != 0U) {
+                crc ^= 0x09U;
+            }
+            current <<= 1U;
+            ++bit_index;
+        }
+        ++data;
+        --size;
+    }
+    return (u8)((crc << 1U) | 0x01U);
+}
+
+static u8 sdcard_spi_send_command(u8 cmd, u32 argument, u8* response_tail, u32 response_tail_size, int keep_selected) {
+    u8 frame[5];
+    u8 response = 0xFFU;
+    u32 retry = 16U;
+
+    frame[0] = (u8)(0x40U | cmd);
+    frame[1] = (u8)(argument >> 24U);
+    frame[2] = (u8)(argument >> 16U);
+    frame[3] = (u8)(argument >> 8U);
+    frame[4] = (u8)argument;
+
+    sdcard_spi_select();
+    (void)sdcard_spi_transfer_byte(0xFFU);
+    (void)sdcard_spi_transfer_byte(frame[0]);
+    (void)sdcard_spi_transfer_byte(frame[1]);
+    (void)sdcard_spi_transfer_byte(frame[2]);
+    (void)sdcard_spi_transfer_byte(frame[3]);
+    (void)sdcard_spi_transfer_byte(frame[4]);
+    (void)sdcard_spi_transfer_byte(sdcard_spi_compute_crc7(frame, 5U));
+
+    while (retry != 0U) {
+        response = sdcard_spi_transfer_byte(0xFFU);
+        if ((response & 0x80U) == 0U) {
+            break;
+        }
+        --retry;
+    }
+
+    if (retry == 0U) {
+        response = 0xFFU;
+    }
+
+    while (response_tail_size != 0U) {
+        *response_tail = sdcard_spi_transfer_byte(0xFFU);
+        ++response_tail;
+        --response_tail_size;
+    }
+
+    if (!keep_selected) {
+        sdcard_spi_deselect();
+    }
+    return response;
+}
+#endif
+
 static void sdcard_read_block(u32 block, u8* destination) {
+#if defined(L64_SDCARD_INTERFACE_NATIVE)
     u32 timeout = 1000000U;
 
     *sdcard_block2mem_dma_enable = 0U;
@@ -366,9 +520,46 @@ static void sdcard_read_block(u32 block, u8* destination) {
     }
 
     fail_hard_hex64("sdcard DMA timed out", block);
+#elif defined(L64_SDCARD_INTERFACE_SPI)
+    u32 timeout = 1000000U;
+    u32 index = 0U;
+    u32 argument = sdcard_spi_uses_block_addressing ? block : (block * SD_BLOCK_SIZE);
+    u8 token;
+
+    if (sdcard_spi_send_command(17U, argument, (u8*)0, 0U, 1) != 0U) {
+        fail_hard_hex64("sdcard SPI read command failed", block);
+    }
+
+    do {
+        token = sdcard_spi_transfer_byte(0xFFU);
+        if (token == SDCARD_SPI_DATA_TOKEN_START_BLOCK) {
+            break;
+        }
+        if (token != 0xFFU) {
+            sdcard_spi_deselect();
+            fail_hard_hex64("sdcard SPI read token invalid", token);
+        }
+        spin_delay(32U);
+        --timeout;
+    } while (timeout != 0U);
+
+    if (timeout == 0U) {
+        sdcard_spi_deselect();
+        fail_hard_hex64("sdcard SPI read timed out", block);
+    }
+
+    while (index < SD_BLOCK_SIZE) {
+        destination[index] = sdcard_spi_transfer_byte(0xFFU);
+        ++index;
+    }
+    (void)sdcard_spi_transfer_byte(0xFFU);
+    (void)sdcard_spi_transfer_byte(0xFFU);
+    sdcard_spi_deselect();
+#endif
 }
 
 static void sdcard_initialize_or_fail(void) {
+#if defined(L64_SDCARD_INTERFACE_NATIVE)
     u32 timeout = 1000U;
     u16 rca;
     u32 response_word3;
@@ -463,6 +654,61 @@ static void sdcard_initialize_or_fail(void) {
     }
 
     serial_puts("stage0: sdcard ready\n");
+#elif defined(L64_SDCARD_INTERFACE_SPI)
+    u32 timeout = 1000U;
+    u8 response_tail[4];
+
+    serial_puts("stage0: initializing sdcard (spi)\n");
+    *sdcard_spi_loopback = 0U;
+    *sdcard_spi_cs = SDCARD_SPI_CS_DEASSERT;
+    sdcard_set_clk_freq(400000U);
+
+    timeout = 10U;
+    while (timeout != 0U) {
+        (void)sdcard_spi_transfer_byte(0xFFU);
+        --timeout;
+    }
+
+    if (sdcard_spi_send_command(0U, 0U, (u8*)0, 0U, 0) != SDCARD_SPI_R1_IDLE) {
+        fail_hard("sdcard SPI CMD0 failed");
+    }
+
+    if (sdcard_spi_send_command(8U, 0x000001AAU, response_tail, 4U, 0) != SDCARD_SPI_R1_IDLE) {
+        fail_hard("sdcard SPI CMD8 failed");
+    }
+    if (response_tail[2] != 0x01U || response_tail[3] != 0xAAU) {
+        fail_hard("sdcard SPI CMD8 response invalid");
+    }
+
+    timeout = 1000U;
+    while (timeout != 0U) {
+        if (sdcard_spi_send_command(55U, 0U, (u8*)0, 0U, 0) > SDCARD_SPI_R1_IDLE) {
+            fail_hard("sdcard SPI CMD55 failed");
+        }
+        if (sdcard_spi_send_command(41U, 0x40000000U, (u8*)0, 0U, 0) == 0U) {
+            break;
+        }
+        spin_delay(1024U);
+        --timeout;
+    }
+    if (timeout == 0U) {
+        fail_hard("sdcard SPI ACMD41 timed out");
+    }
+
+    if (sdcard_spi_send_command(58U, 0U, response_tail, 4U, 0) != 0U) {
+        fail_hard("sdcard SPI CMD58 failed");
+    }
+    sdcard_spi_uses_block_addressing = (response_tail[0] & 0x40U) != 0U;
+
+    sdcard_set_clk_freq(25000000U);
+    if (!sdcard_spi_uses_block_addressing) {
+        if (sdcard_spi_send_command(16U, 512U, (u8*)0, 0U, 0) != 0U) {
+            fail_hard("sdcard SPI CMD16 failed");
+        }
+    }
+
+    serial_puts("stage0: sdcard ready (spi)\n");
+#endif
 }
 
 static u32 cluster_to_lba(u32 cluster) {
@@ -806,6 +1052,7 @@ static void litex_soc_boot_entry(void) {
     Stage0FileInfo kernel_file;
     Stage0FileInfo dtb_file;
 
+    liteuart_initialize();
     serial_puts("stage0: entered from internal bootrom\n");
     clear_bss();
     serial_puts("stage0: cleared .bss\n");

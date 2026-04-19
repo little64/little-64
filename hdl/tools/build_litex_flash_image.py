@@ -9,6 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from little64.litex import LITTLE64_LINUX_RAM_BASE
 from little64.litex_linux_boot import build_litex_flash_image
 
 
@@ -63,9 +64,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--kernel-elf', type=Path, required=True, help='Little64 Linux kernel ELF to flatten into SDRAM payload bytes.')
     parser.add_argument('--dtb', type=Path, required=True, help='Compiled DTB to copy into SDRAM before jumping to the kernel.')
     parser.add_argument('--output', type=Path, required=True, help='Flash image path to write.')
-    parser.add_argument('--ram-base', type=lambda value: int(value, 0), default=0x0, help='Physical RAM base visible to the SoC.')
+    parser.add_argument('--ram-base', type=lambda value: int(value, 0), default=LITTLE64_LINUX_RAM_BASE,
+        help='Physical RAM base visible to the SoC.')
     parser.add_argument('--ram-size', type=lambda value: int(value, 0), default=0x04000000, help='Physical RAM size visible to the SoC.')
-    parser.add_argument('--kernel-physical-base', type=lambda value: int(value, 0), default=0x00100000,
+    parser.add_argument('--kernel-physical-base', type=lambda value: int(value, 0), default=LITTLE64_LINUX_RAM_BASE,
         help='Physical kernel load base expected by the current Little64 Linux port.')
     parser.add_argument('--stage0-source', type=Path, default=Path('target/c_boot/litex_spi_boot.c'),
         help='Stage-0 C source to compile into the beginning of the flash image.')

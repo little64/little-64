@@ -31,9 +31,10 @@ namespace fs = std::filesystem;
 
 static constexpr bool kHarnessDebug = LITTLE64_HARNESS_ENABLE_DEBUG != 0;
 
-constexpr uint64_t KERNEL_PHYSICAL_BASE = 0x0010'0000ULL;
+constexpr uint64_t KERNEL_PHYSICAL_BASE = 0x4000'0000ULL;
 constexpr uint64_t PAGE_OFFSET = 0xFFFF'FFC0'0000'0000ULL;
-constexpr uint64_t RAM_BASE = 0x0000'0000ULL;
+constexpr uint64_t SRAM_BASE = 0x1000'0000ULL;
+constexpr uint64_t SRAM_SIZE = 0x0000'4000ULL;
 constexpr uint64_t PAGE_SIZE = 4096ULL;
 constexpr uint64_t EARLY_PT_SCRATCH_PAGES = 30ULL;
 constexpr uint64_t FLASH_BASE = 0x2000'0000ULL;
@@ -51,6 +52,7 @@ constexpr uint64_t TIMER_IRQ_MASK = 1ULL << 1;
 constexpr uint64_t PVBLK_IRQ_MASK = 1ULL << 2;
 
 constexpr uint64_t DEFAULT_TIME_SCALE_NS = 10ULL;
+constexpr uint64_t ZERO_INSTRUCTION_STALL_THRESHOLD = 8ULL;
 
 constexpr uint64_t L64_PVBLK_MAGIC_VALUE = 0x4B4C42505634364CULL;
 constexpr uint64_t L64_PVBLK_VERSION_VALUE = 1ULL;
@@ -520,38 +522,62 @@ struct PvBlockDevice {
 struct Platform {
     explicit Platform(LoadedLinuxImage image_, FlashBootImage flash_)
         : image(std::move(image_)), flash(std::move(flash_)) {
-        const uint64_t ramEnd = std::max(
+        const uint64_t mainRamEnd = std::max(
             std::max(
                 static_cast<uint64_t>(flash.kernelBootStackTop + 8ULL),
                 static_cast<uint64_t>(flash.kernelPhysicalBase + flash.kernelCopySize)
             ),
             static_cast<uint64_t>(flash.dtbPhysical + flash.dtbSize)
         );
-        ram.resize(static_cast<size_t>(alignUp(ramEnd, PAGE_SIZE)), 0);
-        ramLimit = RAM_BASE + ram.size();
+        sram.resize(SRAM_SIZE, 0);
+        mainRamBase = flash.kernelPhysicalBase;
+        mainRam.resize(static_cast<size_t>(alignUp(mainRamEnd - mainRamBase, PAGE_SIZE)), 0);
+        mainRamLimit = mainRamBase + mainRam.size();
         flashLimit = FLASH_BASE + flash.bytes.size();
         pvblk.platform = this;
     }
 
     LoadedLinuxImage image;
     FlashBootImage flash;
-    std::vector<uint8_t> ram;
-    uint64_t ramLimit = RAM_BASE;
+    std::vector<uint8_t> sram;
+    std::vector<uint8_t> mainRam;
+    uint64_t mainRamBase = KERNEL_PHYSICAL_BASE;
+    uint64_t mainRamLimit = KERNEL_PHYSICAL_BASE;
     uint64_t flashLimit = FLASH_BASE;
     SerialDevice serial;
     TimerDevice timer;
     PvBlockDevice pvblk;
 
+    bool sramContains(uint64_t address, size_t size) const {
+        return address >= SRAM_BASE && address + size <= SRAM_BASE + sram.size();
+    }
+
+    bool mainRamContains(uint64_t address, size_t size) const {
+        return address >= mainRamBase && address + size <= mainRamLimit;
+    }
+
     const uint8_t* ramPointer(uint64_t address) const {
-        return ram.data() + static_cast<size_t>(address - RAM_BASE);
+        if (sramContains(address, 1)) {
+            return sram.data() + static_cast<size_t>(address - SRAM_BASE);
+        }
+        if (mainRamContains(address, 1)) {
+            return mainRam.data() + static_cast<size_t>(address - mainRamBase);
+        }
+        throw std::runtime_error("RAM pointer out of range");
     }
 
     uint8_t* ramPointer(uint64_t address) {
-        return ram.data() + static_cast<size_t>(address - RAM_BASE);
+        if (sramContains(address, 1)) {
+            return sram.data() + static_cast<size_t>(address - SRAM_BASE);
+        }
+        if (mainRamContains(address, 1)) {
+            return mainRam.data() + static_cast<size_t>(address - mainRamBase);
+        }
+        throw std::runtime_error("RAM pointer out of range");
     }
 
     bool ramContains(uint64_t address, size_t size) const {
-        return address >= RAM_BASE && address + size <= ramLimit;
+        return sramContains(address, size) || mainRamContains(address, size);
     }
 
     bool flashContains(uint64_t address, size_t size) const {
@@ -569,16 +595,15 @@ struct Platform {
         if (!ramContains(address, bytes.size())) {
             throw std::runtime_error("RAM write out of range");
         }
-        const auto offset = static_cast<size_t>(address - RAM_BASE);
-        std::copy(bytes.begin(), bytes.end(), ram.begin() + static_cast<std::ptrdiff_t>(offset));
+        std::copy(bytes.begin(), bytes.end(), ramPointer(address));
     }
 
     std::vector<uint8_t> readBytes(uint64_t address, size_t size) const {
         if (!ramContains(address, size)) {
             throw std::runtime_error("RAM read out of range");
         }
-        const auto offset = static_cast<size_t>(address - RAM_BASE);
-        return std::vector<uint8_t>(ram.begin() + static_cast<std::ptrdiff_t>(offset), ram.begin() + static_cast<std::ptrdiff_t>(offset + size));
+        const auto* start = ramPointer(address);
+        return std::vector<uint8_t>(start, start + size);
     }
 
     uint64_t readU64(uint64_t address) const {
@@ -595,6 +620,13 @@ struct Platform {
             throw std::runtime_error("RAM write out of range");
         }
         std::memcpy(ramPointer(address), &value, sizeof(value));
+    }
+
+    uint8_t readU8(uint64_t address) const {
+        if (!ramContains(address, 1)) {
+            throw std::runtime_error("RAM read out of range");
+        }
+        return *ramPointer(address);
     }
 
     uint8_t readDeviceByte(uint64_t address) const {
@@ -643,7 +675,7 @@ struct Platform {
             const auto byteAddress = address + index;
             uint8_t byteValue = 0;
             if (ramContains(byteAddress, 1)) {
-                byteValue = ram[static_cast<size_t>(byteAddress - RAM_BASE)];
+                byteValue = readU8(byteAddress);
             } else if (flashContains(byteAddress, 1)) {
                 byteValue = readFlashByte(byteAddress);
             } else {
@@ -682,7 +714,7 @@ struct Platform {
             const auto byteAddress = address + index;
             const auto byteValue = static_cast<uint8_t>((value >> (8U * index)) & 0xFFULL);
             if (ramContains(byteAddress, 1)) {
-                ram[static_cast<size_t>(byteAddress - RAM_BASE)] = byteValue;
+                *ramPointer(byteAddress) = byteValue;
             } else {
                 writeDeviceByte(byteAddress, byteValue);
             }
@@ -923,7 +955,7 @@ class SimulatorRunner {
             recordTrace(result.cycles);
 #endif
 
-            if (isZeroInstructionExecution()) {
+            if (updateZeroInstructionExecution()) {
                 result.zeroInstruction = true;
                 break;
             }
@@ -1095,8 +1127,8 @@ class SimulatorRunner {
         }
 
          if (isZeroInstructionExecution()) {
-             stream << "zero_instruction_fetch_pc=0x" << std::hex << top->fetch_pc
-                 << " zero_instruction_fetch_phys=0x" << top->fetch_phys_addr
+             stream << "zero_instruction_fetch_pc=0x" << std::hex << zeroInstructionFetchPc
+                 << " zero_instruction_fetch_phys=0x" << zeroInstructionFetchPhys
                  << "\n";
          }
 
@@ -1188,6 +1220,11 @@ class SimulatorRunner {
 
   private:
     void resetDesign() {
+        zeroInstructionDetected = false;
+        zeroInstructionStreak = 0;
+        lastZeroInstructionPc = 0;
+        zeroInstructionFetchPc = 0;
+        zeroInstructionFetchPhys = 0;
         for (unsigned step = 0; step < 2; ++step) {
             top->rst = 1;
             driveIdleInputs();
@@ -1309,8 +1346,33 @@ class SimulatorRunner {
         return !inPhysicalImage && !inVirtualImage && !inFlashImage;
     }
 
+    bool updateZeroInstructionExecution() {
+        const bool zeroInstructionCycle = top->state == 3 && top->fetch_pc != 0 && top->current_instruction == 0;
+        if (!zeroInstructionCycle) {
+            zeroInstructionStreak = 0;
+            lastZeroInstructionPc = 0;
+            return false;
+        }
+
+        if (lastZeroInstructionPc == top->fetch_pc) {
+            ++zeroInstructionStreak;
+        } else {
+            lastZeroInstructionPc = top->fetch_pc;
+            zeroInstructionStreak = 1;
+        }
+
+        if (zeroInstructionStreak < ZERO_INSTRUCTION_STALL_THRESHOLD) {
+            return false;
+        }
+
+        zeroInstructionDetected = true;
+        zeroInstructionFetchPc = top->fetch_pc;
+        zeroInstructionFetchPhys = top->fetch_phys_addr;
+        return true;
+    }
+
     bool isZeroInstructionExecution() const {
-        return top->state == 3 && top->fetch_pc != 0 && top->current_instruction == 0;
+        return zeroInstructionDetected;
     }
 
     std::optional<uint64_t> virtualToKernelPhysical(uint64_t address) const {
@@ -1402,7 +1464,7 @@ class SimulatorRunner {
             if (!physical || !platform.ramContains(*physical, 1)) {
                 break;
             }
-            const char ch = static_cast<char>(platform.ram[static_cast<size_t>(*physical - RAM_BASE)]);
+            const char ch = static_cast<char>(platform.readU8(*physical));
             if (ch == '\0') {
                 return result.empty() ? std::nullopt : std::optional<std::string>(result);
             }
@@ -1694,6 +1756,11 @@ class SimulatorRunner {
     std::unique_ptr<Vlittle64_linux_boot_top> top;
     Platform platform;
     bool debugTraceEnabled;
+    bool zeroInstructionDetected = false;
+    uint64_t zeroInstructionStreak = 0;
+    uint64_t lastZeroInstructionPc = 0;
+    uint64_t zeroInstructionFetchPc = 0;
+    uint64_t zeroInstructionFetchPhys = 0;
     IBusRequestTracker iBusRequest;
     DBusRequestTracker dBusRequest;
 #if LITTLE64_HARNESS_ENABLE_DEBUG

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import os
 import pathlib
 import shutil
 import subprocess
@@ -9,7 +10,7 @@ BIN = ROOT / "compilers" / "bin"
 LLVM_MC = BIN / "llvm-mc"
 LD = BIN / "ld.lld"
 BOOT_HELPER = ROOT / "target" / "linux_port" / "boot_direct.sh"
-KERNEL_ELF = ROOT / "target" / "linux_port" / "build-virt" / "vmlinux"
+KERNEL_ELF = ROOT / "target" / "linux_port" / "build-litex" / "vmlinux"
 
 INIT_SOURCE = pathlib.Path(__file__).with_name("linux_userspace_write_init.S")
 INIT_LINKER = pathlib.Path(__file__).with_name("linux_userspace_write_init.ld")
@@ -118,23 +119,28 @@ def main() -> int:
 
     builddir = ROOT / "builddir"
     builddir.mkdir(parents=True, exist_ok=True)
+    litex_output_dir = builddir / "boot-direct-litex-userspace-write"
 
     rootfs_image = build_rootfs(builddir)
+
+    env = os.environ.copy()
+    env["LITTLE64_LITEX_OUTPUT_DIR"] = str(litex_output_dir)
 
     res = subprocess.run(
         [
             str(BOOT_HELPER),
-            "--machine=virt",
+            "--machine=litex",
             "--mode=smoke",
             "--rootfs",
             str(rootfs_image),
             "--max-cycles",
-            "200000000",
+            "600000000",
             str(KERNEL_ELF),
         ],
         capture_output=True,
         text=True,
         timeout=240,
+        env=env,
     )
 
     if EXPECTED_STDOUT not in res.stdout:

@@ -5,8 +5,8 @@
 #define FLASH_BOOT_MAGIC 0x4C3634464C415348ULL
 #define FLASH_BOOT_ABI_VERSION 1ULL
 #define FLASH_BOOT_HEADER_OFFSET 0x00002000ULL
-#define STAGE0_STACK_TOP 0x000FF000ULL
-#define KERNEL_PHYS_BASE_MIN 0x00100000ULL
+#define STAGE0_STACK_TOP 0x10004000ULL
+#define KERNEL_PHYS_BASE_MIN 0x40000000ULL
 
 typedef unsigned char u8;
 typedef unsigned long long u64;
@@ -276,8 +276,8 @@ __attribute__((naked, section(".text.boot")))
 void _start(void) {
     __asm__ volatile (
         "LDI #0, R13\n"
-        "LDI.S1 #0xF0, R13\n"
-        "LDI.S2 #0x0F, R13\n"
+        "LDI.S1 #0x40, R13\n"
+        "LDI.S3 #0x10, R13\n"
         "LDI64 litex_soc_boot_entry, R1\n"
         "MOVE R1, PC\n"
     );

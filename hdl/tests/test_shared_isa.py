@@ -50,10 +50,11 @@ def _assert_no_special_state_clobber(observed) -> None:
 
 
 @pytest.mark.parametrize('case', load_gp_two_reg_cases(), ids=lambda case: case.description)
-def test_shared_gp_two_reg_cases(case) -> None:
+def test_shared_gp_two_reg_cases(case, shared_core_config) -> None:
     initial_registers = _build_two_reg_initial_registers(case)
     observed = run_single_instruction(
         encode_gp_rr(case.opcode_name, case.rs1, case.rd),
+        config=shared_core_config,
         initial_registers=initial_registers,
     )
 
@@ -74,10 +75,11 @@ def test_shared_gp_two_reg_cases(case) -> None:
 
 
 @pytest.mark.parametrize('case', load_gp_imm_cases(), ids=lambda case: case.description)
-def test_shared_gp_imm_cases(case) -> None:
+def test_shared_gp_imm_cases(case, shared_core_config) -> None:
     initial_registers = {} if case.rd == 0 else {case.rd: case.initial}
     observed = run_single_instruction(
         encode_gp_imm(case.opcode_name, case.imm4, case.rd),
+        config=shared_core_config,
         initial_registers=initial_registers,
     )
 
@@ -96,10 +98,11 @@ def test_shared_gp_imm_cases(case) -> None:
 
 
 @pytest.mark.parametrize('case', load_ldi_cases(), ids=lambda case: case.description)
-def test_shared_ldi_cases(case) -> None:
+def test_shared_ldi_cases(case, shared_core_config) -> None:
     initial_registers = {} if case.rd == 0 else {case.rd: case.initial}
     observed = run_single_instruction(
         encode_ldi(case.shift, case.imm8, case.rd),
+        config=shared_core_config,
         initial_registers=initial_registers,
         initial_flags=case.initial_flags,
     )

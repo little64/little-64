@@ -77,7 +77,7 @@ public:
     virtual void loadProgram(const std::vector<uint16_t>& words, uint64_t base = 0, uint64_t entry_offset = 0) = 0;
     virtual bool loadProgramElf(const std::vector<uint8_t>& elf_bytes, uint64_t base = 0) = 0;
     virtual bool loadProgramElfDirectPaged(const std::vector<uint8_t>& elf_bytes,
-                                           uint64_t kernel_physical_base = 0x100000,
+                                           uint64_t kernel_physical_base = 0x40000000,
                                            uint64_t direct_map_virtual_base = 0xFFFFFFC000000000ULL) = 0;
     virtual bool loadProgramLiteXBootRomImage(const std::vector<uint8_t>& bootrom_bytes) = 0;
     virtual bool loadProgramLiteXFlashImage(const std::vector<uint8_t>& flash_bytes) = 0;

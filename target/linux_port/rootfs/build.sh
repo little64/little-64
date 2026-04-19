@@ -15,7 +15,7 @@ usage() {
     cat <<EOF
 Usage: $0 [clean]
 
-Builds a minimal ext4 rootfs image for the Little64 PV block device.
+Builds a minimal ext4 rootfs image for the Little64 LiteX SD boot helpers.
 
 Environment:
     LITTLE64_ROOTFS_SIZE_MB   Size of the generated ext4 image in MiB (default: 8)
@@ -104,7 +104,7 @@ Little-64 Linux test rootfs
 EOF
 
 cat > "$STAGING_DIR/README.little64" <<'EOF'
-This image is a minimal Little-64 test rootfs for the paravirtual block device.
+This image is a minimal Little-64 test rootfs for the LiteX SD boot path.
 It exists to get VFS onto a real disk-backed root filesystem during kernel bring-up.
 EOF
 

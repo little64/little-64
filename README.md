@@ -107,30 +107,25 @@ For the LiteX machine, `target/linux_port/boot_direct.sh` now regenerates a mini
 Use `target/linux_port/boot_direct.sh --no-rootfs` to boot the selected machine profile without attaching a rootfs image.
 Use `target/linux_port/boot_direct.sh --mode=smoke` for the lower-overhead no-event-capture smoke path.
 Use `target/linux_port/boot_direct.sh --mode=rsp` to launch the direct-boot RSP debug server.
-Use `target/linux_port/build.sh --machine virt vmlinux -j1` plus `target/linux_port/boot_direct.sh --machine virt` when you explicitly want the older emulator-oriented PV-block workflow.
 
 The legacy wrappers `target/linux_port/boot_direct_no_event_logging.sh` and
 `target/linux_port/boot_direct_debugserver.sh` remain available as compatibility
 entrypoints, but `target/linux_port/boot_direct.sh` is now the canonical CLI.
 
-The Linux build helper now defaults to `little64_litex_sim_defconfig`. To switch machine profiles,
-prefer `--machine`, or keep using `LITTLE64_LINUX_DEFCONFIG`, for example:
+The Linux build helper now defaults to `little64_litex_sim_defconfig`. To switch away from that default,
+use `--defconfig <name>` or `LITTLE64_LINUX_DEFCONFIG=<name>`, for example:
 
 ```bash
 target/linux_port/build.sh vmlinux -j1
 # or
-target/linux_port/build.sh --machine virt vmlinux -j1
-# or
-LITTLE64_LINUX_DEFCONFIG=little64_defconfig target/linux_port/build.sh vmlinux -j1
+target/linux_port/build.sh --defconfig <name> vmlinux -j1
 ```
 
-The known machine profiles build into explicit directories:
+The default LiteX profile builds into a stable directory, and any explicit defconfig uses its own profile-derived directory:
 
 - `target/linux_port/build-litex/` for `little64_litex_sim_defconfig`
-- `target/linux_port/build-virt/` for `little64_defconfig`
 
-Custom defconfigs still build into `target/linux_port/build-<defconfig>/` by
-default so they do not overwrite the named profile directories.
+Explicit defconfigs build into `target/linux_port/build-<defconfig>/` by default so they do not overwrite the canonical LiteX directory.
 
 ## LiteX Linux Boot Helpers
 
@@ -166,12 +161,51 @@ flow. By default it also regenerates the minimal ext4 rootfs from
 `target/linux_port/rootfs/init.S` and installs that filesystem into the second
 SD partition; `--rootfs-image PATH` remains available as an explicit override.
 
-The Linux tree now has two separate built-in machine profiles:
+The Linux tree still carries two separate built-in machine profiles:
 
-- `little64` / `little64_defconfig` remains the emulator-oriented virtual machine profile with ns16550a UART and PV block root-disk assumptions.
 - `little64-litex-sim` / `little64_litex_sim_defconfig` is the LiteX simulation profile with LiteUART, the Little64 timer, and memory-mapped flash, and is now the default Linux bring-up profile.
+- `little64` / `little64_defconfig` remains as a legacy emulator-oriented profile for manual experiments, but the helper scripts no longer special-case it.
 
-The LiteX profile is still simulation-first. It is the correct base for future FPGA work because it stops inheriting the emulator-only UART and PV block setup, but it is not yet an Arty board-support package.
+The LiteX profile is still simulation-first. It is the correct base for future FPGA work because it matches the helper flow's LiteUART, timer, flash, and SD-oriented boot contract, but it is not yet an Arty board-support package.
+
+## Arty Bitstream Build
+
+The repo now also includes a Python-first LiteX/Vivado entrypoint for building
+Little64 gateware for the Digilent Arty A7-35T:
+
+```bash
+./.venv/bin/pip install -r requirements-hdl.txt
+./.venv/bin/python hdl/tools/build_litex_arty_bitstream.py
+```
+
+Useful variants:
+
+```bash
+./.venv/bin/python hdl/tools/build_litex_arty_bitstream.py --generate-only
+./.venv/bin/python hdl/tools/build_litex_arty_bitstream.py --sdcard-connector pmodd --sdcard-adapter digilent
+./.venv/bin/python hdl/tools/build_litex_arty_bitstream.py --with-spi-flash
+./.venv/bin/python hdl/tools/build_litex_arty_bitstream.py --program volatile
+./.venv/bin/python hdl/tools/build_litex_arty_bitstream.py --program flash
+./.venv/bin/python hdl/tools/build_litex_arty_bitstream.py --program-only --program volatile
+```
+
+The helper now also supports direct board programming. `--program volatile`
+loads the generated `.bit` over JTAG for a temporary session, while
+`--program flash` writes the generated configuration `.bin` into the onboard
+SPI flash for persistent boot. `--program-only` skips the build and reuses the
+existing artifacts under `builddir/hdl-litex-arty/gateware/`.
+
+Each non-`--program-only` Arty build now also removes stale LiteX `gateware/`,
+`software/`, and `boot/` outputs and regenerates the staged SD boot assets
+under `builddir/hdl-litex-arty/boot/`, including the SD bootrom built from
+`target/c_boot/litex_sd_boot.c`. That same source now builds both the native
+LiteSDCard stage-0 used by the simulator/emulator flows and the SPI-mode SD
+stage-0 used by the current Arty hardware path, and the Arty helper preloads
+the SPI-mode build into the integrated boot ROM.
+
+The remaining gap is kernel-side SPI-SD/rootfs integration: the bootrom can
+now load the kernel and DTB from SPI-mode SD on Arty builds, but the Linux DT
+and rootfs path are still separate follow-up work.
 
 ## Toolchain Separation Policy
 

@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import argparse
 import importlib.util
 import os
+import re
 import struct
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -25,6 +29,8 @@ from little64.litex import (
 )
 from little64.litex_sdcard import EMULATOR_VERILOG_FILENAMES, _resolve_emulator_verilog_dir
 from little64.litex_cpu import Little64, Little64WishboneDataBridge, ensure_litex_llvm_toolchain_wrappers, register_little64_with_litex
+from little64.litex_arty import Little64ArtySPISDCardMapping, arty_spi_sdcard_extension, resolve_arty_spi_sdcard_mapping
+from little64.litex_arty import Little64LiteXArtySoC
 from little64.litex_linux_boot import (
     FLASH_BOOT_HEADER,
     build_litex_flash_image,
@@ -45,6 +51,22 @@ _BUILD_SD_BOOT_ARTIFACTS_SPEC = importlib.util.spec_from_file_location(
 assert _BUILD_SD_BOOT_ARTIFACTS_SPEC is not None and _BUILD_SD_BOOT_ARTIFACTS_SPEC.loader is not None
 _BUILD_SD_BOOT_ARTIFACTS = importlib.util.module_from_spec(_BUILD_SD_BOOT_ARTIFACTS_SPEC)
 _BUILD_SD_BOOT_ARTIFACTS_SPEC.loader.exec_module(_BUILD_SD_BOOT_ARTIFACTS)
+
+_BUILD_ARTY_BITSTREAM_SPEC = importlib.util.spec_from_file_location(
+    'little64_build_litex_arty_bitstream',
+    Path(__file__).resolve().parents[1] / 'tools' / 'build_litex_arty_bitstream.py',
+)
+assert _BUILD_ARTY_BITSTREAM_SPEC is not None and _BUILD_ARTY_BITSTREAM_SPEC.loader is not None
+_BUILD_ARTY_BITSTREAM = importlib.util.module_from_spec(_BUILD_ARTY_BITSTREAM_SPEC)
+_BUILD_ARTY_BITSTREAM_SPEC.loader.exec_module(_BUILD_ARTY_BITSTREAM)
+
+_BUILD_FLASH_IMAGE_SPEC = importlib.util.spec_from_file_location(
+    'little64_build_litex_flash_image',
+    Path(__file__).resolve().parents[1] / 'tools' / 'build_litex_flash_image.py',
+)
+assert _BUILD_FLASH_IMAGE_SPEC is not None and _BUILD_FLASH_IMAGE_SPEC.loader is not None
+_BUILD_FLASH_IMAGE = importlib.util.module_from_spec(_BUILD_FLASH_IMAGE_SPEC)
+_BUILD_FLASH_IMAGE_SPEC.loader.exec_module(_BUILD_FLASH_IMAGE)
 
 
 def _make_test_elf64(payload: bytes, *, entry_offset: int = 0) -> bytes:
@@ -111,11 +133,176 @@ def test_litex_profile_matches_current_cpu_contract() -> None:
         'standard-v2-none',
         'standard-v2-unified',
         'standard-v2-split',
+        'standard-v3',
+        'standard-v3-none',
+        'standard-v3-unified',
+        'standard-v3-split',
     )
     assert profile.mem_map['rom'] == 0x0000_0000
     assert profile.mem_map['spiflash'] == 0x2000_0000
-    assert profile.mem_map['main_ram'] == 0x0000_0000
+    assert profile.mem_map['main_ram'] == LITTLE64_LITEX_BOOTROM_MAIN_RAM_BASE
     assert profile.io_regions == {0x0800_0000: 0x0100_0000, 0x8000_0000: 0x8000_0000}
+
+
+def test_arty_spi_sdcard_arduino_mapping_resolves_to_expected_fpga_pins() -> None:
+    mapping = resolve_arty_spi_sdcard_mapping(connector='arduino')
+
+    assert mapping.name == 'arduino-io30-33'
+    assert mapping.clk == 'R15'
+    assert mapping.mosi == 'R13'
+    assert mapping.miso == 'P15'
+    assert mapping.cs_n == 'R11'
+
+
+def test_arty_bitstream_parse_args_accepts_vivado_stop_after(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        sys,
+        'argv',
+        ['build_litex_arty_bitstream.py', '--vivado-stop-after', 'implementation'],
+    )
+
+    args = _BUILD_ARTY_BITSTREAM.parse_args()
+
+    assert args.vivado_stop_after == _BUILD_ARTY_BITSTREAM.VIVADO_STOP_AFTER_IMPLEMENTATION
+
+
+def test_arty_bitstream_render_stage_tcl_truncates_after_synthesis(tmp_path: Path) -> None:
+    build_name = 'little64_arty_a7_35'
+    base_tcl = tmp_path / f'{build_name}.tcl'
+    base_tcl.write_text(
+        '\n'.join([
+            '# Synthesis',
+            f'write_checkpoint -force {build_name}_synth.dcp',
+            '# Optimize design',
+            'opt_design -directive default',
+            '# Bitstream generation',
+            f'write_bitstream -force {build_name}.bit ',
+            'quit',
+        ]) + '\n',
+        encoding='utf-8',
+    )
+
+    stage_tcl = _BUILD_ARTY_BITSTREAM._render_vivado_stage_tcl(
+        gateware_dir=tmp_path,
+        build_name=build_name,
+        stop_after=_BUILD_ARTY_BITSTREAM.VIVADO_STOP_AFTER_SYNTHESIS,
+    )
+    stage_text = stage_tcl.read_text(encoding='utf-8')
+
+    assert f'write_checkpoint -force {build_name}_synth.dcp' in stage_text
+    assert 'opt_design -directive default' not in stage_text
+    assert 'write_bitstream -force' not in stage_text
+    assert stage_text.rstrip().endswith('quit')
+
+
+def test_arty_bitstream_render_stage_tcl_truncates_after_implementation(tmp_path: Path) -> None:
+    build_name = 'little64_arty_a7_35'
+    base_tcl = tmp_path / f'{build_name}.tcl'
+    base_tcl.write_text(
+        '\n'.join([
+            '# Routing report',
+            f'report_power -file {build_name}_power.rpt',
+            '# Bitstream generation',
+            f'write_bitstream -force {build_name}.bit ',
+            'quit',
+        ]) + '\n',
+        encoding='utf-8',
+    )
+
+    stage_tcl = _BUILD_ARTY_BITSTREAM._render_vivado_stage_tcl(
+        gateware_dir=tmp_path,
+        build_name=build_name,
+        stop_after=_BUILD_ARTY_BITSTREAM.VIVADO_STOP_AFTER_IMPLEMENTATION,
+    )
+    stage_text = stage_tcl.read_text(encoding='utf-8')
+
+    assert f'report_power -file {build_name}_power.rpt' in stage_text
+    assert 'write_bitstream -force' not in stage_text
+    assert stage_text.rstrip().endswith('quit')
+
+
+def test_arty_bitstream_rejects_program_without_bitstream_stage() -> None:
+    args = argparse.Namespace(
+        generate_only=False,
+        program_only=False,
+        toolchain='vivado',
+        vivado_stop_after=_BUILD_ARTY_BITSTREAM.VIVADO_STOP_AFTER_SYNTHESIS,
+    )
+
+    with pytest.raises(SystemExit, match='--program requires --vivado-stop-after bitstream'):
+        _BUILD_ARTY_BITSTREAM._validate_requested_actions(args, (_BUILD_ARTY_BITSTREAM.PROGRAM_OPERATION_VOLATILE,))
+
+
+def test_arty_spi_sdcard_pmod_mapping_supports_numato_adapter() -> None:
+    mapping = resolve_arty_spi_sdcard_mapping(connector='pmodd', adapter='numato')
+
+    assert mapping.name == 'numato-pmodd'
+    assert mapping.clk == 'pmodd:5'
+    assert mapping.mosi == 'pmodd:1'
+    assert mapping.miso == 'pmodd:2'
+    assert mapping.cs_n == 'pmodd:4'
+
+
+def test_arty_spi_sdcard_mapping_overrides_selected_preset() -> None:
+    mapping = resolve_arty_spi_sdcard_mapping(
+        connector='arduino',
+        clk='X1',
+        mosi='X2',
+        miso='X3',
+        cs_n='X4',
+    )
+
+    assert mapping.clk == 'X1'
+    assert mapping.mosi == 'X2'
+    assert mapping.miso == 'X3'
+    assert mapping.cs_n == 'X4'
+
+
+def test_arty_spi_sdcard_extension_uses_mapping_pins() -> None:
+    extension = arty_spi_sdcard_extension(
+        Little64ArtySPISDCardMapping(
+            name='custom',
+            description='custom test mapping',
+            clk='CLKPIN',
+            mosi='MOSIPIN',
+            miso='MISOPIN',
+            cs_n='CSPIN',
+        )
+    )
+
+    resource = extension[0]
+
+    assert resource[0] == 'spisdcard'
+    assert resource[1] == 0
+    assert any('CLKPIN' in repr(item) for item in resource[2:])
+    assert any('MOSIPIN' in repr(item) for item in resource[2:])
+    assert any('MISOPIN' in repr(item) for item in resource[2:])
+    assert any('CSPIN' in repr(item) for item in resource[2:])
+
+
+def test_arty_spi_sdcard_extension_only_applies_slew_to_outputs() -> None:
+    extension = arty_spi_sdcard_extension(resolve_arty_spi_sdcard_mapping(connector='arduino'))
+
+    resource = extension[0]
+    clk_repr = repr(resource[2])
+    mosi_repr = repr(resource[3])
+    cs_repr = repr(resource[4])
+    miso_repr = repr(resource[5])
+
+    assert 'SLEW=FAST' in clk_repr
+    assert 'SLEW=FAST' in mosi_repr
+    assert 'SLEW=FAST' in cs_repr
+    assert 'SLEW=FAST' not in miso_repr
+
+
+def test_create_arty_platform_reports_missing_litex_boards(monkeypatch) -> None:
+    monkeypatch.setitem(sys.modules, 'litex_boards', None)
+    monkeypatch.setitem(sys.modules, 'litex_boards.platforms', None)
+
+    from little64 import litex_arty
+
+    with pytest.raises(ModuleNotFoundError, match='litex-boards is required'):
+        litex_arty.create_arty_platform()
 
 
 def test_litex_target_catalog_exposes_boot_sources() -> None:
@@ -128,7 +315,7 @@ def test_litex_target_catalog_exposes_boot_sources() -> None:
 
 
 def test_litex_target_mem_maps_reflect_boot_source() -> None:
-    assert litex_mem_map_for_target('sim-flash')['main_ram'] == 0x0000_0000
+    assert litex_mem_map_for_target('sim-flash')['main_ram'] == LITTLE64_LITEX_BOOTROM_MAIN_RAM_BASE
     assert litex_mem_map_for_target('sim-bootrom')['main_ram'] == LITTLE64_LITEX_BOOTROM_MAIN_RAM_BASE
     assert litex_mem_map_for_target('arty-a7-35')['main_ram'] == LITTLE64_LITEX_TARGET_CONFIGS['arty-a7-35'].main_ram_base
 
@@ -186,6 +373,232 @@ def test_emit_litex_cpu_verilog_writes_named_module(tmp_path) -> None:
     assert 'i_bus_adr' in verilog_text
     assert 'd_bus_adr' in verilog_text
     assert 'irq_lines' in verilog_text
+    assert not re.search(
+        r"(?m)^[ \t]*\(\* full_case = 32'd1 \*\)[ \t]*\n(?:^[ \t]*\n)*(?=[ \t]*end\b)",
+        verilog_text,
+    )
+
+
+def test_arty_build_script_sanitizes_build_name_for_verilog() -> None:
+    assert _BUILD_ARTY_BITSTREAM._sanitize_build_name('little64-arty-a7-35') == 'little64_arty_a7_35'
+
+
+def test_arty_build_script_resolves_boot_artifact_paths(tmp_path) -> None:
+    paths = _BUILD_ARTY_BITSTREAM._boot_artifact_paths(tmp_path, 'little64_arty_a7_35')
+
+    assert paths['dts'] == tmp_path / 'boot' / 'little64_arty_a7_35.dts'
+    assert paths['dtb'] == tmp_path / 'boot' / 'little64_arty_a7_35.dtb'
+    assert paths['bootrom'] == tmp_path / 'boot' / 'little64_arty_a7_35_sd_bootrom.bin'
+    assert paths['sd_image'] == tmp_path / 'boot' / 'little64_arty_a7_35_sdcard.img'
+
+
+def test_arty_build_script_composes_sd_bootargs() -> None:
+    assert _BUILD_ARTY_BITSTREAM._compose_arty_bootargs(
+        uart_origin=0xF0001000,
+        include_rootfs=True,
+    ) == 'console=liteuart earlycon=liteuart,0xf0001000 ignore_loglevel loglevel=8 root=/dev/mmcblk0p2 rootwait init=/init'
+
+
+def test_arty_build_script_cleans_builder_outputs_only(tmp_path) -> None:
+    for child in ('gateware', 'software', 'boot'):
+        path = tmp_path / child
+        path.mkdir(parents=True)
+        (path / 'stamp.txt').write_text('x', encoding='utf-8')
+    preserved = tmp_path / 'keep.txt'
+    preserved.write_text('keep', encoding='utf-8')
+
+    _BUILD_ARTY_BITSTREAM._clean_litex_output(tmp_path)
+
+    assert not (tmp_path / 'gateware').exists()
+    assert not (tmp_path / 'software').exists()
+    assert not (tmp_path / 'boot').exists()
+    assert preserved.exists()
+
+
+def test_arty_build_script_patches_vendor_primitive_ports(tmp_path) -> None:
+    gateware_dir = tmp_path / 'gateware'
+    gateware_dir.mkdir()
+    verilog_path = gateware_dir / 'little64_arty_a7_35.v'
+    verilog_path.write_text(
+        '\n'.join([
+            'module little64_arty_a7_35(',
+            '\tinput clk,',
+            '\tinout io_p,',
+            '\tinout io_n',
+            ');',
+            'IDELAYCTRL IDELAYCTRL(',
+            '\t.REFCLK (clk),',
+            '\t.RST    (1\'d0)',
+            ');',
+            'OSERDESE2 #( .DATA_WIDTH(4\'d8) ) OSERDESE2 (',
+            '\t.CLK    (clk),',
+            '\t.CLKDIV (clk),',
+            '\t.D1     (1\'d0),',
+            '\t.D2     (1\'d0),',
+            '\t.D3     (1\'d0),',
+            '\t.D4     (1\'d0),',
+            '\t.D5     (1\'d0),',
+            '\t.D6     (1\'d0),',
+            '\t.D7     (1\'d0),',
+            '\t.D8     (1\'d0),',
+            '\t.OCE    (1\'d1),',
+            '\t.RST    (1\'d0),',
+            '\t.OQ     ()',
+            ');',
+            'ISERDESE2 #( .DATA_WIDTH(4\'d8) ) ISERDESE2 (',
+            '\t.BITSLIP (1\'d0),',
+            '\t.CE1     (1\'d1),',
+            '\t.CLK     (clk),',
+            '\t.CLKB    (~clk),',
+            '\t.CLKDIV  (clk),',
+            '\t.DDLY    (1\'d0),',
+            '\t.RST     (1\'d0),',
+            '\t.Q1      (),',
+            '\t.Q2      (),',
+            '\t.Q3      (),',
+            '\t.Q4      (),',
+            '\t.Q5      (),',
+            '\t.Q6      (),',
+            '\t.Q7      (),',
+            '\t.Q8      ()',
+            ');',
+            'IDELAYE2 #( .IDELAY_TYPE("VARIABLE") ) IDELAYE2 (',
+            '\t.C        (clk),',
+            '\t.CE       (1\'d0),',
+            '\t.IDATAIN  (1\'d0),',
+            '\t.INC      (1\'d0),',
+            '\t.LD       (1\'d0),',
+            '\t.LDPIPEEN (1\'d0),',
+            '\t.DATAOUT  ()',
+            ');',
+            'IOBUFDS IOBUFDS(',
+            '\t.I   (1\'d0),',
+            '\t.T   (1\'d0),',
+            '\t.IO  (io_p),',
+            '\t.IOB (io_n)',
+            ');',
+            'PLLE2_ADV #( .CLKFBOUT_MULT(5\'d16) ) PLLE2_ADV (',
+            '\t.CLKFBIN  (clk),',
+            '\t.CLKIN1   (clk),',
+            '\t.PWRDWN   (1\'d0),',
+            '\t.RST      (1\'d0),',
+            '\t.CLKFBOUT (),',
+            '\t.CLKOUT0  (),',
+            '\t.CLKOUT1  (),',
+            '\t.CLKOUT2  (),',
+            '\t.CLKOUT3  (),',
+            '\t.LOCKED   ()',
+            ');',
+            'endmodule',
+            '',
+        ]),
+        encoding='utf-8',
+    )
+
+    assert _BUILD_ARTY_BITSTREAM._patch_generated_arty_verilog(gateware_dir, 'little64_arty_a7_35') is True
+
+    patched = verilog_path.read_text(encoding='utf-8')
+    assert 'wire little64_vendor_unused_idelayctrl_idelayctrl_rdy;' in patched
+    assert '.RDY        (little64_vendor_unused_idelayctrl_idelayctrl_rdy)' in patched
+    assert re.search(r"\.SHIFTIN1\s+\(1'd0\)", patched)
+    assert re.search(r"\.TBYTEIN\s+\(1'd0\)", patched)
+    assert 'wire little64_vendor_unused_oserdese2_oserdese2_shiftout1;' in patched
+    assert re.search(r"\.CE2\s+\(1'd0\)", patched)
+    assert 'wire [4:0] little64_vendor_unused_idelaye2_idelaye2_cntvalueout;' in patched
+    assert 'wire little64_vendor_unused_iobufds_iobufds_o;' in patched
+    assert re.search(r"\.CLKINSEL\s+\(1'd1\)", patched)
+    assert 'wire [15:0] little64_vendor_unused_plle2_adv_plle2_adv_do;' in patched
+
+
+def test_arty_build_script_rejects_generate_only_programming_combo() -> None:
+    args = type('Args', (), {'generate_only': True, 'program_only': False})()
+
+    with pytest.raises(SystemExit, match='--generate-only cannot be combined with --program'):
+        _BUILD_ARTY_BITSTREAM._validate_requested_actions(
+            args,
+            (_BUILD_ARTY_BITSTREAM.PROGRAM_OPERATION_VOLATILE,),
+        )
+
+
+def test_arty_build_script_auto_programmer_prefers_vivado_for_flash() -> None:
+    backend = _BUILD_ARTY_BITSTREAM._resolve_programmer_backend(
+        requested_backend=_BUILD_ARTY_BITSTREAM.PROGRAMMER_AUTO,
+        operations=(_BUILD_ARTY_BITSTREAM.PROGRAM_OPERATION_FLASH,),
+        vivado_available=True,
+        openocd_available=True,
+    )
+
+    assert backend == _BUILD_ARTY_BITSTREAM.PROGRAMMER_VIVADO
+
+
+def test_arty_build_script_resolves_programming_artifacts(tmp_path) -> None:
+    assert _BUILD_ARTY_BITSTREAM._resolve_programming_artifact(
+        tmp_path,
+        'little64_arty_a7_35',
+        _BUILD_ARTY_BITSTREAM.PROGRAM_OPERATION_VOLATILE,
+    ) == tmp_path / 'gateware' / 'little64_arty_a7_35.bit'
+    assert _BUILD_ARTY_BITSTREAM._resolve_programming_artifact(
+        tmp_path,
+        'little64_arty_a7_35',
+        _BUILD_ARTY_BITSTREAM.PROGRAM_OPERATION_FLASH,
+    ) == tmp_path / 'gateware' / 'little64_arty_a7_35.bin'
+
+
+def test_build_sd_boot_artifacts_pads_bootrom_image(tmp_path, monkeypatch) -> None:
+    kernel_elf = tmp_path / 'vmlinux'
+    dtb = tmp_path / 'system.dtb'
+    rootfs = tmp_path / 'rootfs.ext4'
+    bootrom_output = tmp_path / 'bootrom.bin'
+    sd_output = tmp_path / 'sdcard.img'
+    kernel_elf.write_bytes(b'kernel')
+    dtb.write_bytes(b'dtb')
+    rootfs.write_bytes(b'rootfs')
+
+    monkeypatch.setattr(_BUILD_SD_BOOT_ARTIFACTS, '_write_stage0_header', lambda *args, **kwargs: None)
+    monkeypatch.setattr(_BUILD_SD_BOOT_ARTIFACTS, '_write_stage0_generated_support', lambda *args, **kwargs: None)
+    monkeypatch.setattr(_BUILD_SD_BOOT_ARTIFACTS, '_build_stage0', lambda *args, **kwargs: b'\x01\x02\x03\x04')
+    captured: dict[str, object] = {}
+
+    def fake_write_sd_card_image(path, **kwargs):
+        captured['path'] = path
+        captured['kwargs'] = kwargs
+
+    monkeypatch.setattr(_BUILD_SD_BOOT_ARTIFACTS, 'write_litex_sd_card_image', fake_write_sd_card_image)
+
+    fake_soc = type(
+        'FakeSoC',
+        (),
+        {
+            'boot_source': 'bootrom',
+            'litex_target': type('FakeTarget', (), {'integrated_rom_size': 0x80})(),
+        },
+    )()
+
+    _BUILD_SD_BOOT_ARTIFACTS.build_litex_sd_boot_artifacts(
+        soc=fake_soc,
+        kernel_elf=kernel_elf,
+        dtb=dtb,
+        bootrom_output=bootrom_output,
+        sd_output=sd_output,
+        ram_base=0x40000000,
+        ram_size=0x1000,
+        kernel_physical_base=0x40000000,
+        rootfs_image=rootfs,
+    )
+
+    assert bootrom_output.read_bytes()[:4] == b'\x01\x02\x03\x04'
+    assert len(bootrom_output.read_bytes()) == 0x1000
+    assert captured['path'] == sd_output
+
+
+def test_pack_litex_memory_words_matches_litex_big_endian_word_order() -> None:
+    words = _BUILD_SD_BOOT_ARTIFACTS.pack_litex_memory_words(
+        b'\x11\x22\x33\x44\x55\x66\x77\x88\x99',
+        data_width=64,
+        endianness='big',
+    )
+
+    assert words == [0x5566778811223344, 0x0000000099000000]
 
 
 def test_register_little64_with_litex_exposes_cpu_plugin() -> None:
@@ -195,12 +608,16 @@ def test_register_little64_with_litex_exposes_cpu_plugin() -> None:
 
 
 def test_litex_cpu_variant_names_resolve_to_core_variants() -> None:
-    assert resolve_litex_core_variant('standard') == 'basic'
+    assert resolve_litex_core_variant('standard') == 'v2'
     assert resolve_litex_core_variant('standard-basic') == 'basic'
     assert resolve_litex_core_variant('standard-v2') == 'v2'
     assert resolve_litex_core_variant('standard-v2-none') == 'v2'
     assert resolve_litex_core_variant('standard-v2-unified') == 'v2'
     assert resolve_litex_core_variant('standard-v2-split') == 'v2'
+    assert resolve_litex_core_variant('standard-v3') == 'v3'
+    assert resolve_litex_core_variant('standard-v3-none') == 'v3'
+    assert resolve_litex_core_variant('standard-v3-unified') == 'v3'
+    assert resolve_litex_core_variant('standard-v3-split') == 'v3'
 
 
 def test_litex_cpu_variant_names_resolve_to_cache_topologies() -> None:
@@ -210,6 +627,10 @@ def test_litex_cpu_variant_names_resolve_to_cache_topologies() -> None:
     assert resolve_litex_cache_topology('standard-v2-none') == 'none'
     assert resolve_litex_cache_topology('standard-v2-unified') == 'unified'
     assert resolve_litex_cache_topology('standard-v2-split') == 'split'
+    assert resolve_litex_cache_topology('standard-v3') == 'none'
+    assert resolve_litex_cache_topology('standard-v3-none') == 'none'
+    assert resolve_litex_cache_topology('standard-v3-unified') == 'unified'
+    assert resolve_litex_cache_topology('standard-v3-split') == 'split'
 
 
 def test_litex_variant_config_builder_preserves_reset_vector() -> None:
@@ -227,12 +648,64 @@ def test_litex_cpu_can_select_v2_cache_topology_variants() -> None:
     assert cpu.core_config.cache_topology == 'unified'
 
 
+def test_litex_cpu_can_select_v3_variant() -> None:
+    cpu = Little64(type('Platform', (), {'output_dir': 'builddir'})(), variant='standard-v3')
+
+    assert cpu.core_config.core_variant == 'v3'
+    assert cpu.core_config.cache_topology == 'none'
+
+
+def test_litex_cpu_can_select_v3_cache_topology_variants() -> None:
+    cpu = Little64(type('Platform', (), {'output_dir': 'builddir'})(), variant='standard-v3-split')
+
+    assert cpu.core_config.core_variant == 'v3'
+    assert cpu.core_config.cache_topology == 'split'
+
+
+def test_litex_cpu_standard_variant_defaults_to_v2() -> None:
+    cpu = Little64(type('Platform', (), {'output_dir': 'builddir'})(), variant='standard')
+
+    assert cpu.core_config.core_variant == 'v2'
+    assert cpu.core_config.cache_topology == 'none'
+
+
+def test_litex_cpu_can_select_basic_variant_explicitly() -> None:
+    cpu = Little64(type('Platform', (), {'output_dir': 'builddir'})(), variant='standard-basic')
+
+    assert cpu.core_config.core_variant == 'basic'
+    assert cpu.core_config.cache_topology == 'none'
+
+
 def test_litex_sim_soc_can_select_v2_variant() -> None:
     soc = Little64LiteXSimSoC(cpu_variant='standard-v2-split')
 
     assert soc.cpu.variant == 'standard-v2-split'
     assert soc.cpu.core_config.core_variant == 'v2'
     assert soc.cpu.core_config.cache_topology == 'split'
+
+
+def test_litex_sim_soc_can_select_v3_variant() -> None:
+    soc = Little64LiteXSimSoC(cpu_variant='standard-v3')
+
+    assert soc.cpu.variant == 'standard-v3'
+    assert soc.cpu.core_config.core_variant == 'v3'
+    assert soc.cpu.core_config.cache_topology == 'none'
+
+
+def test_litex_sim_soc_can_select_v3_cache_variant() -> None:
+    soc = Little64LiteXSimSoC(cpu_variant='standard-v3-unified')
+
+    assert soc.cpu.variant == 'standard-v3-unified'
+    assert soc.cpu.core_config.core_variant == 'v3'
+    assert soc.cpu.core_config.cache_topology == 'unified'
+
+
+def test_litex_sim_soc_defaults_to_v2_variant() -> None:
+    soc = Little64LiteXSimSoC()
+
+    assert soc.cpu.variant == 'standard'
+    assert soc.cpu.core_config.core_variant == 'v2'
+    assert soc.cpu.core_config.cache_topology == 'none'
 
 
 def test_litex_sim_soc_can_switch_to_bootrom_target() -> None:
@@ -251,6 +724,8 @@ def test_data_bridge_splits_unaligned_qword_reads() -> None:
     bridge = Little64WishboneDataBridge()
     seen_transactions: list[tuple[int, int, int]] = []
     read_results: list[int] = []
+    bus_ack_cycles: list[int] = []
+    cpu_ack_cycles: list[int] = []
 
     def cpu_driver():
         yield bridge.cpu_adr.eq(0x81)
@@ -283,12 +758,23 @@ def test_data_bridge_splits_unaligned_qword_reads() -> None:
                 yield bridge.bus.ack.eq(0)
             yield
 
+    def monitor():
+        for cycle in range(12):
+            if (yield bridge.bus.ack):
+                bus_ack_cycles.append(cycle)
+            if (yield bridge.cpu_ack):
+                cpu_ack_cycles.append(cycle)
+            yield
+
     from migen.sim import run_simulation
 
-    run_simulation(bridge, [cpu_driver(), wb_target()])
+    run_simulation(bridge, [cpu_driver(), wb_target(), monitor()])
 
     assert seen_transactions == [(0x10, 0xFE, 0), (0x11, 0x01, 0)]
     assert read_results == [0x0807060504030201]
+    assert bus_ack_cycles
+    assert cpu_ack_cycles
+    assert cpu_ack_cycles[0] > bus_ack_cycles[-1]
 
 
 def test_litex_sim_soc_generates_linux_dts(tmp_path) -> None:
@@ -306,7 +792,7 @@ def test_litex_sim_soc_generates_linux_dts(tmp_path) -> None:
     assert 'compatible = "jedec-flash";' in dts_text
     assert 'compatible = "little64,timer";' in dts_text
     assert 'device_type = "memory";' in dts_text
-    assert 'memory@100000' in dts_text
+    assert 'memory@40000000' in dts_text
 
 
 def test_litex_sim_soc_generates_target_specific_metadata(tmp_path) -> None:
@@ -357,6 +843,59 @@ def test_stage0_artifact_builder_emits_sdram_init_headers_for_arty(tmp_path) -> 
     assert 'CSR_SDRAM_DFII_CONTROL_ADDR' in csr_text
     assert 'sdram_dfii_pi0_command_write' in csr_text
     assert 'static inline void init_sequence(void)' in sdram_text
+
+
+def test_arty_hardware_soc_exposes_uart_phy_tuning_word_by_default(tmp_path) -> None:
+    mapping = resolve_arty_spi_sdcard_mapping(connector='arduino', adapter='digilent')
+    soc = Little64LiteXArtySoC(spisdcard_mapping=mapping)
+    soc.platform.output_dir = str(tmp_path / 'litex-arty-hw-stage0')
+
+    soc.finalize()
+    uart_region = soc.csr.regions.get('uart')
+    uart_phy_region = soc.csr.regions.get('uart_phy')
+    expected_tuning_word = _BUILD_SD_BOOT_ARTIFACTS._litex_uart_tuning_word(soc.sys_clk_freq, 115200)
+
+    assert uart_region is not None
+    assert uart_phy_region is not None
+    assert uart_phy_region.origin > uart_region.origin
+    assert [csr.size for csr in uart_phy_region.obj] == [32]
+    assert expected_tuning_word == (115200 << 32) // soc.sys_clk_freq
+    assert soc.cpu.variant == 'standard'
+    assert soc.cpu.core_config.core_variant == 'v2'
+
+
+def test_arty_hardware_soc_can_select_basic_variant_explicitly(tmp_path) -> None:
+    mapping = resolve_arty_spi_sdcard_mapping(connector='arduino', adapter='digilent')
+    soc = Little64LiteXArtySoC(cpu_variant='standard-basic', spisdcard_mapping=mapping)
+    soc.platform.output_dir = str(tmp_path / 'litex-arty-hw-basic')
+
+    soc.finalize()
+
+    assert soc.cpu.variant == 'standard-basic'
+    assert soc.cpu.core_config.core_variant == 'basic'
+    assert soc.cpu.core_config.cache_topology == 'none'
+
+
+def test_stage0_artifact_builder_emits_spi_sd_header_for_arty_hardware(tmp_path) -> None:
+    mapping = resolve_arty_spi_sdcard_mapping(connector='arduino', adapter='digilent')
+    soc = Little64LiteXArtySoC(spisdcard_mapping=mapping)
+    soc.platform.output_dir = str(tmp_path / 'litex-arty-hw-stage0-spi')
+
+    regs_header = tmp_path / 'litex_sd_boot_regs.h'
+    _BUILD_SD_BOOT_ARTIFACTS._write_stage0_header(
+        regs_header,
+        soc=soc,
+        ram_base=0x40000000,
+        ram_size=0x10000000,
+        kernel_physical_base=0x40000000,
+    )
+
+    regs_text = regs_header.read_text(encoding='utf-8')
+
+    assert '#define L64_SDCARD_INTERFACE_SPI 1' in regs_text
+    assert '#define L64_SDCARD_SPI_BASE ' in regs_text
+    assert '#define L64_SDCARD_SPI_CONTROL_ADDR ' in regs_text
+    assert '#define L64_SDCARD_CORE_BASE ' not in regs_text
 
 
 def test_stage0_artifact_builder_skips_sdram_init_for_sim_bootrom(tmp_path) -> None:
@@ -473,27 +1012,35 @@ def test_generated_litex_sim_dts_matches_built_in_profile(tmp_path) -> None:
     built_in_dts = Path('target/linux_port/linux/arch/little64/boot/dts/little64-litex-sim.dts').read_text(encoding='utf-8')
 
     soc = Little64LiteXSimSoC(
-        integrated_main_ram_size=0x0400_0000,
+        litex_target='sim-bootrom',
+        with_sdram=True,
         with_spi_flash=True,
+        with_sdcard=True,
         with_timer=True,
+        main_ram_size=0x0800_0000,
     )
     soc.platform.output_dir = str(tmp_path / 'litex-sim')
 
     generated_dts = generate_linux_dts(
         soc,
-        model='Little-64 LiteX Simulation SoC',
-        bootargs='console=liteuart earlycon=liteuart,0xf0001000 ignore_loglevel loglevel=8',
+        model='Little64 LiteX Simulation SoC (Boot ROM)',
+        bootargs='root=/dev/mmcblk0p2 rootwait init=/init',
     )
 
     shared_lines = [
-        'compatible = "little64,litex-sim";',
-        'bootargs = "console=liteuart earlycon=liteuart,0xf0001000 ignore_loglevel loglevel=8";',
-        'memory@100000',
+        'compatible = "little64,litex-sim", "little64,bootrom";',
+        'model = "Little64 LiteX Simulation SoC (Boot ROM)";',
+        'bootargs = "root=/dev/mmcblk0p2 rootwait init=/init";',
+        'memory@40000000',
         'compatible = "litex,liteuart";',
-        'serial@f0001000',
+        'serial@f0004000',
         'interrupts = <65>;',
         'compatible = "jedec-flash";',
         'flash@20000000',
+        'compatible = "little64,bootrom";',
+        'rom@0',
+        'compatible = "litex,mmc";',
+        'mmc@f0002800',
         'compatible = "little64,timer";',
         'timer@8001000',
         'interrupts = <66>;',
@@ -503,13 +1050,19 @@ def test_generated_litex_sim_dts_matches_built_in_profile(tmp_path) -> None:
         assert line in built_in_dts
         assert line in generated_dts
 
-    assert 'reg = <0x0 0x00100000 0x0 0x03f00000>;' in built_in_dts
-    assert 'reg = <0x00000000 0x00100000 0x00000000 0x03f00000>;' in generated_dts
-    assert 'reg = <0x0 0xf0001000 0x0 0x100>;' in built_in_dts
-    assert 'reg = <0x00000000 0xf0001000 0x00000000 0x00000100>;' in generated_dts
-    assert 'reg = <0x0 0x20000000 0x0 0x01000000>;' in built_in_dts
+    assert 'reg = <0x00000000 0x40000000 0x00000000 0x08000000>;' in built_in_dts
+    assert 'reg = <0x00000000 0x40000000 0x00000000 0x08000000>;' in generated_dts
+    assert 'reg = <0x00000000 0xf0004000 0x00000000 0x00000100>;' in built_in_dts
+    assert 'reg = <0x00000000 0xf0004000 0x00000000 0x00000100>;' in generated_dts
+    assert 'reg = <0x00000000 0x20000000 0x00000000 0x01000000>;' in built_in_dts
     assert 'reg = <0x00000000 0x20000000 0x00000000 0x01000000>;' in generated_dts
-    assert 'reg = <0x0 0x08001000 0x0 0x20>;' in built_in_dts
+    assert 'reg = <0x00000000 0x00000000 0x00000000 0x00008000>;' in built_in_dts
+    assert 'reg = <0x00000000 0x00000000 0x00000000 0x00008000>;' in generated_dts
+    assert 'reg = <0x00000000 0xf0002800 0x00000000 0x00000100>,' in built_in_dts
+    assert 'reg = <0x00000000 0xf0002800 0x00000000 0x00000100>,' in generated_dts
+    assert '<0x00000000 0xf0001800 0x00000000 0x00000100>;' in built_in_dts
+    assert '<0x00000000 0xf0001800 0x00000000 0x00000100>;' in generated_dts
+    assert 'reg = <0x00000000 0x08001000 0x00000000 0x00000020>;' in built_in_dts
     assert 'reg = <0x00000000 0x08001000 0x00000000 0x00000020>;' in generated_dts
 
 
@@ -553,11 +1106,39 @@ def test_flash_image_builder_matches_linux_loader_contract() -> None:
     header = FLASH_BOOT_HEADER.unpack_from(layout.flash_image, LITTLE64_LITEX_FLASH_BOOT_HEADER_OFFSET)
     assert layout.flash_image[:len(stage0)] == stage0
     assert header[2] == layout.kernel_flash_offset
-    assert header[5] == 0x0010_0000
+    assert header[5] == LITTLE64_LITEX_BOOTROM_MAIN_RAM_BASE
     assert header[6] == layout.dtb_flash_offset
     assert header[8] == layout.dtb_physical_address
     assert layout.flash_image[layout.kernel_flash_offset:layout.kernel_flash_offset + 4] == kernel_payload
     assert layout.flash_image[layout.dtb_flash_offset:layout.dtb_flash_offset + 3] == dtb
+
+
+def test_spi_flash_stage0_startup_uses_integrated_sram_stack(tmp_path: Path) -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    stage0_source = repo_root / 'target' / 'c_boot' / 'litex_spi_boot.c'
+    stage0_linker = repo_root / 'target' / 'c_boot' / 'linker_litex_spi_boot.ld'
+
+    _BUILD_FLASH_IMAGE._build_stage0(stage0_source, stage0_linker, tmp_path)
+
+    disassembly = subprocess.run(
+        [
+            str(repo_root / 'compilers' / 'bin' / 'llvm-objdump'),
+            '--triple=little64',
+            '-d',
+            str(tmp_path / 'litex_spi_boot.elf'),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+
+    start_block = re.search(r'<_start>:(.*?)(?:\n\n|<)', disassembly, re.S)
+
+    assert start_block is not None
+    assert re.search(r'LDI\s+#0, R13', start_block.group(1))
+    assert re.search(r'LDI\.S1\s+#64, R13', start_block.group(1))
+    assert re.search(r'LDI\.S3\s+#16, R13', start_block.group(1))
+    assert not re.search(r'LDI\.S2\s+#15, R13', start_block.group(1))
 
 
 def test_sd_card_image_builder_matches_stage0_contract() -> None:

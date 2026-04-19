@@ -47,4 +47,4 @@ def test_build_default_bootargs_includes_sdcard_flag() -> None:
 
     bootargs = generate_litex_linux_dts._build_default_bootargs(args, uart_region=None)
 
-    assert bootargs == 'root=/dev/mmcblk0p2 rootwait'
+    assert bootargs == 'root=/dev/mmcblk0p2 rootwait init=/init'

@@ -21,7 +21,7 @@ enum class HeadlessBootMode {
 
 struct HeadlessLoadOptions {
     HeadlessBootMode boot_mode = HeadlessBootMode::Auto;
-    uint64_t direct_kernel_physical_base = 0x100000;
+    uint64_t direct_kernel_physical_base = 0x40000000;
     // Note: direct_map_virtual_base is no longer used by the direct boot mode
     // (Linux kernels manage their own page tables)
 };

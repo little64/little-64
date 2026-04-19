@@ -238,7 +238,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         '--cpu-variant',
         default='standard',
-        help='LiteX CPU variant to use for the simulation SoC build.',
+        help='LiteX CPU variant to use for the simulation SoC build. `standard` selects the V2 core; use `standard-basic` for the legacy core.',
     )
     parser.add_argument(
         '--build-only',

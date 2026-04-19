@@ -6,7 +6,6 @@ REPO_ROOT=$(readlink -f "$SCRIPT_DIR/../..")
 EMULATOR_BIN="$REPO_ROOT/builddir/little-64"
 EMULATOR_DEBUG_BIN="$REPO_ROOT/builddir/little-64-debug"
 PROFILE_PATHS_PY="$SCRIPT_DIR/profile_paths.py"
-DEFAULT_VIRT_DEFCONFIG_NAME="little64_defconfig"
 DEFAULT_LITEX_DEFCONFIG_NAME="little64_litex_sim_defconfig"
 DEFAULT_ROOTFS_IMAGE="$SCRIPT_DIR/rootfs/build/rootfs.ext4"
 DEFAULT_LITEX_OUTPUT_DIR="${LITTLE64_LITEX_OUTPUT_DIR:-$REPO_ROOT/builddir/boot-direct-litex}"
@@ -25,18 +24,16 @@ fi
 
 usage() {
     cat <<EOF
-Usage: $0 [--machine virt|litex] [--mode trace|smoke|rsp] [--rootfs PATH | --no-rootfs] [--max-cycles N] [--port N] [kernel-elf]
+Usage: $0 [--machine litex] [--mode trace|smoke|rsp] [--rootfs PATH | --no-rootfs] [--max-cycles N] [--port N] [kernel-elf]
 
 If kernel-elf is omitted, the selected machine profile's default kernel is used.
-If --rootfs is omitted, $DEFAULT_ROOTFS_IMAGE is used for the virt profile.
-The litex profile synthesizes a LiteX DTB, SDRAM-enabled bootrom stage-0 image, and SD card image before launch.
-By default the litex profile also regenerates a minimal ext4 rootfs from target/linux_port/rootfs/init.S for SD partition 2.
+The helper synthesizes a LiteX DTB, SDRAM-enabled bootrom stage-0 image, and SD card image before launch.
+By default it also regenerates a minimal ext4 rootfs from target/linux_port/rootfs/init.S for SD partition 2.
 Use --rootfs PATH to override that generated ext4 image, or --no-rootfs to leave the LiteX SD rootfs partition empty.
 If --max-cycles is omitted, emulation runs indefinitely.
 
 Machine profiles:
-    virt   Emulator-oriented machine with ns16550 UART and PV block root disk.
-    litex  Default machine profile: LiteX-compatible stage-0 plus LiteSDCard boot.
+    litex  LiteX-compatible stage-0 plus LiteSDCard boot.
 
 Modes:
     trace  Direct boot with MMIO/control-flow/boot-event capture.
@@ -60,9 +57,6 @@ EOF
 
     default_defconfig_for_machine() {
         case "$1" in
-            virt)
-                printf '%s\n' "$DEFAULT_VIRT_DEFCONFIG_NAME"
-                ;;
             litex)
                 printf '%s\n' "$DEFAULT_LITEX_DEFCONFIG_NAME"
                 ;;
@@ -203,6 +197,7 @@ EOF
             --dtb "$LITEX_DTB_PATH"
             --bootrom-output "$LITEX_BOOTROM_IMAGE_PATH"
             --sd-output "$LITEX_SD_IMAGE_PATH"
+            --cpu-variant "$cpu_variant"
             --litex-target "$litex_target"
             --boot-source bootrom
             --with-sdram
@@ -390,7 +385,7 @@ case "$MODE" in
 esac
 
 case "$MACHINE" in
-    virt|litex)
+    litex)
         ;;
     *)
         echo "error: unknown machine: $MACHINE" >&2
@@ -431,11 +426,7 @@ fi
 
 if [[ ! -f "$KERNEL_ELF" ]]; then
     echo "error: kernel ELF not found at $KERNEL_ELF" >&2
-    if [[ "$MACHINE" == "litex" ]]; then
-        echo "hint: build it first with: $SCRIPT_DIR/build.sh --machine litex vmlinux -j1" >&2
-    else
-        echo "hint: build it first with: $SCRIPT_DIR/build.sh --machine virt vmlinux -j1" >&2
-    fi
+    echo "hint: build it first with: $SCRIPT_DIR/build.sh --machine litex vmlinux -j1" >&2
     exit 1
 fi
 
@@ -449,11 +440,7 @@ if [[ "$(readlink -f "$KERNEL_ELF")" == "$(readlink -f "$DEFAULT_KERNEL_ELF")" ]
     EXPECTED_DEFCONFIG=$(default_defconfig_for_machine "$MACHINE")
     if [[ -n "$ACTIVE_DEFCONFIG" && "$ACTIVE_DEFCONFIG" != "$EXPECTED_DEFCONFIG" ]]; then
         echo "error: default kernel path $DEFAULT_KERNEL_ELF currently points to a $ACTIVE_DEFCONFIG build" >&2
-        if [[ "$MACHINE" == "litex" ]]; then
-            echo "hint: rebuild the LiteX kernel with: $SCRIPT_DIR/build.sh --machine litex vmlinux -j1" >&2
-        else
-            echo "hint: rebuild the emulator kernel with: $SCRIPT_DIR/build.sh --machine virt vmlinux -j1" >&2
-        fi
+        echo "hint: rebuild the LiteX kernel with: $SCRIPT_DIR/build.sh --machine litex vmlinux -j1" >&2
         echo "hint: LiteX kernels now live under target/linux_port/build-litex/ by default" >&2
         echo "hint: or pass an explicit kernel path that matches the selected machine profile" >&2
         exit 1
@@ -501,34 +488,24 @@ append_common_runtime_args() {
     if [[ -n "$MAX_CYCLES" ]]; then
         args_ref+=("--max-cycles=$MAX_CYCLES")
     fi
-    if [[ "$MACHINE" == "litex" ]]; then
+    if [[ "$ATTACH_ROOTFS" == "1" ]]; then
         args_ref+=("--disk=$LITEX_SD_IMAGE_PATH" --disk-readonly)
-    elif [[ "$ATTACH_ROOTFS" == "1" ]]; then
-        args_ref+=("--disk=$ROOTFS_IMAGE" --disk-readonly)
     fi
 }
 
-if [[ "$MACHINE" == "litex" ]]; then
-    prepare_litex_artifacts "$KERNEL_ELF"
-fi
+prepare_litex_artifacts "$KERNEL_ELF"
 
 echo "[little64] machine    : $MACHINE"
 echo "[little64] mode       : $MODE"
 echo "[little64] kernel ELF : $KERNEL_ELF"
-if [[ "$MACHINE" == "litex" ]]; then
-    echo "[little64] DT source  : $LITEX_DTS_PATH"
-    echo "[little64] stage0     : $LITEX_BOOTROM_IMAGE_PATH"
-    echo "[little64] sd image   : $LITEX_SD_IMAGE_PATH"
-else
-    echo "[little64] DT source  : $REPO_ROOT/host/emulator/little64.dts"
-fi
+echo "[little64] DT source  : $LITEX_DTS_PATH"
+echo "[little64] stage0     : $LITEX_BOOTROM_IMAGE_PATH"
+echo "[little64] sd image   : $LITEX_SD_IMAGE_PATH"
 if [[ "$ATTACH_ROOTFS" == "1" ]]; then
     if [[ -n "$ROOTFS_IMAGE" ]]; then
         echo "[little64] rootfs     : $ROOTFS_IMAGE"
-    elif [[ "$MACHINE" == "litex" ]]; then
-        echo "[little64] rootfs     : auto-generated ext4 from target/linux_port/rootfs/init.S"
     else
-        echo "[little64] rootfs     : enabled"
+        echo "[little64] rootfs     : auto-generated ext4 from target/linux_port/rootfs/init.S"
     fi
 else
     echo "[little64] rootfs     : disabled (--no-rootfs)"
@@ -542,11 +519,7 @@ case "$MODE" in
         trap print_trailing_newline EXIT INT TERM
 
         EMULATOR_ARGS=("$EMULATOR_BIN" --trace-mmio --boot-events --trace-control-flow --boot-events-file="$BOOT_EVENTS_FILE" --boot-events-max-mb="${LITTLE64_BOOT_EVENTS_MAX_MB:-500}")
-        if [[ "$MACHINE" == "litex" ]]; then
-            EMULATOR_ARGS+=(--boot-mode=litex-bootrom)
-        else
-            EMULATOR_ARGS+=(--boot-mode=direct)
-        fi
+        EMULATOR_ARGS+=(--boot-mode=litex-bootrom)
 
         if [[ -n "${LITTLE64_TRACE_START_CYCLE:-}" ]]; then
             EMULATOR_ARGS+=("--trace-start-cycle=$LITTLE64_TRACE_START_CYCLE")
@@ -556,11 +529,7 @@ case "$MODE" in
         fi
 
         append_common_runtime_args EMULATOR_ARGS
-        if [[ "$MACHINE" == "litex" ]]; then
-            EMULATOR_ARGS+=("$LITEX_BOOTROM_IMAGE_PATH")
-        else
-            EMULATOR_ARGS+=("$KERNEL_ELF")
-        fi
+        EMULATOR_ARGS+=("$LITEX_BOOTROM_IMAGE_PATH")
         "${EMULATOR_ARGS[@]}" 2> "$BOOT_LOG"
         status=$?
         trap - EXIT INT TERM
@@ -570,34 +539,18 @@ case "$MODE" in
         ;;
     smoke)
         EMULATOR_ARGS=("$EMULATOR_BIN")
-        if [[ "$MACHINE" == "litex" ]]; then
-            EMULATOR_ARGS+=(--boot-mode=litex-bootrom)
-        else
-            EMULATOR_ARGS+=(--boot-mode=direct)
-        fi
+        EMULATOR_ARGS+=(--boot-mode=litex-bootrom)
         append_common_runtime_args EMULATOR_ARGS
-        if [[ "$MACHINE" == "litex" ]]; then
-            EMULATOR_ARGS+=("$LITEX_BOOTROM_IMAGE_PATH")
-        else
-            EMULATOR_ARGS+=("$KERNEL_ELF")
-        fi
+        EMULATOR_ARGS+=("$LITEX_BOOTROM_IMAGE_PATH")
         exec "${EMULATOR_ARGS[@]}"
         ;;
     rsp)
         trap print_trailing_newline EXIT INT TERM
 
         EMULATOR_ARGS=("$EMULATOR_DEBUG_BIN")
-        if [[ "$MACHINE" == "litex" ]]; then
-            EMULATOR_ARGS+=(--boot-mode=litex-bootrom)
-        else
-            EMULATOR_ARGS+=(--boot-mode=direct)
-        fi
+        EMULATOR_ARGS+=(--boot-mode=litex-bootrom)
         append_common_runtime_args EMULATOR_ARGS
-        if [[ "$MACHINE" == "litex" ]]; then
-            EMULATOR_ARGS+=("$RSP_PORT" "$LITEX_BOOTROM_IMAGE_PATH")
-        else
-            EMULATOR_ARGS+=("$RSP_PORT" "$KERNEL_ELF")
-        fi
+        EMULATOR_ARGS+=("$RSP_PORT" "$LITEX_BOOTROM_IMAGE_PATH")
 
         echo "[little64] rsp        : 127.0.0.1:$RSP_PORT"
 
