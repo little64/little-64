@@ -291,6 +291,18 @@ class Little64V3Core(Elaboratable):
         memory_result_aux_reg_index = Signal(4)
         memory_result_aux_reg_value = Signal(64)
         memory_result_next_pc = Signal(64)
+        memory_final_valid = Signal()
+        memory_final_next_pc = Signal(64)
+        memory_final_commit_next_pc = Signal(64)
+        memory_final_reg_write = Signal()
+        memory_final_reg_index = Signal(4)
+        memory_final_reg_value = Signal(64)
+        memory_final_aux_reg_write = Signal()
+        memory_final_aux_reg_index = Signal(4)
+        memory_final_aux_reg_value = Signal(64)
+        memory_final_commit_pc = Signal(64)
+        memory_final_flags_write = Signal()
+        memory_final_flags_value = Signal(3)
 
         WALK_RESUME_FETCH = 0
         WALK_RESUME_MEMORY = 1
@@ -302,6 +314,7 @@ class Little64V3Core(Elaboratable):
                 execute_valid.eq(0),
                 memory.valid.eq(0),
                 memory.request_started.eq(0),
+                memory_final_valid.eq(0),
                 retire.valid.eq(0),
             ]
 
@@ -430,6 +443,15 @@ class Little64V3Core(Elaboratable):
             decode_stage.execute_reg_value.eq(execute_stage.outputs.reg_value),
             decode_stage.execute_flags_write.eq(execute_stage.outputs.flags_write),
             decode_stage.execute_flags_value.eq(execute_stage.outputs.flags_value),
+            decode_stage.memory_final_valid.eq(memory_final_valid),
+            decode_stage.memory_final_reg_write.eq(memory_final_reg_write),
+            decode_stage.memory_final_reg_index.eq(memory_final_reg_index),
+            decode_stage.memory_final_reg_value.eq(memory_final_reg_value),
+            decode_stage.memory_final_aux_reg_write.eq(memory_final_aux_reg_write),
+            decode_stage.memory_final_aux_reg_index.eq(memory_final_aux_reg_index),
+            decode_stage.memory_final_aux_reg_value.eq(memory_final_aux_reg_value),
+            decode_stage.memory_final_flags_write.eq(memory_final_flags_write),
+            decode_stage.memory_final_flags_value.eq(memory_final_flags_value),
             decode_stage.retire_valid.eq(retire.valid),
             decode_stage.retire_reg_write.eq(retire.reg_write),
             decode_stage.retire_reg_index.eq(retire.reg_index),
@@ -558,6 +580,7 @@ class Little64V3Core(Elaboratable):
                 ~execute_stage.outputs.halt &
                 ~execute_stage.outputs.lockup &
                 ~execute_stage.outputs.trap &
+                ~memory_redirect &
                 (execute_stage.outputs.next_pc != execute_stage.post_increment_pc)
             ),
             execute_flush_younger.eq(
@@ -567,10 +590,10 @@ class Little64V3Core(Elaboratable):
             fetch_error.eq(self.frontend.fetch_error & ~execute_flush_younger),
             memory_error.eq(memory.valid & ~cached_memory_response & memory_stage.complete & self.lsu.response_error),
             memory_to_retire.eq(memory.valid & (cached_memory_response | (memory_stage.final_response & ~self.lsu.response_error))),
-            memory_redirect.eq(memory_to_retire & (memory_result_next_pc != memory.next_pc)),
+            memory_redirect.eq(memory_final_valid & (memory_final_next_pc != memory_final_commit_next_pc)),
             memory_chain_continue.eq(memory.valid & ~cached_memory_response & memory_stage.chain_continue),
-            execute_to_memory.eq(execute_valid & execute_stage.outputs.memory_start & ~memory.valid),
-            execute_to_retire.eq(execute_valid & ~execute_stage.outputs.memory_start & ~memory.valid),
+            execute_to_memory.eq(execute_valid & execute_stage.outputs.memory_start & ~memory.valid & ~memory_redirect),
+            execute_to_retire.eq(execute_valid & ~execute_stage.outputs.memory_start & ~memory.valid & ~memory_final_valid & ~memory_redirect),
             execute_slot_available.eq(~execute_valid | execute_to_memory | execute_to_retire),
             reservation_end.eq(ll_reservation_addr + 7),
             write_end.eq(memory.virtual_addr + memory.width_bytes - 1),
@@ -1239,32 +1262,50 @@ class Little64V3Core(Elaboratable):
                     with m.If(store_overlaps_reservation):
                         m.d.sync += ll_reservation_valid.eq(0)
                     m.d.sync += [
+                        memory_final_valid.eq(1),
+                        memory_final_next_pc.eq(memory_result_next_pc),
+                        memory_final_commit_next_pc.eq(memory.next_pc),
+                        memory_final_reg_write.eq(memory_result_reg_write),
+                        memory_final_reg_index.eq(memory_result_reg_index),
+                        memory_final_reg_value.eq(memory_result_reg_value),
+                        memory_final_aux_reg_write.eq(memory_result_aux_reg_write),
+                        memory_final_aux_reg_index.eq(memory_result_aux_reg_index),
+                        memory_final_aux_reg_value.eq(memory_result_aux_reg_value),
+                        memory_final_commit_pc.eq(memory.commit_pc),
+                        memory_final_flags_write.eq(memory.flags_write),
+                        memory_final_flags_value.eq(memory.flags_value),
+                    ]
+
+                with m.If(memory_final_valid):
+                    m.d.sync += [
                         retire.valid.eq(1),
-                        retire.reg_write.eq(memory_result_reg_write),
-                        retire.reg_index.eq(memory_result_reg_index),
-                        retire.reg_value.eq(memory_result_reg_value),
-                        retire.aux_reg_write.eq(memory_result_aux_reg_write),
-                        retire.aux_reg_index.eq(memory_result_aux_reg_index),
-                        retire.aux_reg_value.eq(memory_result_aux_reg_value),
-                        retire.flags_write.eq(memory.flags_write),
-                        retire.flags_value.eq(memory.flags_value),
+                        retire.reg_write.eq(memory_final_reg_write),
+                        retire.reg_index.eq(memory_final_reg_index),
+                        retire.reg_value.eq(memory_final_reg_value),
+                        retire.aux_reg_write.eq(memory_final_aux_reg_write),
+                        retire.aux_reg_index.eq(memory_final_aux_reg_index),
+                        retire.aux_reg_value.eq(memory_final_aux_reg_value),
+                        retire.flags_write.eq(memory_final_flags_write),
+                        retire.flags_value.eq(memory_final_flags_value),
                         retire.cpu_control_write.eq(0),
                         retire.cpu_control_value.eq(0),
-                        retire.next_pc.eq(memory_result_next_pc),
+                        retire.next_pc.eq(memory_final_next_pc),
                         retire.commit.eq(1),
-                        retire.commit_pc.eq(memory.commit_pc),
+                        retire.commit_pc.eq(memory_final_commit_pc),
                         retire.halt.eq(0),
                         retire.lockup.eq(0),
                         retire.trap.eq(0),
                         retire.trap_cause.eq(0),
                     ]
+                    with m.If(~memory_to_retire):
+                        m.d.sync += memory_final_valid.eq(0)
                     with m.If(memory_redirect):
                         m.d.sync += [
                             decode_valid.eq(0),
                             execute_valid.eq(0),
                             self.current_instruction.eq(0),
                             self.execute_instruction.eq(0),
-                        ] + redirect_fetch_sync(memory_result_next_pc)
+                        ] + clear_memory_stage_sync() + redirect_fetch_sync(memory_final_next_pc)
                 with m.Elif(execute_to_retire):
                     m.d.sync += [
                         retire.valid.eq(execute_valid),
