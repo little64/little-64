@@ -37,7 +37,7 @@ from ..tlb import Little64TLB
 from ..v2.cache import Little64V2LineCache
 from ..v2.frontend import Little64V2FetchFrontend
 from ..v2.lsu import Little64V2LSU
-from .bundles import V3MemoryStageState, V3RetireStageState
+from .bundles import V3FaultBundle, V3MemoryStageState, V3RetireStageState
 from .decode_stage import Little64V3DecodeStage
 from .execute_stage import Little64V3ExecuteStage
 from .memory_stage import Little64V3MemoryStage
@@ -129,10 +129,16 @@ class Little64V3Core(Elaboratable):
         execute_valid = Signal()
         memory = V3MemoryStageState()
         retire = V3RetireStageState()
+        # DEBUG: expose for trace
+        self.dbg_decode_valid = decode_valid
+        self.dbg_execute_valid = execute_valid
+        self.dbg_memory = memory
+        self.dbg_retire = retire
 
         next_fetch_pc = Signal(64)
         next_state = Signal(4)
         fetch_error = Signal()
+        self.dbg_fetch_error = fetch_error
         paging_without_mmu = Signal()
         pending_execute_load_valid = Signal()
         pending_memory_load_valid = Signal()
@@ -153,6 +159,10 @@ class Little64V3Core(Elaboratable):
         vector_virtual_addr = Signal(64)
         vector_load_addr = Signal(64)
         vector_phys_valid = Signal()
+        # DEBUG: expose for trace
+        self.dbg_vector_load_active = vector_load_active
+        self.dbg_vector_phys_valid = vector_phys_valid
+        self.dbg_vector_virtual_addr = vector_virtual_addr
         vector_load_epc = Signal(64)
         vector_load_flags = Signal(3)
         vector_translate_ready = Signal()
@@ -166,13 +176,26 @@ class Little64V3Core(Elaboratable):
         vector_handler_pc = Signal(64)
         current_interrupt_vector = Signal(7)
         trap_preempt_lockup = Signal()
-        trap_request = Signal()
-        trap_cause = Signal(64)
-        trap_pc = Signal(64)
-        trap_fault_addr = Signal(64)
-        trap_access = Signal(64)
-        trap_aux = Signal(64)
+        pending_fault = V3FaultBundle()
+        # DEBUG: expose for trace
+        self.dbg_pending_fault = pending_fault
+        self.dbg_trap_preempt_lockup = trap_preempt_lockup
+        trap_request = pending_fault.pending
+        trap_cause = pending_fault.cause
+        trap_pc = pending_fault.pc
+        trap_fault_addr = pending_fault.fault_addr
+        trap_access = pending_fault.access
+        trap_aux = pending_fault.aux
+        trap_request_next = Signal()
+        self.dbg_trap_request_next = trap_request_next
+        trap_cause_next = Signal(64)
+        self.dbg_trap_cause_next = trap_cause_next
+        trap_pc_next = Signal(64)
+        trap_fault_addr_next = Signal(64)
+        trap_access_next = Signal(64)
+        trap_aux_next = Signal(64)
         trap_start = Signal()
+        self.dbg_trap_start = trap_start
         irq_line_pending_mask = Signal(64)
         pending_irq_high = Signal(64)
         pending_irq_available = Signal()
@@ -180,11 +203,13 @@ class Little64V3Core(Elaboratable):
         can_preempt_pending_irq = Signal()
         irq_start = Signal()
         entry_start = Signal()
+        self.dbg_entry_start = entry_start
         entry_vector = Signal(64)
         entry_epc = Signal(64)
         trap_cpu_control_value = Signal(64)
         paging_enabled = Signal()
         fetch_phys_valid = Signal()
+        self.dbg_fetch_phys_valid = fetch_phys_valid
         fetch_translate_ready = Signal()
         fetch_translate_complete = Signal()
         fetch_translate_phys = Signal(64)
@@ -207,10 +232,15 @@ class Little64V3Core(Elaboratable):
         walk_processing = Signal()
         walk_started = Signal()
         walk_virtual_addr = Signal(64)
+        # DEBUG: expose for trace
+        self.dbg_walk_active = walk_active
+        self.dbg_walk_processing = walk_processing
+        self.dbg_walk_resume_kind = None  # set after walk_resume_kind
         walk_table_addr = Signal(64)
         walk_level = Signal(2)
         walk_access = Signal(2)
         walk_resume_kind = Signal(2)
+        self.dbg_walk_resume_kind = walk_resume_kind
         walk_pte_latched = Signal(64)
         walk_request_valid = Signal()
         walk_request_start = Signal()
@@ -613,7 +643,7 @@ class Little64V3Core(Elaboratable):
                 )
             ),
             tlb_hit_ok.eq(tlb_lookup_hit & tlb_perm_ok & ((~self.special_regs.cpu_control[17]) | tlb_lookup_perm_user)),
-            memory_translate_ready.eq(memory.valid & ~memory.phys_valid & ~walk_active & ~vector_load_active),
+            memory_translate_ready.eq(memory.valid & ~memory.phys_valid & ~walk_active & ~vector_load_active & ~trap_request),
             memory_translate_complete.eq(
                 memory_translate_ready &
                 (~paging_enabled | (is_canonical39(memory.virtual_addr) & ((self.special_regs.page_table_root_physical & 0xFFF) == 0) & tlb_hit_ok))
@@ -634,7 +664,7 @@ class Little64V3Core(Elaboratable):
                     encode_aux(AUX_SUBTYPE_RESERVED_BIT, 2),
                 )
             ),
-            vector_translate_ready.eq(vector_load_active & ~vector_phys_valid & ~walk_active),
+            vector_translate_ready.eq(vector_load_active & ~vector_phys_valid & ~walk_active & ~trap_request),
             vector_translate_complete.eq(
                 vector_translate_ready &
                 (~paging_enabled | (is_canonical39(vector_virtual_addr) & ((self.special_regs.page_table_root_physical & 0xFFF) == 0) & tlb_hit_ok))
@@ -673,7 +703,8 @@ class Little64V3Core(Elaboratable):
                 ~execute_valid &
                 ~memory.valid &
                 ~retire.valid &
-                ~vector_load_active
+                ~vector_load_active &
+                ~trap_request
             ),
             fetch_translate_complete.eq(
                 fetch_translate_ready &
@@ -761,12 +792,12 @@ class Little64V3Core(Elaboratable):
                 (current_interrupt_vector == 0) |
                 (current_interrupt_vector > pending_irq_vector)
             ),
-            trap_request.eq(retire_stage.trap_request | fetch_fault | memory_fault | walk_fault_trap),
-            trap_cause.eq(Mux(retire_stage.trap_request, retire_stage.trap_cause_value, Mux(fetch_fault, fetch_fault_cause, Mux(memory_fault, memory_fault_cause, walk_fault_cause)))),
-            trap_pc.eq(Mux(retire_stage.trap_request, retire_stage.trap_pc_value, Mux(fetch_fault, fetch_fault_pc, Mux(memory_fault, memory_fault_pc, walk_fault_pc)))),
-            trap_fault_addr.eq(Mux(fetch_fault, fetch_fault_addr, Mux(memory_fault, memory_fault_addr, Mux(walk_fault_trap, walk_fault_addr, 0)))),
-            trap_access.eq(Mux(fetch_fault, fetch_fault_access, Mux(memory_fault, memory_fault_access, Mux(walk_fault_trap, walk_fault_access, 0)))),
-            trap_aux.eq(Mux(fetch_fault, fetch_fault_aux, Mux(memory_fault, memory_fault_aux, Mux(walk_fault_trap, walk_fault_aux, 0)))),
+            trap_request_next.eq(retire_stage.trap_request | fetch_fault | memory_fault | walk_fault_trap),
+            trap_cause_next.eq(Mux(retire_stage.trap_request, retire_stage.trap_cause_value, Mux(fetch_fault, fetch_fault_cause, Mux(memory_fault, memory_fault_cause, walk_fault_cause)))),
+            trap_pc_next.eq(Mux(retire_stage.trap_request, retire_stage.trap_pc_value, Mux(fetch_fault, fetch_fault_pc, Mux(memory_fault, memory_fault_pc, walk_fault_pc)))),
+            trap_fault_addr_next.eq(Mux(fetch_fault, fetch_fault_addr, Mux(memory_fault, memory_fault_addr, Mux(walk_fault_trap, walk_fault_addr, 0)))),
+            trap_access_next.eq(Mux(fetch_fault, fetch_fault_access, Mux(memory_fault, memory_fault_access, Mux(walk_fault_trap, walk_fault_access, 0)))),
+            trap_aux_next.eq(Mux(fetch_fault, fetch_fault_aux, Mux(memory_fault, memory_fault_aux, Mux(walk_fault_trap, walk_fault_aux, 0)))),
             trap_preempt_lockup.eq(
                 trap_request &
                 self.special_regs.cpu_control[1] &
@@ -777,6 +808,7 @@ class Little64V3Core(Elaboratable):
             trap_start.eq(trap_request & ~trap_preempt_lockup & ~vector_load_active),
             irq_start.eq(
                 ~trap_request &
+                ~trap_request_next &
                 ~vector_load_active &
                 ~walk_active &
                 ~decode_valid &
@@ -990,6 +1022,18 @@ class Little64V3Core(Elaboratable):
         with m.Elif(self.frontend.request_inflight):
             m.d.comb += next_state.eq(V3PipelineState.STALLED)
 
+        with m.If(entry_start):
+            m.d.sync += pending_fault.pending.eq(0)
+        with m.Else():
+            m.d.sync += [
+                pending_fault.pending.eq(trap_request_next),
+                pending_fault.cause.eq(trap_cause_next),
+                pending_fault.pc.eq(trap_pc_next),
+                pending_fault.fault_addr.eq(trap_fault_addr_next),
+                pending_fault.access.eq(trap_access_next),
+                pending_fault.aux.eq(trap_aux_next),
+            ]
+
         with m.If(self.state == V3PipelineState.RESET):
             m.d.sync += [
                 self.halted.eq(0),
@@ -1201,7 +1245,7 @@ class Little64V3Core(Elaboratable):
                         memory.addr.eq(walk_result_phys),
                         memory.phys_valid.eq(1),
                     ]
-            with m.Elif(walk_processing):
+            with m.Elif(walk_processing & ~walk_fault):
                 m.d.sync += [
                     walk_processing.eq(0),
                     walk_started.eq(0),

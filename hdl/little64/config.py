@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 
 CORE_VARIANTS = ('basic', 'v2')
-EXPERIMENTAL_CORE_VARIANTS = ('v3',)
+EXPERIMENTAL_CORE_VARIANTS = ('v3', 'gemini')
 SUPPORTED_CORE_VARIANTS = CORE_VARIANTS + EXPERIMENTAL_CORE_VARIANTS
 CACHE_TOPOLOGIES = ('none', 'unified', 'split')
 

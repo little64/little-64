@@ -84,6 +84,24 @@ class V3MemoryStageState:
         self.chain_store_value = Signal(64)
 
 
+class V3FaultBundle:
+    """Registered snapshot of the priority-encoded fault from all trap sources.
+
+    Why: collecting fetch/memory/walk/retire fault candidates combinationally
+    and then forming trap_cpu_control_value / entry_vector inline produced a
+    36-LL cone through trap_bank_n_135 fanout (109) at Arty timing. One cycle
+    of registration breaks that cone at a predictable trap-entry-only cost.
+    """
+
+    def __init__(self) -> None:
+        self.pending = Signal()
+        self.cause = Signal(64)
+        self.pc = Signal(64)
+        self.fault_addr = Signal(64)
+        self.access = Signal(64)
+        self.aux = Signal(64)
+
+
 class V3RetireStageState:
     """Retire-stage state committed into architected state each cycle."""
 
@@ -111,6 +129,7 @@ class V3RetireStageState:
 __all__ = [
     'V3DecodedOperands',
     'V3ExecuteOutputs',
+    'V3FaultBundle',
     'V3MemoryStageState',
     'V3RetireStageState',
 ]

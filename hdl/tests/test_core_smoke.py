@@ -25,6 +25,7 @@ def test_core_round_trips_special_registers_via_lsr_and_ssr(shared_core_config) 
             'STOP',
         ]),
         config=shared_core_config,
+        max_cycles=32,
     )
 
     assert observed['locked_up'] == 0
@@ -54,6 +55,7 @@ def test_core_allows_user_thread_pointer_access_via_lsr(shared_core_config) -> N
             vector_base + 16 + byte_index: (handler_addr >> (8 * byte_index)) & 0xFF
             for byte_index in range(8)
         },
+        max_cycles=32,
     )
 
     assert observed['locked_up'] == 0
@@ -70,6 +72,7 @@ def test_core_traps_user_supervisor_bank_lsr(shared_core_config) -> None:
         ]),
         config=shared_core_config,
         initial_special_registers={'cpu_control': CPU_CONTROL_USER_MODE},
+        max_cycles=32,
     )
 
     assert observed['halted'] == 0
@@ -93,6 +96,7 @@ def test_core_traps_user_supervisor_bank_ssr(shared_core_config) -> None:
         ]),
         config=shared_core_config,
         initial_special_registers={'cpu_control': CPU_CONTROL_USER_MODE},
+        max_cycles=32,
     )
 
     assert observed['halted'] == 0
@@ -126,6 +130,7 @@ def test_commit_valid_pulses_for_each_instruction(shared_core_config, shared_cor
             'STOP',
         ]),
         config=shared_core_config,
+        max_cycles=32,
     )
 
     assert observed['locked_up'] == 0
@@ -144,6 +149,7 @@ def test_commit_valid_pulses_for_memory_instructions(shared_core_config, shared_
             'STOP',
         ]),
         config=shared_core_config,
+        max_cycles=32,
     )
 
     assert observed['locked_up'] == 0
