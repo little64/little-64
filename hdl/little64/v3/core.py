@@ -86,7 +86,9 @@ class Little64V3Core(Elaboratable):
         self.fetch_pc = Signal(64)
         self.fetch_phys_addr = Signal(64)
         self.decode_pc = Signal(64)
+        self.decode_post_increment_pc = Signal(64)
         self.execute_pc = Signal(64)
+        self.execute_post_increment_pc = Signal(64)
         self.execute_instruction = Signal(16)
         self.execute_operand_a = Signal(64)
         self.execute_operand_b = Signal(64)
@@ -506,6 +508,7 @@ class Little64V3Core(Elaboratable):
             execute_stage.valid.eq(execute_valid),
             execute_stage.instruction.eq(self.execute_instruction),
             execute_stage.pc.eq(self.execute_pc),
+            execute_stage.pre_post_increment_pc.eq(self.execute_post_increment_pc),
             execute_stage.operand_a.eq(self.execute_operand_a),
             execute_stage.operand_b.eq(self.execute_operand_b),
             execute_stage.flags.eq(self.execute_flags),
@@ -1442,6 +1445,7 @@ class Little64V3Core(Elaboratable):
                         execute_valid.eq(1),
                         self.execute_instruction.eq(self.current_instruction),
                         self.execute_pc.eq(self.decode_pc),
+                        self.execute_post_increment_pc.eq(self.decode_post_increment_pc),
                         self.execute_operand_a.eq(decode_stage.outputs.operand_a),
                         self.execute_operand_b.eq(decode_stage.outputs.operand_b),
                         self.execute_flags.eq(decode_stage.outputs.flags),
@@ -1462,6 +1466,7 @@ class Little64V3Core(Elaboratable):
                         decode_valid.eq(1),
                         self.current_instruction.eq(self.frontend.instruction_word),
                         self.decode_pc.eq(self.fetch_pc),
+                        self.decode_post_increment_pc.eq(next_fetch_pc),
                     ]
                 with m.Elif(decode_advance):
                     m.d.sync += [

@@ -28,6 +28,7 @@ class Little64V3ExecuteStage(Elaboratable):
         self.valid = Signal()
         self.instruction = Signal(16)
         self.pc = Signal(64)
+        self.pre_post_increment_pc = Signal(64)
         self.operand_a = Signal(64)
         self.operand_b = Signal(64)
         self.flags = Signal(3)
@@ -134,7 +135,7 @@ class Little64V3ExecuteStage(Elaboratable):
         ])
 
         m.d.comb += [
-            self.post_increment_pc.eq(self.pc + 2),
+            self.post_increment_pc.eq(self.pre_post_increment_pc),
             self.special_read_selector.eq(self.operand_b[:16]),
             self.special_write_stb.eq(self.valid & (execute_top3 == 0b110) & (execute_gp_opcode == GPOpcode.SSR)),
             self.special_write_selector.eq(self.operand_b[:16]),
