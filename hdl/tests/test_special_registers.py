@@ -4,11 +4,11 @@ from amaranth.sim import Settle, Simulator
 
 from little64.config import Little64CoreConfig
 from little64.isa import CPU_CONTROL_WRITABLE_MASK, SpecialRegister
-from little64.special_registers import Little64SpecialRegisterFile
+from little64.v2.special_registers import Little64V2SpecialRegisterFile
 
 
 def test_optional_platform_register_reads_zero_when_disabled() -> None:
-    dut = Little64SpecialRegisterFile(Little64CoreConfig(optional_platform_registers=False))
+    dut = Little64V2SpecialRegisterFile(Little64CoreConfig(optional_platform_registers=False))
     sim = Simulator(dut)
     sim.add_clock(1e-6)
 
@@ -32,7 +32,7 @@ def test_optional_platform_register_reads_zero_when_disabled() -> None:
 
 
 def test_optional_platform_registers_store_when_enabled() -> None:
-    dut = Little64SpecialRegisterFile(Little64CoreConfig(optional_platform_registers=True))
+    dut = Little64V2SpecialRegisterFile(Little64CoreConfig(optional_platform_registers=True))
     sim = Simulator(dut)
     sim.add_clock(1e-6)
 
@@ -52,7 +52,7 @@ def test_optional_platform_registers_store_when_enabled() -> None:
 
 
 def test_user_mode_cannot_access_supervisor_bank() -> None:
-    dut = Little64SpecialRegisterFile(Little64CoreConfig())
+    dut = Little64V2SpecialRegisterFile(Little64CoreConfig())
     sim = Simulator(dut)
 
     def process():
@@ -71,7 +71,7 @@ def test_user_mode_cannot_access_supervisor_bank() -> None:
 
 
 def test_reserved_supervisor_selector_reads_zero_and_ignores_writes() -> None:
-    dut = Little64SpecialRegisterFile(Little64CoreConfig())
+    dut = Little64V2SpecialRegisterFile(Little64CoreConfig())
     sim = Simulator(dut)
     sim.add_clock(1e-6)
 
@@ -95,7 +95,7 @@ def test_reserved_supervisor_selector_reads_zero_and_ignores_writes() -> None:
 
 
 def test_user_mode_cannot_access_unassigned_user_bank_selector() -> None:
-    dut = Little64SpecialRegisterFile(Little64CoreConfig())
+    dut = Little64V2SpecialRegisterFile(Little64CoreConfig())
     sim = Simulator(dut)
 
     def process():
@@ -114,7 +114,7 @@ def test_user_mode_cannot_access_unassigned_user_bank_selector() -> None:
 
 
 def test_cpu_control_masks_reserved_bits() -> None:
-    dut = Little64SpecialRegisterFile(Little64CoreConfig())
+    dut = Little64V2SpecialRegisterFile(Little64CoreConfig())
     sim = Simulator(dut)
     sim.add_clock(1e-6)
 
@@ -144,7 +144,7 @@ def test_cpu_control_masks_reserved_bits() -> None:
 
 
 def test_page_table_root_is_ignored_when_mmu_disabled() -> None:
-    dut = Little64SpecialRegisterFile(Little64CoreConfig(enable_mmu=False))
+    dut = Little64V2SpecialRegisterFile(Little64CoreConfig(enable_mmu=False))
     sim = Simulator(dut)
     sim.add_clock(1e-6)
 
@@ -164,7 +164,7 @@ def test_page_table_root_is_ignored_when_mmu_disabled() -> None:
 
 
 def test_core_trap_write_updates_isolated_trap_bank() -> None:
-    dut = Little64SpecialRegisterFile(Little64CoreConfig())
+    dut = Little64V2SpecialRegisterFile(Little64CoreConfig())
     sim = Simulator(dut)
     sim.add_clock(1e-6)
 

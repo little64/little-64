@@ -6,10 +6,10 @@ from mmio_trace import run_program_with_mmio_trace
 UART_MMIO_BASE = 0xF0001000
 
 
-def test_mmio_byte_store_commits_once_and_writes_once(shared_core_config) -> None:
+def test_mmio_byte_store_commits_once_and_writes_once(pipelined_core_config) -> None:
     observed = run_program_with_mmio_trace(
         'BYTE_STORE [R2], R1\nSTOP',
-        config=shared_core_config,
+        config=pipelined_core_config,
         initial_registers={1: 0x41, 2: UART_MMIO_BASE, 15: 0},
     )
 
@@ -20,10 +20,10 @@ def test_mmio_byte_store_commits_once_and_writes_once(shared_core_config) -> Non
     assert observed['pc'] == 0x4
 
 
-def test_mmio_branch_to_store_has_single_terminal_write(shared_core_config) -> None:
+def test_mmio_branch_to_store_has_single_terminal_write(pipelined_core_config) -> None:
     observed = run_program_with_mmio_trace(
         'BYTE_LOAD [R3], R1\nTEST R0, R1\nJUMP.Z @emit\nSTOP\nemit:\nBYTE_STORE [R2], R1\nSTOP',
-        config=shared_core_config,
+        config=pipelined_core_config,
         initial_registers={2: UART_MMIO_BASE, 3: 0x2000, 15: 0},
         initial_data_memory={0x2000: 0x00},
         max_cycles=160,
@@ -36,10 +36,10 @@ def test_mmio_branch_to_store_has_single_terminal_write(shared_core_config) -> N
     assert observed['pc'] == 0xC
 
 
-def test_aligned_load_completes_with_single_delayed_ack(shared_core_config) -> None:
+def test_aligned_load_completes_with_single_delayed_ack(pipelined_core_config) -> None:
     observed = run_program_with_mmio_trace(
         'LOAD [R2], R1\nSTOP',
-        config=shared_core_config,
+        config=pipelined_core_config,
         initial_registers={2: 0x2000, 15: 0},
         initial_data_memory={
             0x2000: 0x88,
@@ -61,10 +61,10 @@ def test_aligned_load_completes_with_single_delayed_ack(shared_core_config) -> N
     assert observed['pc'] == 0x4
 
 
-def test_split_load_completes_with_held_bus_request(shared_core_config) -> None:
+def test_split_load_completes_with_held_bus_request(pipelined_core_config) -> None:
     observed = run_program_with_mmio_trace(
         'LOAD [R2], R1\nSTOP',
-        config=shared_core_config,
+        config=pipelined_core_config,
         initial_registers={2: 0x2003, 15: 0},
         initial_data_memory={0x2000 + index: index for index in range(16)},
         max_cycles=192,

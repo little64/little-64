@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ..decode import instruction_gp_opcode, instruction_top3, is_gp_format
+from .helpers import instruction_gp_opcode, instruction_top3, is_gp_format
 from ..isa import GPOpcode
 
 

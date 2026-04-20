@@ -4,14 +4,15 @@ from enum import IntEnum
 
 from amaranth import Array, Cat, Const, Elaboratable, Module, Mux, Signal
 
-from ..alu import flag_value, sign_extend
 from ..config import Little64CoreConfig
-from ..decode import (
+from .helpers import (
+    flag_value,
     instruction_gp_opcode,
     instruction_ls_offset2,
     instruction_ls_opcode,
     instruction_rd,
     instruction_rs1,
+    sign_extend,
     instruction_top2,
     instruction_top3,
 )
@@ -27,8 +28,8 @@ from ..isa import (
     SpecialRegister,
     TrapVector,
 )
-from ..special_registers import Little64SpecialRegisterFile
-from ..tlb import Little64TLB
+from .special_registers import Little64BasicSpecialRegisterFile
+from .tlb import Little64BasicTLB
 from ..wishbone import WishboneMasterInterface
 
 
@@ -154,8 +155,8 @@ class Little64Core(Elaboratable):
         self.ll_reservation_addr = Signal(64)
         self.ll_reservation_valid = Signal()
 
-        self.special_regs = Little64SpecialRegisterFile(self.config)
-        self.tlb = Little64TLB(entries=self.config.tlb_entries) if self.config.enable_tlb else None
+        self.special_regs = Little64BasicSpecialRegisterFile(self.config)
+        self.tlb = Little64BasicTLB(entries=self.config.tlb_entries) if self.config.enable_tlb else None
 
     def elaborate(self, platform):
         m = Module()

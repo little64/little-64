@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from amaranth import Elaboratable, Module, Mux, Signal
 
-from ..decode import instruction_rd, instruction_rs1
 from .bundles import V3DecodedOperands
+from .helpers import instruction_rd, instruction_rs1
 
 
 class Little64V3DecodeStage(Elaboratable):

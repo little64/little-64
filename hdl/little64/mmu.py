@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from amaranth import Const, Mux
-
 
 PTE_V = 1 << 0
 PTE_R = 1 << 1
@@ -22,16 +20,6 @@ AUX_SUBTYPE_RESERVED_BIT = 4
 AUX_SUBTYPE_CANONICAL = 5
 
 
-def is_canonical39(addr):
-    sign_bit = addr[38]
-    upper = addr[39:64]
-    return Mux(sign_bit, upper == Const((1 << 25) - 1, 25), upper == 0)
-
-
-def encode_aux(subtype: int, level):
-    return Const(subtype, 64) | (level << 8)
-
-
 __all__ = [
     'ACCESS_EXECUTE',
     'ACCESS_READ',
@@ -48,6 +36,4 @@ __all__ = [
     'PTE_V',
     'PTE_W',
     'PTE_X',
-    'encode_aux',
-    'is_canonical39',
 ]

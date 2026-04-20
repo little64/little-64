@@ -39,6 +39,13 @@ def _parse_shared_core_variants(raw_value: str) -> list[str]:
 	return list(dict.fromkeys(variants))
 
 
+def _parse_pipelined_core_variants(raw_value: str) -> list[str]:
+	"""Parse core variants, excluding 'basic' (for pipelined-core-only tests like MMIO)."""
+	variants = _parse_shared_core_variants(raw_value)
+	# Remove basic core since MMIO tests are designed for pipelined cores
+	return [v for v in variants if v != 'basic']
+
+
 def pytest_addoption(parser: pytest.Parser) -> None:
 	parser.addoption(
 		'--core-variants',
@@ -49,12 +56,19 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 
 
 def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
-	if 'shared_core_variant' not in metafunc.fixturenames:
-		return
-	variants = _parse_shared_core_variants(str(metafunc.config.getoption('core_variants')))
-	metafunc.parametrize('shared_core_variant', variants, ids=variants)
+	if 'shared_core_variant' in metafunc.fixturenames:
+		variants = _parse_shared_core_variants(str(metafunc.config.getoption('core_variants')))
+		metafunc.parametrize('shared_core_variant', variants, ids=variants)
+	elif 'pipelined_core_variant' in metafunc.fixturenames:
+		variants = _parse_pipelined_core_variants(str(metafunc.config.getoption('core_variants')))
+		metafunc.parametrize('pipelined_core_variant', variants, ids=variants)
 
 
 @pytest.fixture
 def shared_core_config(shared_core_variant: str) -> Little64CoreConfig:
 	return Little64CoreConfig(core_variant=shared_core_variant, reset_vector=0)
+
+
+@pytest.fixture
+def pipelined_core_config(pipelined_core_variant: str) -> Little64CoreConfig:
+	return Little64CoreConfig(core_variant=pipelined_core_variant, reset_vector=0)

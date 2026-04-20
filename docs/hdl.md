@@ -42,16 +42,25 @@ The top-level `hdl/little64/core.py` module remains as a compatibility export fo
 ## Current Layout
 
 - `hdl/little64/config.py` — core configuration, core-variant selection, and architectural build-time choices
-- `hdl/little64/decode.py` — shared instruction-field helpers used by both the Basic and V2 cores
-- `hdl/little64/alu.py` — shared sign-extension and flag helpers used by both the Basic and V2 cores
-- `hdl/little64/mmu.py` — shared page-table and auxiliary fault helpers used by the V2 privilege/MMU path
+- `hdl/little64/decode.py` — shared decode field metadata definitions only (no executable decode logic)
+- `hdl/little64/alu.py` — shared ALU/flags metadata definitions only (no executable ALU logic)
+- `hdl/little64/mmu.py` — shared MMU bit and subtype definitions only (no executable translation logic)
 - `hdl/little64/wishbone.py` — 64-bit LiteX-compatible bus signal bundle
-- `hdl/little64/tlb.py` — direct-mapped TLB module with bounded-generation lazy invalidation and rollover clearing
-- `hdl/little64/special_registers.py` — architected special-register storage with an isolated trap register bank
+- `hdl/little64/tlb.py` — shared TLB interface definitions only (no executable TLB logic)
+- `hdl/little64/special_registers.py` — shared special-register interface definitions only (no executable register-bank logic)
 - `hdl/little64/core.py` — compatibility export for the current default core variant
 - `hdl/little64/basic/core.py` — current single-issue multi-cycle core FSM with fetch, GP ALU, jumps, and basic LSU execution
+- `hdl/little64/basic/helpers.py` — Basic-core-local decode and ALU helper logic
+- `hdl/little64/basic/tlb.py` — Basic-core-local TLB implementation
+- `hdl/little64/basic/special_registers.py` — Basic-core-local special-register implementation
 - `hdl/little64/v2/core.py` — V2 core with fetch, execute, privilege/MMU, and cache-topology support behind the shared external interface
+- `hdl/little64/v2/helpers.py` — V2-core-local decode, ALU, and MMU helper logic
+- `hdl/little64/v2/tlb.py` — V2-core-local TLB implementation
+- `hdl/little64/v2/special_registers.py` — V2-core-local special-register implementation
 - `hdl/little64/v3/core.py` — experimental single-issue pipelined V3 bring-up path, currently covering fetch/decode/execute, fetch/data MMU/TLB translation, LSU-backed load/store/push/pop and `LLR`/`SCR` sequencing, V2-style `none` / `unified` / `split` cache-topology handling, paged interrupt-vector lookup, maskable IRQ delivery, precise synchronous trap entry, `IRET`, and memory-result control-flow redirects behind the shared external interface
+- `hdl/little64/v3/helpers.py` — V3-core-local decode, ALU, and MMU helper logic
+- `hdl/little64/v3/tlb.py` — V3-core-local TLB implementation
+- `hdl/little64/v3/special_registers.py` — V3-core-local special-register implementation
 - `hdl/little64/v2/cache.py` — small direct-mapped cache-line store used by the V2 data-side cache path
 - `hdl/little64/v2/frontend.py` — 64-bit fetch-line frontend that extracts 16-bit instructions for the V2 pipeline
 - `hdl/little64/v2/lsu.py` — V2 load/store unit handling aligned and split 64-bit Wishbone accesses

@@ -4,31 +4,7 @@ from enum import IntEnum
 
 from amaranth import Array, Cat, Const, Elaboratable, Module, Mux, Signal
 
-from ..alu import flag_value, ls_condition, sign_extend
 from ..config import Little64CoreConfig
-from ..decode import (
-    instruction_gp_imm4,
-    instruction_gp_opcode,
-    instruction_ldi_imm8,
-    instruction_ldi_shift,
-    instruction_ls_offset2,
-    instruction_ls_opcode,
-    instruction_rd,
-    instruction_rs1,
-    instruction_top2,
-    instruction_top3,
-)
-from ..isa import (
-    CPU_CONTROL_CUR_INT_MASK,
-    CPU_CONTROL_CUR_INT_SHIFT,
-    CPU_CONTROL_IN_INTERRUPT,
-    CPU_CONTROL_INT_ENABLE,
-    CPU_CONTROL_USER_MODE,
-    GPOpcode,
-    LSOpcode,
-    SpecialRegister,
-    TrapVector,
-)
 from ..mmu import (
     ACCESS_EXECUTE,
     ACCESS_READ,
@@ -45,13 +21,39 @@ from ..mmu import (
     PTE_V,
     PTE_W,
     PTE_X,
-    encode_aux,
-    is_canonical39,
 )
-from ..special_registers import Little64SpecialRegisterFile
-from ..tlb import Little64TLB
 from .cache import Little64V2LineCache
 from .frontend import Little64V2FetchFrontend
+from .helpers import (
+    encode_aux,
+    flag_value,
+    instruction_gp_imm4,
+    instruction_gp_opcode,
+    instruction_ldi_imm8,
+    instruction_ldi_shift,
+    instruction_ls_offset2,
+    instruction_ls_opcode,
+    instruction_rd,
+    instruction_rs1,
+    instruction_top2,
+    instruction_top3,
+    is_canonical39,
+    ls_condition,
+    sign_extend,
+)
+from .special_registers import Little64V2SpecialRegisterFile
+from .tlb import Little64V2TLB
+from ..isa import (
+    CPU_CONTROL_CUR_INT_MASK,
+    CPU_CONTROL_CUR_INT_SHIFT,
+    CPU_CONTROL_IN_INTERRUPT,
+    CPU_CONTROL_INT_ENABLE,
+    CPU_CONTROL_USER_MODE,
+    GPOpcode,
+    LSOpcode,
+    SpecialRegister,
+    TrapVector,
+)
 from .lsu import Little64V2LSU
 
 
@@ -187,8 +189,8 @@ class Little64V2Core(Elaboratable):
         self.interrupt_entry_epc = Signal(64)
         self.interrupt_vector_phys = Signal(64)
 
-        self.special_regs = Little64SpecialRegisterFile(self.config)
-        self.tlb = Little64TLB(entries=self.config.tlb_entries) if self.config.enable_tlb else None
+        self.special_regs = Little64V2SpecialRegisterFile(self.config)
+        self.tlb = Little64V2TLB(entries=self.config.tlb_entries) if self.config.enable_tlb else None
 
     def elaborate(self, platform):
         m = Module()
@@ -667,110 +669,111 @@ class Little64V2Core(Elaboratable):
             self.frontend.invalidate.eq(0),
         ]
 
-        with m.Switch(execute_gp_opcode):
-            with m.Case(GPOpcode.ADD):
-                m.d.comb += [
-                    gp_alu_valid.eq(1),
-                    gp_alu_reg_write.eq(1),
-                    gp_alu_result_value.eq(sum_value[:64]),
-                    gp_alu_flags_write.eq(1),
-                    gp_alu_flag_result.eq(sum_value[:64]),
-                    gp_alu_flag_carry.eq(sum_value[64]),
-                ]
-            with m.Case(GPOpcode.SUB):
-                m.d.comb += [
-                    gp_alu_valid.eq(1),
-                    gp_alu_reg_write.eq(1),
-                    gp_alu_result_value.eq(sub_value),
-                    gp_alu_flags_write.eq(1),
-                    gp_alu_flag_result.eq(sub_value),
-                    gp_alu_flag_carry.eq(operand_b > operand_a),
-                ]
-            with m.Case(GPOpcode.TEST):
-                m.d.comb += [
-                    gp_alu_valid.eq(1),
-                    gp_alu_flags_write.eq(1),
-                    gp_alu_flag_result.eq(sub_value),
-                    gp_alu_flag_carry.eq(operand_b > operand_a),
-                ]
-            with m.Case(GPOpcode.AND):
-                m.d.comb += [
-                    gp_alu_valid.eq(1),
-                    gp_alu_reg_write.eq(1),
-                    gp_alu_result_value.eq(operand_a & operand_b),
-                    gp_alu_flags_write.eq(1),
-                    gp_alu_flag_result.eq(operand_a & operand_b),
-                ]
-            with m.Case(GPOpcode.OR):
-                m.d.comb += [
-                    gp_alu_valid.eq(1),
-                    gp_alu_reg_write.eq(1),
-                    gp_alu_result_value.eq(operand_a | operand_b),
-                    gp_alu_flags_write.eq(1),
-                    gp_alu_flag_result.eq(operand_a | operand_b),
-                ]
-            with m.Case(GPOpcode.XOR):
-                m.d.comb += [
-                    gp_alu_valid.eq(1),
-                    gp_alu_reg_write.eq(1),
-                    gp_alu_result_value.eq(operand_a ^ operand_b),
-                    gp_alu_flags_write.eq(1),
-                    gp_alu_flag_result.eq(operand_a ^ operand_b),
-                ]
-            with m.Case(GPOpcode.SLL):
-                m.d.comb += [
-                    gp_alu_valid.eq(1),
-                    gp_alu_reg_write.eq(1),
-                    gp_alu_result_value.eq(sll_results[shift_index]),
-                    gp_alu_flags_write.eq(1),
-                    gp_alu_flag_result.eq(sll_results[shift_index]),
-                    gp_alu_flag_carry.eq(sll_carries[shift_index]),
-                ]
-            with m.Case(GPOpcode.SRL):
-                m.d.comb += [
-                    gp_alu_valid.eq(1),
-                    gp_alu_reg_write.eq(1),
-                    gp_alu_result_value.eq(srl_results[shift_index]),
-                    gp_alu_flags_write.eq(1),
-                    gp_alu_flag_result.eq(srl_results[shift_index]),
-                    gp_alu_flag_carry.eq(srl_carries[shift_index]),
-                ]
-            with m.Case(GPOpcode.SRA):
-                m.d.comb += [
-                    gp_alu_valid.eq(1),
-                    gp_alu_reg_write.eq(1),
-                    gp_alu_result_value.eq(sra_results[shift_index]),
-                    gp_alu_flags_write.eq(1),
-                    gp_alu_flag_result.eq(sra_results[shift_index]),
-                    gp_alu_flag_carry.eq(sra_carries[shift_index]),
-                ]
-            with m.Case(GPOpcode.SLLI):
-                m.d.comb += [
-                    gp_alu_valid.eq(1),
-                    gp_alu_reg_write.eq(1),
-                    gp_alu_result_value.eq(slli_results[execute_imm4]),
-                    gp_alu_flags_write.eq(1),
-                    gp_alu_flag_result.eq(slli_results[execute_imm4]),
-                    gp_alu_flag_carry.eq(slli_carries[execute_imm4]),
-                ]
-            with m.Case(GPOpcode.SRLI):
-                m.d.comb += [
-                    gp_alu_valid.eq(1),
-                    gp_alu_reg_write.eq(1),
-                    gp_alu_result_value.eq(srli_results[execute_imm4]),
-                    gp_alu_flags_write.eq(1),
-                    gp_alu_flag_result.eq(srli_results[execute_imm4]),
-                    gp_alu_flag_carry.eq(srli_carries[execute_imm4]),
-                ]
-            with m.Case(GPOpcode.SRAI):
-                m.d.comb += [
-                    gp_alu_valid.eq(1),
-                    gp_alu_reg_write.eq(1),
-                    gp_alu_result_value.eq(srai_results[execute_imm4]),
-                    gp_alu_flags_write.eq(1),
-                    gp_alu_flag_result.eq(srai_results[execute_imm4]),
-                    gp_alu_flag_carry.eq(srai_carries[execute_imm4]),
-                ]
+        with m.If(execute_top3 == Const(0b110, 3)):
+            with m.Switch(execute_gp_opcode):
+                with m.Case(GPOpcode.ADD):
+                    m.d.comb += [
+                        gp_alu_valid.eq(1),
+                        gp_alu_reg_write.eq(1),
+                        gp_alu_result_value.eq(sum_value[:64]),
+                        gp_alu_flags_write.eq(1),
+                        gp_alu_flag_result.eq(sum_value[:64]),
+                        gp_alu_flag_carry.eq(sum_value[64]),
+                    ]
+                with m.Case(GPOpcode.SUB):
+                    m.d.comb += [
+                        gp_alu_valid.eq(1),
+                        gp_alu_reg_write.eq(1),
+                        gp_alu_result_value.eq(sub_value),
+                        gp_alu_flags_write.eq(1),
+                        gp_alu_flag_result.eq(sub_value),
+                        gp_alu_flag_carry.eq(operand_b > operand_a),
+                    ]
+                with m.Case(GPOpcode.TEST):
+                    m.d.comb += [
+                        gp_alu_valid.eq(1),
+                        gp_alu_flags_write.eq(1),
+                        gp_alu_flag_result.eq(sub_value),
+                        gp_alu_flag_carry.eq(operand_b > operand_a),
+                    ]
+                with m.Case(GPOpcode.AND):
+                    m.d.comb += [
+                        gp_alu_valid.eq(1),
+                        gp_alu_reg_write.eq(1),
+                        gp_alu_result_value.eq(operand_a & operand_b),
+                        gp_alu_flags_write.eq(1),
+                        gp_alu_flag_result.eq(operand_a & operand_b),
+                    ]
+                with m.Case(GPOpcode.OR):
+                    m.d.comb += [
+                        gp_alu_valid.eq(1),
+                        gp_alu_reg_write.eq(1),
+                        gp_alu_result_value.eq(operand_a | operand_b),
+                        gp_alu_flags_write.eq(1),
+                        gp_alu_flag_result.eq(operand_a | operand_b),
+                    ]
+                with m.Case(GPOpcode.XOR):
+                    m.d.comb += [
+                        gp_alu_valid.eq(1),
+                        gp_alu_reg_write.eq(1),
+                        gp_alu_result_value.eq(operand_a ^ operand_b),
+                        gp_alu_flags_write.eq(1),
+                        gp_alu_flag_result.eq(operand_a ^ operand_b),
+                    ]
+                with m.Case(GPOpcode.SLL):
+                    m.d.comb += [
+                        gp_alu_valid.eq(1),
+                        gp_alu_reg_write.eq(1),
+                        gp_alu_result_value.eq(sll_results[shift_index]),
+                        gp_alu_flags_write.eq(1),
+                        gp_alu_flag_result.eq(sll_results[shift_index]),
+                        gp_alu_flag_carry.eq(sll_carries[shift_index]),
+                    ]
+                with m.Case(GPOpcode.SRL):
+                    m.d.comb += [
+                        gp_alu_valid.eq(1),
+                        gp_alu_reg_write.eq(1),
+                        gp_alu_result_value.eq(srl_results[shift_index]),
+                        gp_alu_flags_write.eq(1),
+                        gp_alu_flag_result.eq(srl_results[shift_index]),
+                        gp_alu_flag_carry.eq(srl_carries[shift_index]),
+                    ]
+                with m.Case(GPOpcode.SRA):
+                    m.d.comb += [
+                        gp_alu_valid.eq(1),
+                        gp_alu_reg_write.eq(1),
+                        gp_alu_result_value.eq(sra_results[shift_index]),
+                        gp_alu_flags_write.eq(1),
+                        gp_alu_flag_result.eq(sra_results[shift_index]),
+                        gp_alu_flag_carry.eq(sra_carries[shift_index]),
+                    ]
+                with m.Case(GPOpcode.SLLI):
+                    m.d.comb += [
+                        gp_alu_valid.eq(1),
+                        gp_alu_reg_write.eq(1),
+                        gp_alu_result_value.eq(slli_results[execute_imm4]),
+                        gp_alu_flags_write.eq(1),
+                        gp_alu_flag_result.eq(slli_results[execute_imm4]),
+                        gp_alu_flag_carry.eq(slli_carries[execute_imm4]),
+                    ]
+                with m.Case(GPOpcode.SRLI):
+                    m.d.comb += [
+                        gp_alu_valid.eq(1),
+                        gp_alu_reg_write.eq(1),
+                        gp_alu_result_value.eq(srli_results[execute_imm4]),
+                        gp_alu_flags_write.eq(1),
+                        gp_alu_flag_result.eq(srli_results[execute_imm4]),
+                        gp_alu_flag_carry.eq(srli_carries[execute_imm4]),
+                    ]
+                with m.Case(GPOpcode.SRAI):
+                    m.d.comb += [
+                        gp_alu_valid.eq(1),
+                        gp_alu_reg_write.eq(1),
+                        gp_alu_result_value.eq(srai_results[execute_imm4]),
+                        gp_alu_flags_write.eq(1),
+                        gp_alu_flag_result.eq(srai_results[execute_imm4]),
+                        gp_alu_flag_carry.eq(srai_carries[execute_imm4]),
+                    ]
 
         with m.If(gp_alu_flags_write):
             m.d.comb += gp_alu_flags_value.eq(flag_value(gp_alu_flag_result, gp_alu_flag_carry))

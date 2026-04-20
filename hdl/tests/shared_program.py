@@ -390,14 +390,6 @@ def run_program_words(words: list[int],
                 ctx.set(dut.translate_virtual_addr, initial_pc)
                 ctx.set(dut.translate_access, ACCESS_EXECUTE)
                 ctx.set(dut.state, V3PipelineState.FETCH)
-            elif resolved_config.core_variant == 'gemini':
-                ctx.set(dut.halted, 0)
-                ctx.set(dut.frontend.line_valid, 0)
-                ctx.set(dut.register_file[15], initial_pc)
-                ctx.set(dut.id_valid, 0)
-                ctx.set(dut.ex_valid, 0)
-                ctx.set(dut.mem_valid, 0)
-                ctx.set(dut.wb_valid, 0)
 
         await ctx.tick()
         seed_core_state()

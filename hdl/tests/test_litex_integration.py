@@ -991,7 +991,7 @@ def test_litex_sim_soc_can_use_image_backed_sdcard(tmp_path) -> None:
 
 
 def test_litex_sim_soc_can_use_sdram_model(tmp_path) -> None:
-    soc = Little64LiteXSimSoC(with_sdram=True)
+    soc = Little64LiteXSimSoC(litex_target='sim-bootrom', with_sdram=True)
     soc.platform.output_dir = str(tmp_path / 'litex-sdram')
     soc.finalize()
 
@@ -1024,13 +1024,13 @@ def test_generated_litex_sim_dts_matches_built_in_profile(tmp_path) -> None:
     generated_dts = generate_linux_dts(
         soc,
         model='Little64 LiteX Simulation SoC (Boot ROM)',
-        bootargs='root=/dev/mmcblk0p2 rootwait init=/init',
+        bootargs='root=/dev/mmcblk0p2 rootwait',
     )
 
     shared_lines = [
         'compatible = "little64,litex-sim", "little64,bootrom";',
         'model = "Little64 LiteX Simulation SoC (Boot ROM)";',
-        'bootargs = "root=/dev/mmcblk0p2 rootwait init=/init";',
+        'bootargs = "root=/dev/mmcblk0p2 rootwait";',
         'memory@40000000',
         'compatible = "litex,liteuart";',
         'serial@f0004000',
@@ -1237,7 +1237,7 @@ def test_sd_card_image_writer_creates_requested_disk_size_and_partitions(tmp_pat
 def test_flatten_linux_elf_resolves_virtual_entry_to_physical() -> None:
     image = flatten_little64_linux_elf_image(_make_test_elf64(b'\xaa\xbb', entry_offset=1))
 
-    assert image.entry_physical == 0x0010_0001
+    assert image.entry_physical == 0x4000_0001
     assert image.image[:2] == b'\xaa\xbb'
     assert image.image_span == 0x1000
 

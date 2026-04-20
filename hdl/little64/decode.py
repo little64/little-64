@@ -1,67 +1,31 @@
 from __future__ import annotations
 
-from amaranth import Const
-
-
-def instruction_rd(instruction):
-    return instruction[0:4]
-
-
-def instruction_rs1(instruction):
-    return instruction[4:8]
-
-
-def instruction_gp_imm4(instruction):
-    return instruction[4:8]
-
-
-def instruction_ldi_imm8(instruction):
-    return instruction[4:12]
-
-
-def instruction_ls_offset2(instruction):
-    return instruction[8:10]
-
-
-def instruction_gp_opcode(instruction):
-    return instruction[8:13]
-
-
-def instruction_ls_opcode(instruction):
-    return instruction[10:14]
-
-
-def instruction_ldi_shift(instruction):
-    return instruction[12:14]
-
-
-def instruction_top3(instruction):
-    return instruction[13:16]
-
-
-def instruction_top2(instruction):
-    return instruction[14:16]
-
-
-def is_ldi_format(instruction):
-    return instruction_top2(instruction) == Const(0b10, 2)
-
-
-def is_gp_format(instruction):
-    return instruction_top3(instruction) == Const(0b110, 3)
-
+# Shared decode metadata is definition-only; executable field extractors now
+# live in per-core helper modules.
+INSTR_RD_SLICE = (0, 4)
+INSTR_RS1_SLICE = (4, 8)
+INSTR_GP_IMM4_SLICE = (4, 8)
+INSTR_LDI_IMM8_SLICE = (4, 12)
+INSTR_LS_OFFSET2_SLICE = (8, 10)
+INSTR_GP_OPCODE_SLICE = (8, 13)
+INSTR_LS_OPCODE_SLICE = (10, 14)
+INSTR_LDI_SHIFT_SLICE = (12, 14)
+INSTR_TOP3_SLICE = (13, 16)
+INSTR_TOP2_SLICE = (14, 16)
+TOP2_LDI = 0b10
+TOP3_GP = 0b110
 
 __all__ = [
-    'instruction_gp_imm4',
-    'instruction_gp_opcode',
-    'instruction_ldi_imm8',
-    'instruction_ldi_shift',
-    'instruction_ls_offset2',
-    'instruction_ls_opcode',
-    'instruction_rd',
-    'instruction_rs1',
-    'instruction_top2',
-    'instruction_top3',
-    'is_gp_format',
-    'is_ldi_format',
+    'INSTR_GP_IMM4_SLICE',
+    'INSTR_GP_OPCODE_SLICE',
+    'INSTR_LDI_IMM8_SLICE',
+    'INSTR_LDI_SHIFT_SLICE',
+    'INSTR_LS_OFFSET2_SLICE',
+    'INSTR_LS_OPCODE_SLICE',
+    'INSTR_RD_SLICE',
+    'INSTR_RS1_SLICE',
+    'INSTR_TOP2_SLICE',
+    'INSTR_TOP3_SLICE',
+    'TOP2_LDI',
+    'TOP3_GP',
 ]

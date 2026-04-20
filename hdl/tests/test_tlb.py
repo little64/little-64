@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from amaranth.sim import Settle, Simulator
 
-from little64.tlb import Little64TLB
+from little64.v2.tlb import Little64V2TLB
 
 
 def test_tlb_fill_lookup_and_flush() -> None:
-    dut = Little64TLB(entries=8)
+    dut = Little64V2TLB(entries=8)
     sim = Simulator(dut)
     sim.add_clock(1e-6)
 
@@ -45,7 +45,7 @@ def test_tlb_fill_lookup_and_flush() -> None:
 
 
 def test_tlb_flush_generations_do_not_clear_entries_broadcast() -> None:
-    dut = Little64TLB(entries=8)
+    dut = Little64V2TLB(entries=8)
     sim = Simulator(dut)
     sim.add_clock(1e-6)
 
@@ -89,7 +89,7 @@ def test_tlb_flush_generations_do_not_clear_entries_broadcast() -> None:
 
 
 def test_tlb_generation_wrap_clears_stale_entries() -> None:
-    dut = Little64TLB(entries=8, generation_bits=2)
+    dut = Little64V2TLB(entries=8, generation_bits=2)
     sim = Simulator(dut)
     sim.add_clock(1e-6)
 

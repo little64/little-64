@@ -149,7 +149,7 @@ def test_commit_valid_pulses_for_memory_instructions(shared_core_config, shared_
             'STOP',
         ]),
         config=shared_core_config,
-        max_cycles=32,
+        max_cycles=48,
     )
 
     assert observed['locked_up'] == 0

@@ -92,13 +92,19 @@ def run_program_with_mmio_trace(
         yield
         for index, value in initial_registers.items():
             yield dut.register_file[index].eq(value)
-        yield dut.frontend.line_valid.eq(0)
-        yield dut.fetch_pc.eq(0)
-        yield dut.fetch_phys_addr.eq(0)
-        yield dut.current_instruction.eq(0)
-        yield dut.execute_instruction.eq(0)
+        # Initialize pipeline-specific signals only for pipelined cores (v2, v3)
+        if config.core_variant != 'basic':
+            yield dut.frontend.line_valid.eq(0)
+            yield dut.execute_instruction.eq(0)
+        if hasattr(dut, 'fetch_pc'):
+            yield dut.fetch_pc.eq(0)
+        if hasattr(dut, 'fetch_phys_addr'):
+            yield dut.fetch_phys_addr.eq(0)
+        if hasattr(dut, 'current_instruction'):
+            yield dut.current_instruction.eq(0)
+        if hasattr(dut, 'state'):
+            yield dut.state.eq(FETCH_TRANSLATE_STATE)
         yield dut.locked_up.eq(0)
-        yield dut.state.eq(FETCH_TRANSLATE_STATE)
         yield
         ready['value'] = True
 

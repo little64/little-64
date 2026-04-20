@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from amaranth import Array, Cat, Const, Elaboratable, Module, Mux, Signal
 
-from ..alu import flag_value, ls_condition, sign_extend
-from ..decode import (
+from .helpers import (
+    flag_value,
     instruction_gp_imm4,
     instruction_gp_opcode,
     instruction_ldi_imm8,
@@ -14,6 +14,8 @@ from ..decode import (
     instruction_rs1,
     instruction_top2,
     instruction_top3,
+    ls_condition,
+    sign_extend,
 )
 from ..isa import CPU_CONTROL_USER_MODE, GPOpcode, LSOpcode, TrapVector
 from .bundles import V3ExecuteOutputs

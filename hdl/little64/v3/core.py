@@ -28,21 +28,20 @@ from ..mmu import (
     PTE_V,
     PTE_W,
     PTE_X,
-    encode_aux,
-    is_canonical39,
 )
 from ..isa import SpecialRegister
-from ..special_registers import Little64SpecialRegisterFile
-from ..tlb import Little64TLB
 from ..v2.cache import Little64V2LineCache
 from ..v2.frontend import Little64V2FetchFrontend
 from ..v2.lsu import Little64V2LSU
 from .bundles import V3FaultBundle, V3MemoryStageState, V3RetireStageState
 from .decode_stage import Little64V3DecodeStage
 from .execute_stage import Little64V3ExecuteStage
+from .helpers import encode_aux, is_canonical39
 from .memory_stage import Little64V3MemoryStage
 from .retire_stage import Little64V3RetireStage
+from .special_registers import Little64V3SpecialRegisterFile
 from .state import V3PipelineState
+from .tlb import Little64V3TLB
 
 
 class Little64V3Core(Elaboratable):
@@ -73,8 +72,8 @@ class Little64V3Core(Elaboratable):
                 data_width=self.config.data_bus_width,
                 address_width=self.config.address_width,
             )
-        self.special_regs = Little64SpecialRegisterFile(self.config)
-        self.tlb = Little64TLB(entries=self.config.tlb_entries) if self.config.enable_tlb else None
+        self.special_regs = Little64V3SpecialRegisterFile(self.config)
+        self.tlb = Little64V3TLB(entries=self.config.tlb_entries) if self.config.enable_tlb else None
 
         self.i_bus = self.frontend.i_bus
         self.d_bus = self.lsu.bus
