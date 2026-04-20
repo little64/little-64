@@ -60,10 +60,12 @@ class Little64V3Core(Elaboratable):
         self.frontend = Little64V2FetchFrontend(
             data_width=self.config.instruction_bus_width,
             address_width=self.config.address_width,
+            bus_timeout_cycles=self.config.bus_timeout_cycles,
         )
         self.lsu = Little64V2LSU(
             data_width=self.config.data_bus_width,
             address_width=self.config.address_width,
+            bus_timeout_cycles=self.config.bus_timeout_cycles,
         )
         self.dcache = None
         if self.config.cache_topology != 'none':
@@ -78,13 +80,23 @@ class Little64V3Core(Elaboratable):
         self.i_bus = self.frontend.i_bus
         self.d_bus = self.lsu.bus
 
+        # Diagnostic aliases for the frontend and LSU bus watchdogs. These
+        # already drive ``fetch_error`` / ``response_error`` internally, but
+        # the raw timeout pulses are promoted to top-level signals so that an
+        # ILA or the LiteX wrapper can observe a hang without having to dig
+        # into the V2 submodules. Useful when a UART transaction on the Arty
+        # board never completes: both the simulator and hardware then agree
+        # on the same observable signal for "bus request never acked".
+        self.frontend_bus_watchdog_timeout = self.frontend.bus_watchdog_timeout
+        self.lsu_bus_watchdog_timeout = self.lsu.bus_watchdog_timeout
+
         self.irq_lines = Signal(self.config.irq_input_count)
         self.halted = Signal()
         self.locked_up = Signal()
         self.state = Signal(4, init=V3PipelineState.RESET)
         self.current_instruction = Signal(16)
-        self.fetch_pc = Signal(64)
-        self.fetch_phys_addr = Signal(64)
+        self.fetch_pc = Signal(64, init=self.config.reset_vector)
+        self.fetch_phys_addr = Signal(64, init=self.config.reset_vector)
         self.decode_pc = Signal(64)
         self.decode_post_increment_pc = Signal(64)
         self.execute_pc = Signal(64)
@@ -97,8 +109,8 @@ class Little64V3Core(Elaboratable):
         self.commit_pc = Signal(64)
         self.boot_r1 = Signal(64)
         self.boot_r13 = Signal(64)
-        self.translate_virtual_addr = Signal(64)
-        self.translate_access = Signal(2)
+        self.translate_virtual_addr = Signal(64, init=self.config.reset_vector)
+        self.translate_access = Signal(2, init=ACCESS_EXECUTE)
 
         self.register_file = [
             Signal(64, name=f'r{index}', init=self.config.reset_vector if index == 15 else 0)
@@ -1038,49 +1050,10 @@ class Little64V3Core(Elaboratable):
 
         with m.If(self.state == V3PipelineState.RESET):
             m.d.sync += [
-                self.halted.eq(0),
-                self.locked_up.eq(0),
-                self.flags.eq(0),
                 self.regs[1].eq(self.boot_r1),
                 self.regs[13].eq(self.boot_r13),
-                self.regs[15].eq(self.config.reset_vector),
-                self.fetch_pc.eq(self.config.reset_vector),
-                self.fetch_phys_addr.eq(self.config.reset_vector),
-                self.decode_pc.eq(0),
-                self.execute_pc.eq(0),
-                self.current_instruction.eq(0),
-                self.execute_instruction.eq(0),
-                self.execute_operand_a.eq(0),
-                self.execute_operand_b.eq(0),
-                self.execute_flags.eq(0),
-                self.translate_virtual_addr.eq(self.config.reset_vector),
-                self.translate_access.eq(ACCESS_EXECUTE),
-                self.commit_valid.eq(0),
-                self.commit_pc.eq(0),
-                ll_reservation_valid.eq(0),
-                ll_reservation_addr.eq(0),
-                fetch_phys_valid.eq(0),
-                decode_valid.eq(0),
-                execute_valid.eq(0),
-                vector_load_active.eq(0),
-                vector_load_started.eq(0),
-                vector_virtual_addr.eq(0),
-                vector_load_addr.eq(0),
-                vector_phys_valid.eq(0),
-                vector_load_epc.eq(0),
-                vector_load_flags.eq(0),
-                walk_active.eq(0),
-                walk_processing.eq(0),
-                walk_started.eq(0),
-                walk_virtual_addr.eq(0),
-                walk_table_addr.eq(0),
-                walk_level.eq(0),
-                walk_access.eq(0),
-                walk_resume_kind.eq(WALK_RESUME_FETCH),
-                walk_pte_latched.eq(0),
                 self.state.eq(V3PipelineState.FETCH),
             ]
-            m.d.sync += clear_memory_stage_sync() + clear_retire_stage_sync()
         with m.Else():
             m.d.sync += [
                 self.commit_valid.eq(0),

@@ -409,6 +409,7 @@ def _rebuild_sd_boot_artifacts(
         toolchain=args.toolchain,
     )
     soc.platform.output_dir = str(artifact_paths['dir'])
+    soc.finalize()
     csr_regions = cast(dict[str, Any], getattr(soc.csr, 'regions'))
     uart_region = csr_regions.get('uart')
     bootargs = _compose_arty_bootargs(
@@ -441,7 +442,7 @@ def _rebuild_sd_boot_artifacts(
     return _BUILD_SD_BOOT_ARTIFACTS.pack_litex_memory_words(
         bootrom_image,
         data_width=int(soc.bus.data_width),
-        endianness='big',
+        endianness='little',
     )
 
 

@@ -539,7 +539,7 @@ def main() -> int:
         integrated_main_ram_size=0 if resolved_with_sdram else ram_size,
         main_ram_size=ram_size,
         with_sdram=resolved_with_sdram,
-        with_spi_flash=True,
+        with_spi_flash=(target.with_spi_flash or boot_source == 'spiflash'),
         with_sdcard=True,
         with_timer=True,
         litex_target=args.litex_target,

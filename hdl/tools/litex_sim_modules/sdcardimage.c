@@ -25,6 +25,7 @@ struct session_s {
   int serving_request;
   int request_seen;
   int warned_missing_image;
+  int reported_first_request;
 };
 
 static int litex_sim_module_pads_get(struct pad_s *pads, char *name, void **signal)
@@ -174,6 +175,11 @@ static int sdcardimage_tick(void *sess, uint64_t time_ps)
   }
 
   if (!s->serving_request && *s->req && !s->request_seen) {
+    if (!s->reported_first_request) {
+      fprintf(stderr, "sdcardimage: first request byteaddr=0x%08x\n", *s->byteaddr);
+      fflush(stderr);
+      s->reported_first_request = 1;
+    }
     sdcardimage_load_block(s, *s->byteaddr);
     s->word_index = 0;
     s->serving_request = 1;

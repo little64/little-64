@@ -8,6 +8,8 @@ EXPERIMENTAL_CORE_VARIANTS = ('v3',)
 SUPPORTED_CORE_VARIANTS = CORE_VARIANTS + EXPERIMENTAL_CORE_VARIANTS
 CACHE_TOPOLOGIES = ('none', 'unified', 'split')
 
+DEFAULT_BUS_TIMEOUT_CYCLES = 1024
+
 
 @dataclass(frozen=True, slots=True)
 class Little64CoreConfig:
@@ -22,6 +24,7 @@ class Little64CoreConfig:
     optional_platform_registers: bool = False
     irq_input_count: int = 63
     reset_vector: int = 0
+    bus_timeout_cycles: int = DEFAULT_BUS_TIMEOUT_CYCLES
 
     def __post_init__(self) -> None:
         if self.instruction_bus_width != 64:
@@ -47,6 +50,8 @@ class Little64CoreConfig:
             raise ValueError('Little64CoreConfig tlb_entries must be 0 when TLB is disabled')
         if self.reset_vector & 0x1:
             raise ValueError('Little64CoreConfig reset_vector must be 16-bit aligned')
+        if self.bus_timeout_cycles < 0:
+            raise ValueError('Little64CoreConfig bus_timeout_cycles must be non-negative')
 
     @property
     def first_irq_vector(self) -> int:

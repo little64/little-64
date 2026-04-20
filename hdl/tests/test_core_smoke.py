@@ -2,8 +2,187 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+from amaranth import Elaboratable, Module, ResetInserter, Signal
+from amaranth.sim import Simulator
+
 from little64.isa import CPU_CONTROL_PAGING_ENABLE, CPU_CONTROL_USER_MODE, TrapVector
-from shared_program import assemble_source, run_program_source
+from little64.variants import create_core
+from shared_program import assemble_source, encode_gp_imm, run_program_source, run_program_words
+
+
+STOP_WORD = encode_gp_imm('STOP', 0, 0)
+
+
+class _ResettableCore(Elaboratable):
+    def __init__(self, core) -> None:
+        self._core = core
+        self.test_reset = Signal()
+        self.i_bus = core.i_bus
+        self.d_bus = core.d_bus
+        self.halted = core.halted
+        self.locked_up = core.locked_up
+        self.register_file = core.register_file
+        self.flags = core.flags
+        self.special_regs = core.special_regs
+
+    def elaborate(self, platform):
+        m = Module()
+        m.submodules.core = ResetInserter(self.test_reset)(self._core)
+        return m
+
+
+def test_core_reset_contract_and_external_startup_state(shared_core_config) -> None:
+    observed = run_program_source('STOP', config=shared_core_config, max_cycles=16)
+
+    assert observed['locked_up'] == 0
+    assert observed['halted'] == 1
+    assert observed['registers'][0] == 0
+    assert observed['registers'][15] == 2
+    assert observed['flags'] == 0
+    assert observed['trap_cause'] == 0
+    assert observed['trap_fault_addr'] == 0
+    assert observed['trap_access'] == 0
+    assert observed['trap_pc'] == 0
+    assert observed['trap_aux'] == 0
+    assert observed['special_registers']['cpu_control'] == 0
+    assert observed['special_registers']['interrupt_table_base'] == 0
+    assert observed['special_registers']['interrupt_mask'] == 0
+    assert observed['special_registers']['interrupt_mask_high'] == 0
+    assert observed['special_registers']['interrupt_states'] == 0
+    assert observed['special_registers']['interrupt_states_high'] == 0
+    assert observed['special_registers']['interrupt_epc'] == 0
+    assert observed['special_registers']['interrupt_eflags'] == 0
+    assert observed['special_registers']['interrupt_cpu_control'] == 0
+
+    seeded_special_registers = {
+        'cpu_control': 0x1,
+        'interrupt_table_base': 0x1234_5600,
+        'interrupt_mask': 0x10,
+        'interrupt_mask_high': 0x20,
+        'interrupt_states': 0x40,
+        'interrupt_states_high': 0x80,
+        'interrupt_epc': 0x2222,
+        'interrupt_eflags': 0x5,
+        'interrupt_cpu_control': 0x1,
+    }
+
+    seeded = run_program_words(
+        [],
+        config=replace(shared_core_config, reset_vector=0x40),
+        initial_special_registers=seeded_special_registers,
+        extra_code_words={0x40: STOP_WORD},
+        max_cycles=16,
+    )
+
+    assert seeded['locked_up'] == 0
+    assert seeded['halted'] == 1
+    assert seeded['registers'][15] == 0x42
+    for name, value in seeded_special_registers.items():
+        assert seeded['special_registers'][name] == value
+
+
+def test_core_reset_after_execution_restores_architectural_state(shared_core_config) -> None:
+    reset_vector = 0x20
+    words = assemble_source('\n'.join([
+        'LDI #0x34, R1',
+        'LDI #0x01, R2',
+        'ADD R1, R2',
+        'STOP',
+    ]))
+
+    code_memory: dict[int, int] = {}
+    for word_index, word in enumerate(words):
+        base = reset_vector + word_index * 2
+        code_memory[base] = word & 0xFF
+        code_memory[base + 1] = (word >> 8) & 0xFF
+
+    def read_code_qword(addr: int) -> int:
+        return sum((code_memory.get(addr + byte_index, 0) & 0xFF) << (8 * byte_index) for byte_index in range(8))
+
+    dut = _ResettableCore(create_core(replace(shared_core_config, reset_vector=reset_vector)))
+    sim = Simulator(dut)
+    sim.add_clock(1e-6)
+
+    observed: dict[str, int] = {}
+
+    def bus_process():
+        while True:
+            if (yield dut.i_bus.cyc) and (yield dut.i_bus.stb):
+                yield dut.i_bus.dat_r.eq(read_code_qword((yield dut.i_bus.adr)))
+                yield dut.i_bus.ack.eq(1)
+            else:
+                yield dut.i_bus.ack.eq(0)
+
+            if (yield dut.d_bus.cyc) and (yield dut.d_bus.stb):
+                yield dut.d_bus.dat_r.eq(0)
+                yield dut.d_bus.ack.eq(1)
+            else:
+                yield dut.d_bus.ack.eq(0)
+            yield
+
+    def checker_process():
+        yield dut.test_reset.eq(0)
+
+        for _ in range(128):
+            if (yield dut.halted):
+                break
+            yield
+
+        observed['pre_reset_halted'] = (yield dut.halted)
+        observed['pre_reset_r1'] = (yield dut.register_file[1])
+        observed['pre_reset_r2'] = (yield dut.register_file[2])
+
+        yield dut.test_reset.eq(1)
+        yield
+        yield
+        observed['during_reset_halted'] = (yield dut.halted)
+        observed['during_reset_locked_up'] = (yield dut.locked_up)
+        observed['during_reset_r1'] = (yield dut.register_file[1])
+        observed['during_reset_r2'] = (yield dut.register_file[2])
+        observed['during_reset_r15'] = (yield dut.register_file[15])
+        observed['during_reset_flags'] = (yield dut.flags)
+        observed['during_reset_cpu_control'] = (yield dut.special_regs.cpu_control)
+        observed['during_reset_interrupt_mask'] = (yield dut.special_regs.interrupt_mask)
+        observed['during_reset_interrupt_states'] = (yield dut.special_regs.interrupt_states)
+        observed['during_reset_trap_cause'] = (yield dut.special_regs.trap_cause)
+        observed['during_reset_trap_pc'] = (yield dut.special_regs.trap_pc)
+
+        yield dut.test_reset.eq(0)
+        yield
+        yield
+
+        for _ in range(128):
+            if (yield dut.halted):
+                break
+            yield
+
+        observed['post_reset_halted'] = (yield dut.halted)
+        observed['post_reset_r1'] = (yield dut.register_file[1])
+        observed['post_reset_r2'] = (yield dut.register_file[2])
+
+    sim.add_sync_process(bus_process)
+    sim.add_sync_process(checker_process)
+    sim.run_until(300e-6, run_passive=True)
+
+    assert observed['pre_reset_halted'] == 1
+    assert observed['pre_reset_r1'] == 0x34
+    assert observed['pre_reset_r2'] == 0x35
+
+    assert observed['during_reset_halted'] == 0
+    assert observed['during_reset_locked_up'] == 0
+    assert observed['during_reset_r1'] == 0
+    assert observed['during_reset_r2'] == 0
+    assert observed['during_reset_r15'] == reset_vector
+    assert observed['during_reset_flags'] == 0
+    assert observed['during_reset_cpu_control'] == 0
+    assert observed['during_reset_interrupt_mask'] == 0
+    assert observed['during_reset_interrupt_states'] == 0
+    assert observed['during_reset_trap_cause'] == 0
+    assert observed['during_reset_trap_pc'] == 0
+
+    assert observed['post_reset_halted'] == 1
+    assert observed['post_reset_r1'] == 0x34
+    assert observed['post_reset_r2'] == 0x35
 
 
 def test_core_fetches_ldi_then_stops(shared_core_config) -> None:

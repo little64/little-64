@@ -90,10 +90,12 @@ class Little64V2Core(Elaboratable):
         self.frontend = Little64V2FetchFrontend(
             data_width=self.config.instruction_bus_width,
             address_width=self.config.address_width,
+            bus_timeout_cycles=self.config.bus_timeout_cycles,
         )
         self.lsu = Little64V2LSU(
             data_width=self.config.data_bus_width,
             address_width=self.config.address_width,
+            bus_timeout_cycles=self.config.bus_timeout_cycles,
         )
         self.dcache = None
         if self.config.cache_topology != 'none':

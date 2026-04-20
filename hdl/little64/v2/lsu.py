@@ -5,6 +5,7 @@ from enum import IntEnum
 from amaranth import Cat, Const, Elaboratable, Module, Mux, Signal
 
 from ..wishbone import WishboneMasterInterface
+from .frontend import DEFAULT_BUS_TIMEOUT_CYCLES
 
 
 class V2LSUState(IntEnum):
@@ -14,7 +15,15 @@ class V2LSUState(IntEnum):
 
 
 class Little64V2LSU(Elaboratable):
-    def __init__(self, *, address_width: int = 64, data_width: int = 64) -> None:
+    def __init__(self,
+                 *,
+                 address_width: int = 64,
+                 data_width: int = 64,
+                 bus_timeout_cycles: int = DEFAULT_BUS_TIMEOUT_CYCLES) -> None:
+        if bus_timeout_cycles < 0:
+            raise ValueError('bus_timeout_cycles must be non-negative')
+        self.bus_timeout_cycles = bus_timeout_cycles
+
         self.bus = WishboneMasterInterface(
             data_width=data_width,
             address_width=address_width,
@@ -34,6 +43,7 @@ class Little64V2LSU(Elaboratable):
         self.response_write = Signal()
         self.response_addr = Signal(address_width)
         self.active = Signal()
+        self.bus_watchdog_timeout = Signal()
 
         self.state = Signal(2, init=V2LSUState.IDLE)
 
@@ -61,6 +71,26 @@ class Little64V2LSU(Elaboratable):
         single_read_data = Signal(64)
         combined_read_data = Signal(64)
 
+        bus_active = Signal()
+        watchdog_fire = Signal()
+        effective_err = Signal()
+
+        m.d.comb += [
+            bus_active.eq(self.state != V2LSUState.IDLE),
+            effective_err.eq(self.bus.err | watchdog_fire),
+            self.bus_watchdog_timeout.eq(watchdog_fire),
+        ]
+
+        if self.bus_timeout_cycles > 0:
+            watchdog_counter = Signal(range(self.bus_timeout_cycles + 1))
+            m.d.comb += watchdog_fire.eq(
+                bus_active & (watchdog_counter == self.bus_timeout_cycles)
+            )
+            with m.If(bus_active & ~self.bus.ack & ~self.bus.err & ~watchdog_fire):
+                m.d.sync += watchdog_counter.eq(watchdog_counter + 1)
+            with m.Else():
+                m.d.sync += watchdog_counter.eq(0)
+
         m.d.comb += [
             self.request_ready.eq(self.state == V2LSUState.IDLE),
             self.active.eq(self.state != V2LSUState.IDLE),
@@ -70,10 +100,18 @@ class Little64V2LSU(Elaboratable):
             self.response_write.eq(latched_write),
             self.response_addr.eq(latched_addr),
             byte_offset.eq(latched_addr[0:3]),
+            # NOTE: default fall-through is 0xFF rather than 0x00. A Wishbone
+            # transaction with sel=0 is legal but many LiteX peripherals
+            # (including the UART CSR bridge on real hardware) will neither
+            # ack nor err such a cycle, causing the LSU to hang until the
+            # watchdog fires. Defaulting to a full-word select keeps the bus
+            # well-formed even if ``latched_width`` is ever driven to an
+            # unexpected value; the response-path masking below still applies
+            # the architected width to the returned data.
             base_sel.eq(Mux(latched_width == 1, 0x01,
                         Mux(latched_width == 2, 0x03,
                         Mux(latched_width == 4, 0x0F,
-                        Mux(latched_width == 8, 0xFF, 0x00))))),
+                        Mux(latched_width == 8, 0xFF, 0xFF))))),
             word_aligned_addr.eq(latched_addr & Const(~0x7 & ((1 << len(self.request_addr)) - 1), len(self.request_addr))),
             next_word_addr.eq(word_aligned_addr + 8),
             first_beat_sel.eq(shifted_sel[0:8]),
@@ -123,7 +161,7 @@ class Little64V2LSU(Elaboratable):
         with m.Elif(self.state == V2LSUState.FIRST):
             with m.If(~beat_started):
                 m.d.sync += beat_started.eq(1)
-            with m.Elif(self.bus.err):
+            with m.Elif(effective_err):
                 m.d.comb += [
                     self.response_valid.eq(1),
                     self.response_error.eq(1),
@@ -148,7 +186,7 @@ class Little64V2LSU(Elaboratable):
         with m.Elif(self.state == V2LSUState.SECOND):
             with m.If(~beat_started):
                 m.d.sync += beat_started.eq(1)
-            with m.Elif(self.bus.err):
+            with m.Elif(effective_err):
                 m.d.comb += [
                     self.response_valid.eq(1),
                     self.response_error.eq(1),

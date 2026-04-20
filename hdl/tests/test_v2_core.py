@@ -54,6 +54,143 @@ def test_v2_frontend_reuses_buffered_fetch_line() -> None:
     assert observed['instruction_word'] == LDI_R1_IMM12
 
 
+def test_v2_frontend_ignores_stale_response_after_invalidate() -> None:
+    frontend = Little64V2FetchFrontend()
+    sim = Simulator(frontend)
+    sim.add_clock(1e-6)
+
+    line0 = 0xE004_B10D_940D_800D
+    line8 = 0x0000_0000_0000_00BE
+    line16 = 0x1021_1002_101F_43B1
+
+    seen_addresses: list[int] = []
+    pending_responses: list[list[int]] = []
+    observed = {}
+
+    def driver_process():
+        yield frontend.pc.eq(0)
+        yield frontend.invalidate.eq(0)
+        for cycle in range(16):
+            if cycle == 6:
+                yield frontend.pc.eq(8)
+            if cycle == 7:
+                yield frontend.invalidate.eq(1)
+                yield frontend.pc.eq(16)
+            elif cycle == 8:
+                yield frontend.invalidate.eq(0)
+            yield
+        observed['line_valid'] = (yield frontend.line_valid)
+        observed['line_base'] = (yield frontend.line_base)
+        observed['line_data'] = (yield frontend.line_data)
+        observed['instruction_valid'] = (yield frontend.instruction_valid)
+        observed['instruction_word'] = (yield frontend.instruction_word)
+
+    def bus_process():
+        request_active_last = False
+        while True:
+            yield frontend.i_bus.ack.eq(0)
+            yield frontend.i_bus.err.eq(0)
+            yield frontend.i_bus.dat_r.eq(0)
+            request_active = (yield frontend.i_bus.cyc) and (yield frontend.i_bus.stb)
+            if request_active and not request_active_last:
+                address = (yield frontend.i_bus.adr)
+                seen_addresses.append(address)
+                pending_responses.append([address, 1])
+
+            for pending in pending_responses:
+                pending[1] -= 1
+
+            if pending_responses and pending_responses[0][1] < 0:
+                address = pending_responses.pop(0)[0]
+                value = {0: line0, 8: line8, 16: line16}[address]
+                yield frontend.i_bus.dat_r.eq(value)
+                yield frontend.i_bus.ack.eq(1)
+
+            request_active_last = request_active
+            yield
+
+    sim.add_sync_process(driver_process)
+    sim.add_sync_process(bus_process)
+    sim.run_until(20e-6, run_passive=True)
+
+    assert seen_addresses == [0, 8, 16]
+    assert observed['line_valid'] == 1
+    assert observed['line_base'] == 16
+    assert observed['line_data'] == line16
+    assert observed['instruction_valid'] == 1
+    assert observed['instruction_word'] == 0x43B1
+
+
+def test_v2_frontend_reissues_redirected_fetch_after_cancelled_ack() -> None:
+    frontend = Little64V2FetchFrontend()
+    sim = Simulator(frontend)
+    sim.add_clock(1e-6)
+
+    line78 = 0x4444_3333_2222_1111
+    line80 = 0x8888_7777_6666_5555
+    line88 = 0xCCCC_BBBB_AAAA_9999
+    expected_lines = {0x78: line78, 0x80: line80, 0x88: line88}
+
+    seen_addresses: list[int] = []
+    pending_responses: list[list[int]] = []
+    observed = {}
+
+    def driver_process():
+        yield frontend.pc.eq(0x78)
+        yield frontend.invalidate.eq(0)
+        for cycle in range(22):
+            if cycle == 7:
+                yield frontend.pc.eq(0x80)
+            if cycle == 9:
+                yield frontend.invalidate.eq(1)
+                yield frontend.pc.eq(0x88)
+            elif cycle == 11:
+                yield frontend.invalidate.eq(0)
+            yield
+        observed['line_valid'] = (yield frontend.line_valid)
+        observed['line_base'] = (yield frontend.line_base)
+        observed['line_data'] = (yield frontend.line_data)
+        observed['instruction_valid'] = (yield frontend.instruction_valid)
+        observed['instruction_word'] = (yield frontend.instruction_word)
+
+    def bus_process():
+        request_active_last = False
+        while True:
+            yield frontend.i_bus.ack.eq(0)
+            yield frontend.i_bus.err.eq(0)
+            yield frontend.i_bus.dat_r.eq(0)
+
+            request_active = (yield frontend.i_bus.cyc) and (yield frontend.i_bus.stb)
+            if request_active and not request_active_last:
+                address = (yield frontend.i_bus.adr)
+                if address in expected_lines:
+                    seen_addresses.append(address)
+                pending_responses.append([address, 1])
+
+            for pending in pending_responses:
+                pending[1] -= 1
+
+            if pending_responses and pending_responses[0][1] < 0:
+                address = pending_responses.pop(0)[0]
+                value = expected_lines.get(address, 0)
+                yield frontend.i_bus.dat_r.eq(value)
+                yield frontend.i_bus.ack.eq(1)
+
+            request_active_last = request_active
+            yield
+
+    sim.add_sync_process(driver_process)
+    sim.add_sync_process(bus_process)
+    sim.run_until(28e-6, run_passive=True)
+
+    assert seen_addresses == [0x78, 0x80, 0x88]
+    assert observed['line_valid'] == 1
+    assert observed['line_base'] == 0x88
+    assert observed['line_data'] == line88
+    assert observed['instruction_valid'] == 1
+    assert observed['instruction_word'] == 0x9999
+
+
 def test_v2_core_fetches_stop_then_halts() -> None:
     dut = Little64V2Core(Little64CoreConfig(core_variant='v2', reset_vector=0))
     sim = Simulator(dut)

@@ -9,6 +9,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from amaranth.sim import Simulator
 import pytest
 
 from little64.config import Little64CoreConfig
@@ -361,6 +362,170 @@ def test_litex_top_exposes_generic_bus_contract() -> None:
     assert len(top.d_bus_dat_w) == 64
     assert len(top.d_bus_sel) == 8
     assert len(top.ports()) == 27
+
+
+def test_litex_top_v3_reaches_redirect_target_with_delayed_instruction_ack() -> None:
+    top = Little64LiteXTop(Little64CoreConfig(core_variant='v3', cache_topology='none', reset_vector=0))
+    sim = Simulator(top)
+    sim.add_clock(1e-6)
+
+    instruction_lines = {
+        0x00: 0xE004_B10D_940D_800D,
+        0x08: 0x0000_0000_0000_00BE,
+        0x10: 0x1021_1002_101F_43B1,
+        0xB8: 0xDF00 << 48,
+    }
+    data_lines = {
+        0x08: 0x0000_0000_0000_00BE,
+    }
+
+    observed = {
+        'halted': 0,
+        'locked_up': 0,
+        'seen_i_addresses': [],
+        'seen_d_addresses': [],
+    }
+    pending_i_response: dict[str, int] = {}
+
+    def bus_process():
+        request_active_last = False
+        while True:
+            yield top.i_bus_ack.eq(0)
+            yield top.i_bus_err.eq(0)
+            yield top.i_bus_dat_r.eq(0)
+            yield top.d_bus_ack.eq(0)
+            yield top.d_bus_err.eq(0)
+            yield top.d_bus_dat_r.eq(0)
+
+            if pending_i_response:
+                pending_i_response['delay'] -= 1
+                if pending_i_response['delay'] < 0:
+                    address = pending_i_response['address']
+                    yield top.i_bus_dat_r.eq(instruction_lines.get(address, 0))
+                    yield top.i_bus_ack.eq(1)
+                    pending_i_response.clear()
+
+            request_active = (yield top.i_bus_cyc) and (yield top.i_bus_stb)
+            if request_active and not request_active_last and not pending_i_response:
+                address = (yield top.i_bus_adr)
+                pending_i_response.update(address=address, delay=1)
+                observed['seen_i_addresses'].append(address)
+
+            if (yield top.d_bus_cyc) and (yield top.d_bus_stb):
+                address = (yield top.d_bus_adr)
+                if not observed['seen_d_addresses'] or observed['seen_d_addresses'][-1] != address:
+                    observed['seen_d_addresses'].append(address)
+                yield top.d_bus_dat_r.eq(data_lines.get(address, 0))
+                yield top.d_bus_ack.eq(1)
+
+            request_active_last = request_active
+            yield
+
+    def checker_process():
+        yield top.irq_lines.eq(0)
+        for _ in range(64):
+            if (yield top.halted) or (yield top.locked_up):
+                break
+            yield
+        observed['halted'] = (yield top.halted)
+        observed['locked_up'] = (yield top.locked_up)
+
+    sim.add_sync_process(bus_process)
+    sim.add_sync_process(checker_process)
+    sim.run_until(80e-6, run_passive=True)
+
+    assert observed['halted'] == 1
+    assert observed['locked_up'] == 0
+    assert observed['seen_i_addresses'][:4] == [0x00, 0x08, 0x10, 0xB8]
+    assert observed['seen_d_addresses'] == [0x08]
+
+
+def test_litex_top_v3_stage0_bootrom_handoff_survives_delayed_data_ack() -> None:
+    top = Little64LiteXTop(Little64CoreConfig(core_variant='v3', cache_topology='none', reset_vector=0))
+    sim = Simulator(top)
+    sim.add_clock(1e-6)
+
+    instruction_lines = {
+        0x00: 0xE004_B10D_940D_800D,
+        0x08: 0x0000_0000_0000_00BE,
+        0x10: 0x1021_1002_101F_43B1,
+        0x18: 0x10A4_83F1_6C1A_C209,
+        0xB8: 0xDF00 << 48,
+    }
+    data_lines = {
+        0x08: 0x0000_0000_0000_00BE,
+    }
+
+    observed = {
+        'halted': 0,
+        'locked_up': 0,
+        'seen_fetch_pcs': [],
+        'seen_i_addresses': [],
+        'seen_d_addresses': [],
+    }
+    pending_i_response: dict[str, int] = {}
+    pending_d_response: dict[str, int] = {}
+
+    def bus_process():
+        request_active_last = False
+        while True:
+            yield top.i_bus_ack.eq(0)
+            yield top.i_bus_err.eq(0)
+            yield top.i_bus_dat_r.eq(0)
+            yield top.d_bus_ack.eq(0)
+            yield top.d_bus_err.eq(0)
+            yield top.d_bus_dat_r.eq(0)
+
+            observed['seen_fetch_pcs'].append((yield top.shim.core.fetch_pc))
+
+            if pending_i_response:
+                pending_i_response['delay'] -= 1
+                if pending_i_response['delay'] < 0:
+                    address = pending_i_response['address']
+                    yield top.i_bus_dat_r.eq(instruction_lines.get(address, 0))
+                    yield top.i_bus_ack.eq(1)
+                    pending_i_response.clear()
+
+            if pending_d_response:
+                pending_d_response['delay'] -= 1
+                if pending_d_response['delay'] < 0:
+                    address = pending_d_response['address']
+                    yield top.d_bus_dat_r.eq(data_lines.get(address, 0))
+                    yield top.d_bus_ack.eq(1)
+                    pending_d_response.clear()
+
+            request_active = (yield top.i_bus_cyc) and (yield top.i_bus_stb)
+            if request_active and not request_active_last and not pending_i_response:
+                address = (yield top.i_bus_adr)
+                observed['seen_i_addresses'].append(address)
+                pending_i_response.update(address=address, delay=1)
+
+            if (yield top.d_bus_cyc) and (yield top.d_bus_stb) and not pending_d_response:
+                address = (yield top.d_bus_adr)
+                observed['seen_d_addresses'].append(address)
+                pending_d_response.update(address=address, delay=4)
+
+            request_active_last = request_active
+            yield
+
+    def checker_process():
+        yield top.irq_lines.eq(0)
+        for _ in range(96):
+            if (yield top.halted) or (yield top.locked_up):
+                break
+            yield
+        observed['halted'] = (yield top.halted)
+        observed['locked_up'] = (yield top.locked_up)
+
+    sim.add_sync_process(bus_process)
+    sim.add_sync_process(checker_process)
+    sim.run_until(120e-6, run_passive=True)
+
+    assert observed['halted'] == 1
+    assert observed['locked_up'] == 0
+    assert observed['seen_i_addresses'][:4] == [0x00, 0x08, 0x10, 0xB8]
+    assert observed['seen_d_addresses'] == [0x08, 0x08]
+    assert 0xBE in observed['seen_fetch_pcs']
 
 
 def test_emit_litex_cpu_verilog_writes_named_module(tmp_path) -> None:
@@ -916,6 +1081,67 @@ def test_stage0_artifact_builder_skips_sdram_init_for_sim_bootrom(tmp_path) -> N
 
     assert '#define L64_HAVE_SDRAM_INIT 0' in regs_text
     assert not (tmp_path / 'generated' / 'sdram_phy.h').exists()
+
+
+def test_stage0_artifact_builder_matches_sim_bootrom_uart_layout_without_spiflash(tmp_path) -> None:
+    target = LITTLE64_LITEX_TARGET_CONFIGS['sim-bootrom']
+    soc = Little64LiteXSimSoC(
+        litex_target='sim-bootrom',
+        boot_source='bootrom',
+        integrated_main_ram_size=target.default_ram_size,
+        main_ram_size=target.default_ram_size,
+        with_sdcard=True,
+        with_spi_flash=target.with_spi_flash,
+        with_timer=True,
+        integrated_rom_init=[],
+    )
+    soc.platform.output_dir = str(tmp_path / 'litex-sim-bootrom-stage0-uart-layout')
+    soc.finalize()
+
+    regs_header = tmp_path / 'litex_sd_boot_regs.h'
+    _BUILD_SD_BOOT_ARTIFACTS._write_stage0_header(
+        regs_header,
+        soc=soc,
+        ram_base=target.main_ram_base,
+        ram_size=target.default_ram_size,
+        kernel_physical_base=target.main_ram_base,
+    )
+
+    regs_text = regs_header.read_text(encoding='utf-8')
+
+    assert 'spiflash_core' not in soc.csr.regions
+    assert soc.csr.regions['uart'].origin == 0xF0003000
+    assert '#define L64_UART_BASE 0x00000000f0003000ULL' in regs_text
+
+
+def test_stage0_artifact_builder_keeps_spiflash_layout_when_boot_source_is_spiflash(tmp_path) -> None:
+    target = LITTLE64_LITEX_TARGET_CONFIGS['sim-bootrom']
+    soc = Little64LiteXSimSoC(
+        litex_target='sim-bootrom',
+        boot_source='spiflash',
+        integrated_main_ram_size=0x0400_0000,
+        main_ram_size=0x0400_0000,
+        with_sdcard=True,
+        with_spi_flash=True,
+        with_timer=True,
+    )
+    soc.platform.output_dir = str(tmp_path / 'litex-sim-spiflash-stage0-uart-layout')
+    soc.finalize()
+
+    regs_header = tmp_path / 'litex_sd_boot_regs.h'
+    _BUILD_SD_BOOT_ARTIFACTS._write_stage0_header(
+        regs_header,
+        soc=soc,
+        ram_base=0,
+        ram_size=0x0400_0000,
+        kernel_physical_base=0x4000_0000,
+    )
+
+    regs_text = regs_header.read_text(encoding='utf-8')
+
+    assert 'spiflash_core' in soc.csr.regions
+    assert soc.csr.regions['uart'].origin == 0xF0003800
+    assert '#define L64_UART_BASE 0x00000000f0003800ULL' in regs_text
 
 
 def test_stage0_artifact_builder_emits_sdram_init_headers_for_sim_bootrom_override(tmp_path) -> None:
