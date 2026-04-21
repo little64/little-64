@@ -8,6 +8,7 @@ from migen.fhdl import tracer as migen_tracer
 
 from litex.build.generic_platform import Pins, Subsignal
 from litex.build.sim import SimPlatform
+from litex.soc.cores.spi import SPIMaster
 from litex.soc.integration.common import get_mem_data
 from litex.soc.integration.soc import SoCRegion
 from litex.soc.interconnect import csr as litex_csr
@@ -38,6 +39,51 @@ from .litex_sdcard import Little64SDCardImageBridge, Little64SDEmulator
 
 
 _anonymous_csr_names = count()
+LITTLE64_SPI_SDCARD_DATA_WIDTH = 32
+
+
+def _py311_get_var_name(frame) -> str | None:
+    """Python 3.11+ compatible replacement for ``migen.fhdl.tracer.get_var_name``.
+
+    Migen's upstream tracer only knows about the pre-3.11 ``CALL_FUNCTION``
+    family of opcodes; on Python 3.11+ (where the interpreter emits the
+    consolidated ``CALL`` opcode) it returns ``None`` for every CSR
+    construction. That causes the anonymous-name fallback below to assign
+    numbered ``csr_N`` names to every CSR, which in turn breaks liblitedram
+    because it relies on properly named accessors such as
+    ``sdram_dfii_pi0_command_write``.
+
+    This helper walks the instruction stream forward from the current CALL,
+    skipping common loader/build opcodes used to assemble attribute chains,
+    until it reaches a ``STORE_*`` that names the result.
+    """
+    import dis
+    code = frame.f_code
+    lasti = frame.f_lasti
+    instructions = list(dis.get_instructions(code))
+    call_idx = None
+    for idx, ins in enumerate(instructions):
+        if ins.offset == lasti:
+            call_idx = idx
+            break
+    if call_idx is None:
+        return None
+    if instructions[call_idx].opname not in ('CALL', 'CALL_KW', 'CALL_FUNCTION_EX'):
+        return None
+    skip_opnames = {
+        'LOAD_GLOBAL', 'LOAD_ATTR', 'LOAD_FAST', 'LOAD_DEREF',
+        'LOAD_METHOD', 'LOAD_CONST', 'LOAD_NAME', 'LOAD_CLOSURE',
+        'COPY', 'SWAP', 'PUSH_NULL', 'RESUME',
+        'BUILD_LIST', 'BUILD_TUPLE', 'BUILD_MAP', 'BUILD_SET',
+        'KW_NAMES', 'PRECALL',
+    }
+    for ins in instructions[call_idx + 1:]:
+        if ins.opname in ('STORE_NAME', 'STORE_ATTR', 'STORE_FAST', 'STORE_DEREF', 'STORE_GLOBAL'):
+            return ins.argval
+        if ins.opname in skip_opnames:
+            continue
+        return None
+    return None
 
 
 def _install_litex_csr_name_fallback() -> None:
@@ -46,14 +92,41 @@ def _install_litex_csr_name_fallback() -> None:
     if getattr(litex_csr.get_obj_var_name, '_little64_wrapped', False):
         return
 
+    def _remove_underscore(s: str) -> str:
+        if len(s) > 2 and s[0] == '_' and s[1] != '_':
+            return s[1:]
+        return s
+
     def fallback(override=None, default=None):
+        if override:
+            return override
+
         try:
-            name = original(override=override, default=default)
+            name = original(override=None, default=None)
         except Exception:
             name = None
+
         if name is None:
-            base = default or 'csr'
-            name = f'{base}_{next(_anonymous_csr_names)}'
+            import inspect
+            try:
+                frame = inspect.currentframe().f_back
+                # Walk up derived-class constructors the same way migen's
+                # upstream tracer does, so we end at the actual assignment
+                # site (e.g. ``self._command = CSRStorage(...)``).
+                if 'self' in frame.f_locals:
+                    ourclass = frame.f_locals['self'].__class__
+                    while 'self' in frame.f_locals and isinstance(frame.f_locals['self'], ourclass):
+                        frame = frame.f_back
+                name = _py311_get_var_name(frame)
+                if name is not None:
+                    name = _remove_underscore(name)
+            except Exception:
+                name = None
+
+        if name is None:
+            name = default
+        if name is None:
+            name = f'csr_{next(_anonymous_csr_names)}'
         return name
 
     fallback._little64_wrapped = True
@@ -332,6 +405,21 @@ class Little64LiteXSoC(SoCCore):
     ) -> None:
         raise NotImplementedError()
 
+    def _add_spi_sdcard(self, name: str = 'spisdcard', *, spi_clk_freq: float = 400e3, data_width: int = LITTLE64_SPI_SDCARD_DATA_WIDTH) -> None:
+        spi_sdcard_pads = self.platform.request(name)
+        if hasattr(spi_sdcard_pads, 'rst'):
+            self.comb += spi_sdcard_pads.rst.eq(0)
+
+        self.check_if_exists(name)
+        spisdcard = SPIMaster(
+            pads=spi_sdcard_pads,
+            data_width=data_width,
+            sys_clk_freq=self.sys_clk_freq,
+            spi_clk_freq=spi_clk_freq,
+        )
+        spisdcard.add_clk_divider()
+        self.add_module(name=name, module=spisdcard)
+
     def _configure_sdcard(self, *, mode: str, sdcard_image_path: str | Path | None) -> None:
         if mode == 'native':
             if sdcard_image_path is None:
@@ -342,7 +430,7 @@ class Little64LiteXSoC(SoCCore):
         if mode == 'spi':
             if sdcard_image_path is not None:
                 raise ValueError('sdcard_image_path is only supported for native LiteSDCard mode')
-            self.add_spi_sdcard('spisdcard')
+            self._add_spi_sdcard('spisdcard')
             return
         raise ValueError(f'Unsupported Little64 LiteX SD card mode: {mode}')
 

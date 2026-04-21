@@ -36,7 +36,7 @@ LDFLAGS = os.environ.get('LITTLE64_VERILATOR_LDFLAGS', '-O3 -march=native -flto'
 HARNESS_CXXFLAGS = f'{CXXFLAGS} -DLITTLE64_HARNESS_ENABLE_DEBUG={1 if HARNESS_DEBUG else 0}'
 BINARY_NAME = f'little64_linux_boot_smoke_t{THREADS}' + ('' if HARNESS_DEBUG else '_ndbg')
 BINARY = OBJDIR / BINARY_NAME
-CORE_VARIANT = os.environ.get('LITTLE64_VERILATOR_CORE_VARIANT', 'v2')
+CORE_VARIANT = os.environ.get('LITTLE64_VERILATOR_CORE_VARIANT', 'v3')
 CACHE_TOPOLOGY = os.environ.get('LITTLE64_VERILATOR_CACHE_TOPOLOGY', 'unified')
 VERILOG_CONFIG = BUILD_ROOT / 'little64_linux_boot_top.cfg'
 BOOTARGS = os.environ.get(

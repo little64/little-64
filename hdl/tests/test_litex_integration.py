@@ -1059,8 +1059,10 @@ def test_stage0_artifact_builder_emits_spi_sd_header_for_arty_hardware(tmp_path)
 
     assert '#define L64_SDCARD_INTERFACE_SPI 1' in regs_text
     assert '#define L64_SDCARD_SPI_BASE ' in regs_text
+    assert '#define L64_SDCARD_SPI_DATA_WIDTH 32U' in regs_text
     assert '#define L64_SDCARD_SPI_CONTROL_ADDR ' in regs_text
     assert '#define L64_SDCARD_CORE_BASE ' not in regs_text
+    assert soc.spisdcard.data_width == 32
 
 
 def test_stage0_artifact_builder_skips_sdram_init_for_sim_bootrom(tmp_path) -> None:
@@ -1083,7 +1085,7 @@ def test_stage0_artifact_builder_skips_sdram_init_for_sim_bootrom(tmp_path) -> N
     assert not (tmp_path / 'generated' / 'sdram_phy.h').exists()
 
 
-def test_stage0_artifact_builder_matches_sim_bootrom_uart_layout_without_spiflash(tmp_path) -> None:
+def test_stage0_artifact_builder_matches_emulator_bootrom_uart_layout_without_spiflash(tmp_path) -> None:
     target = LITTLE64_LITEX_TARGET_CONFIGS['sim-bootrom']
     soc = Little64LiteXSimSoC(
         litex_target='sim-bootrom',
@@ -1111,7 +1113,7 @@ def test_stage0_artifact_builder_matches_sim_bootrom_uart_layout_without_spiflas
 
     assert 'spiflash_core' not in soc.csr.regions
     assert soc.csr.regions['uart'].origin == 0xF0003000
-    assert '#define L64_UART_BASE 0x00000000f0003000ULL' in regs_text
+    assert '#define L64_UART_BASE 0x00000000f0004000ULL' in regs_text
 
 
 def test_stage0_artifact_builder_keeps_spiflash_layout_when_boot_source_is_spiflash(tmp_path) -> None:
@@ -1163,6 +1165,7 @@ def test_stage0_artifact_builder_emits_sdram_init_headers_for_sim_bootrom_overri
     sdram_text = (tmp_path / 'generated' / 'sdram_phy.h').read_text(encoding='utf-8')
 
     assert '#define L64_HAVE_SDRAM_INIT 1' in regs_text
+    assert '#define L64_UART_BASE 0x00000000f0004000ULL' in regs_text
     assert 'CSR_SDRAM_DFII_CONTROL_ADDR' in csr_text
     assert 'static inline void init_sequence(void)' in sdram_text
     assert soc.bus.regions['main_ram'].size == LITTLE64_LITEX_TARGET_CONFIGS['sim-bootrom'].default_ram_size

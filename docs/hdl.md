@@ -485,24 +485,35 @@ sector `0`, mounts the first partition as a simple FAT32 volume with a fixed
 short-name lookup, loads `VMLINUX` and `BOOT.DTB`, and then hands off with the
 same register contract as the SPI-flash stage-0.
 
+On Arty SPI-mode SD builds, the LiteX SPI CSR path now exposes 32-bit transfer
+registers to stage-0 so the boot loader can drain payload data in word-sized
+chunks instead of one CSR transaction per byte, and the stage-0 FAT32 loader
+now groups contiguous sector runs into SPI multiblock reads while caching FAT
+sectors during cluster-chain walks.
+
 Its reset sequence is intentionally minimal:
 
 1. enter from the CPU reset PC in the integrated boot ROM,
 2. establish a temporary SRAM-backed boot stack,
 3. clear stage-0 `.bss`,
 4. run the generated LiteDRAM/DFII init sequence when the selected LiteX target exposes SDRAM,
-5. initialize LiteSDCard and bring the card to transfer-ready state,
-6. read the fixed MBR plus FAT32 boot partition from the SD image,
-7. load `VMLINUX` and `BOOT.DTB` from the FAT32 root directory,
-8. jump to the kernel physical entry with the existing direct-boot register contract.
+5. run a small destructive SDRAM read/write sanity test at the base of main RAM when SDRAM is present,
+6. initialize LiteSDCard and bring the card to transfer-ready state,
+7. read the fixed MBR plus FAT32 boot partition from the SD image,
+8. load `VMLINUX` and `BOOT.DTB` from the FAT32 root directory,
+9. jump to the kernel physical entry with the existing direct-boot register contract.
 
 The stage-0 loader now emits readable serial status lines while it runs through
 the normal LiteUART path. The intent is to make simulator and future FPGA
 bring-up failures diagnosable from a plain UART capture. In the normal success
 path it reports boot-ROM entry, `.bss` clearing, optional SDRAM init progress,
-SD readiness, the kernel and DTB copy plan with addresses and sizes, copy
-completion, and the final kernel handoff. Validation failures also print a
-descriptive error line before the CPU stops.
+the SDRAM sanity-test result, SD readiness, the kernel and DTB copy plan with
+addresses and sizes, coarse copy progress while `VMLINUX` and `BOOT.DTB` are
+being pulled from SD into RAM, and the final kernel handoff. Validation
+failures also print a descriptive error line before the CPU stops. On the
+SPI-mode SD path, stage-0 now also emits short command breadcrumbs around
+`CMD0`, `CMD8`, `ACMD41`, `CMD58`, and `CMD16` so real-hardware bring-up can
+distinguish an init-phase stall from a later data-read failure.
 
 On hardware-oriented LiteX targets that expose a programmable `uart_phy` CSR
 bank, stage-0 now also disables LiteUART events and programs the PHY tuning

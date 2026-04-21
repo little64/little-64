@@ -7,8 +7,13 @@ import subprocess
 import sys
 from pathlib import Path
 
+import litex
 from litedram.init import get_sdram_phy_c_header
 from litex.soc.integration import export as litex_export
+
+
+def _litex_software_root() -> Path:
+    return Path(litex.__file__).resolve().parent / 'soc' / 'software'
 
 
 def _repo_root() -> Path:
@@ -31,10 +36,16 @@ from little64.litex_linux_boot import (
 from little64.litex_soc import Little64LiteXSimSoC, Little64LiteXSoC
 
 
+LITEX_BOOTROM_SD_UART_BASE = 0xF0004000
+
+
 STAGE0_SYSTEM_HEADER = """#ifndef __SYSTEM_H
 #define __SYSTEM_H
 
-#define CONFIG_CPU_NOP \"nop\"
+#ifdef CONFIG_CPU_NOP
+#undef CONFIG_CPU_NOP
+#endif
+#define CONFIG_CPU_NOP \"move R0, R0\"
 
 #endif
 """
@@ -45,11 +56,21 @@ STAGE0_HW_COMMON_HEADER = """#ifndef __HW_COMMON_H
 
 #include <stdint.h>
 #include <generated/soc.h>
+#include <system.h>
 
 #ifndef CSR_ACCESSORS_DEFINED
 #define CSR_ACCESSORS_DEFINED
 
 #define MMPTR(a) (*((volatile uint32_t *)(a)))
+
+static inline void cdelay(int iterations) {
+#ifndef CONFIG_BIOS_NO_DELAYS
+    while (iterations > 0) {
+        __asm__ volatile(CONFIG_CPU_NOP);
+        --iterations;
+    }
+#endif
+}
 
 static inline void csr_write_simple(unsigned long value, unsigned long address) {
     MMPTR(address) = (uint32_t)value;
@@ -118,6 +139,91 @@ static inline void csr_wr_uint64(uint64_t value, unsigned long address) {
     _csr_wr(address, value, sizeof(uint64_t));
 }
 
+#define _csr_rd_buf(address, buf, count) \
+{ \
+    int index, subindex, offset, subregs, subelems; \
+    uint64_t value; \
+    if (sizeof(buf[0]) >= CSR_DW_BYTES) { \
+        for (index = 0; index < count; ++index) { \
+            buf[index] = _csr_rd(address, sizeof(buf[0])); \
+            address += CSR_OFFSET_BYTES * num_subregs(sizeof(buf[0])); \
+        } \
+    } else { \
+        subregs = num_subregs(sizeof(buf[0]) * count); \
+        subelems = CSR_DW_BYTES / sizeof(buf[0]); \
+        offset = subregs * subelems - count; \
+        for (index = 0; index < subregs; ++index) { \
+            value = csr_read_simple(address); \
+            for (subindex = subelems - 1; subindex >= 0; --subindex) { \
+                if ((index * subelems + subindex - offset) >= 0) { \
+                    buf[index * subelems + subindex - offset] = value; \
+                    value >>= sizeof(buf[0]) * 8; \
+                } \
+            } \
+            address += CSR_OFFSET_BYTES; \
+        } \
+    } \
+}
+
+#define _csr_wr_buf(address, buf, count) \
+{ \
+    int index, subindex, offset, subregs, subelems; \
+    uint64_t value; \
+    if (sizeof(buf[0]) >= CSR_DW_BYTES) { \
+        for (index = 0; index < count; ++index) { \
+            _csr_wr(address, buf[index], sizeof(buf[0])); \
+            address += CSR_OFFSET_BYTES * num_subregs(sizeof(buf[0])); \
+        } \
+    } else { \
+        subregs = num_subregs(sizeof(buf[0]) * count); \
+        subelems = CSR_DW_BYTES / sizeof(buf[0]); \
+        offset = subregs * subelems - count; \
+        for (index = 0; index < subregs; ++index) { \
+            value = 0; \
+            for (subindex = 0; subindex < subelems; ++subindex) { \
+                if ((index * subelems + subindex - offset) >= 0) { \
+                    value <<= sizeof(buf[0]) * 8; \
+                    value |= buf[index * subelems + subindex - offset]; \
+                } \
+            } \
+            csr_write_simple(value, address); \
+            address += CSR_OFFSET_BYTES; \
+        } \
+    } \
+}
+
+static inline void csr_rd_buf_uint8(unsigned long address, uint8_t *buf, int count) {
+    _csr_rd_buf(address, buf, count);
+}
+
+static inline void csr_wr_buf_uint8(unsigned long address, const uint8_t *buf, int count) {
+    _csr_wr_buf(address, buf, count);
+}
+
+static inline void csr_rd_buf_uint16(unsigned long address, uint16_t *buf, int count) {
+    _csr_rd_buf(address, buf, count);
+}
+
+static inline void csr_wr_buf_uint16(unsigned long address, const uint16_t *buf, int count) {
+    _csr_wr_buf(address, buf, count);
+}
+
+static inline void csr_rd_buf_uint32(unsigned long address, uint32_t *buf, int count) {
+    _csr_rd_buf(address, buf, count);
+}
+
+static inline void csr_wr_buf_uint32(unsigned long address, const uint32_t *buf, int count) {
+    _csr_wr_buf(address, buf, count);
+}
+
+static inline void csr_rd_buf_uint64(unsigned long address, uint64_t *buf, int count) {
+    _csr_rd_buf(address, buf, count);
+}
+
+static inline void csr_wr_buf_uint64(unsigned long address, const uint64_t *buf, int count) {
+    _csr_wr_buf(address, buf, count);
+}
+
 #endif
 """
 
@@ -182,6 +288,7 @@ def _write_stage0_header(
     uart_region = soc.csr.regions.get('uart')
     uart_phy_region = soc.csr.regions.get('uart_phy')
     spisdcard_region = soc.csr.regions.get('spisdcard')
+    spisdcard = getattr(soc, 'spisdcard', None)
     sdcard_phy_region = soc.csr.regions.get('sdcard_phy')
     sdcard_core_region = soc.csr.regions.get('sdcard_core')
     sdcard_block2mem_region = soc.csr.regions.get('sdcard_block2mem')
@@ -192,6 +299,14 @@ def _write_stage0_header(
         raise ValueError('SD-capable LiteX SoC is missing the UART or SDCard CSR regions needed by stage-0')
     if has_native_sd and has_spi_sd:
         raise ValueError('stage-0 header generation expects either native SDCard CSRs or SPI SDCard CSRs, not both')
+
+    uart_base = uart_region.origin
+    # The emulator's SD-backed litex-bootrom mode exposes LiteUART at a shifted
+    # CSR base compared with the raw simulation SoC. Stage-0 must target the
+    # emulator contract so boot_direct-generated images print to the emulated
+    # console correctly.
+    if has_native_sd and soc.boot_source == 'bootrom':
+        uart_base = LITEX_BOOTROM_SD_UART_BASE
 
     sdcard_lines: list[str]
     if has_native_sd:
@@ -222,9 +337,11 @@ def _write_stage0_header(
             '#define L64_SDCARD_PHY_SETTINGS_ADDR (L64_SDCARD_PHY_BASE + 0x18ULL)',
         ]
     else:
+        spi_data_width = getattr(spisdcard, 'data_width', 8)
         sdcard_lines = [
             '#define L64_SDCARD_INTERFACE_SPI 1',
             f'#define L64_SDCARD_SPI_BASE 0x{spisdcard_region.origin:016x}ULL',
+            f'#define L64_SDCARD_SPI_DATA_WIDTH {spi_data_width}U',
             '',
             '#define L64_SDCARD_SPI_CONTROL_ADDR (L64_SDCARD_SPI_BASE + 0x00ULL)',
             '#define L64_SDCARD_SPI_STATUS_ADDR (L64_SDCARD_SPI_BASE + 0x04ULL)',
@@ -252,7 +369,7 @@ def _write_stage0_header(
             '#define L64_UART_EVENT_MASK 0x00000003U',
             f'#define L64_UART_PHY_TUNING_WORD_VALUE 0x{_litex_uart_tuning_word(soc.sys_clk_freq, 115200):08x}U',
             '',
-            f'#define L64_UART_BASE 0x{uart_region.origin:016x}ULL',
+            f'#define L64_UART_BASE 0x{uart_base:016x}ULL',
             *([] if uart_phy_region is None else [f'#define L64_UART_PHY_BASE 0x{uart_phy_region.origin:016x}ULL']),
             f'#define L64_SDRAM_CSR_BASE 0x{0 if sdram_region is None else sdram_region.origin:016x}ULL',
             '',
@@ -282,18 +399,35 @@ def _write_stage0_generated_support(output_dir: Path, *, soc: Little64LiteXSoC) 
     generated_dir.mkdir(parents=True, exist_ok=True)
     hw_dir.mkdir(parents=True, exist_ok=True)
 
-    (generated_dir / 'soc.h').write_text(
-        litex_export.get_soc_header(soc.constants, with_access_functions=False),
-        encoding='utf-8',
+    # LiteX's get_soc_header emits `#define CONFIG_CPU_NOP "nop"`, but the
+    # Little64 assembler has no `nop` mnemonic — the NOP is encoded as
+    # `move R0, R0`. We rewrite the definition here instead of relying on our
+    # stage-0 system.h shim, because hw/common.h pulls in soc.h *after*
+    # system.h and would otherwise redefine CONFIG_CPU_NOP back to "nop".
+    soc_header_text = litex_export.get_soc_header(soc.constants, with_access_functions=False)
+    soc_header_text = soc_header_text.replace(
+        '#define CONFIG_CPU_NOP "nop"',
+        '#define CONFIG_CPU_NOP "move R0, R0"',
     )
+    (generated_dir / 'soc.h').write_text(soc_header_text, encoding='utf-8')
     (output_dir / 'system.h').write_text(STAGE0_SYSTEM_HEADER, encoding='utf-8')
     (hw_dir / 'common.h').write_text(STAGE0_HW_COMMON_HEADER, encoding='utf-8')
 
     if not hasattr(soc, 'sdram'):
         return
 
+    liblitedram_regions = _ordered_liblitedram_csr_regions(soc)
     (generated_dir / 'csr.h').write_text(
-        _generate_stage0_sdram_csr_header(soc),
+        litex_export.get_csr_header(
+            liblitedram_regions,
+            soc.constants,
+            with_access_functions=True,
+            with_fields_access_functions=False,
+        ),
+        encoding='utf-8',
+    )
+    (generated_dir / 'mem.h').write_text(
+        litex_export.get_mem_header({'main_ram': soc.bus.regions['main_ram']}),
         encoding='utf-8',
     )
     (generated_dir / 'sdram_phy.h').write_text(
@@ -304,76 +438,81 @@ def _write_stage0_generated_support(output_dir: Path, *, soc: Little64LiteXSoC) 
         ),
         encoding='utf-8',
     )
+    _write_liblitedram_shims(output_dir)
+
+
+def _ordered_liblitedram_csr_regions(soc: Little64LiteXSoC) -> dict:
+    wanted = ('sdram', 'ddrphy')
+    present = [name for name in wanted if name in soc.csr_regions]
+    present.sort(key=lambda name: soc.csr_regions[name].origin)
+    return {name: soc.csr_regions[name] for name in present}
+
+
+def _write_liblitedram_shims(work_dir: Path) -> None:
+    """Create the minimal stub headers needed to build liblitedram freestanding.
+
+    liblitedram's ``sdram.c`` / ``accessors.c`` ``#include`` ``<stdio.h>`` and
+    ``<stdlib.h>``; clang's freestanding environment does not provide either.
+    Everything else (``<libbase/memtest.h>``, ``<libbase/lfsr.h>``,
+    ``<hw/common.h>``) is resolved via ``-I <litex>/soc/software`` and
+    ``-I <litex>/soc/software/include`` against LiteX's own headers.
+
+    The ``litedram_compat.h`` header is force-included on every TU in this
+    build, and its ``#define printf(...) ((void)0)`` neutralises the ~40
+    calibration log sites in liblitedram so none of the format strings make
+    it into the 32 KiB boot ROM.
+    """
+    # sdram.c / accessors.c include <stdio.h> before <libbase/memtest.h>.
+    # printf is already a macro at the point this header is included (via
+    # the force-included litedram_compat.h), so the stub must not redeclare
+    # printf — that would expand to ``int ((void)0)(const char*, ...);``.
+    (work_dir / 'stdio.h').write_text(
+        '#ifndef STAGE0_STDIO_H\n#define STAGE0_STDIO_H\n#endif\n',
+        encoding='utf-8',
+    )
+    (work_dir / 'stdlib.h').write_text(
+        '#ifndef STAGE0_STDLIB_H\n#define STAGE0_STDLIB_H\n'
+        '#ifndef NULL\n#define NULL ((void*)0)\n#endif\n'
+        '#endif\n',
+        encoding='utf-8',
+    )
+    (work_dir / 'litedram_compat.h').write_text(
+        '#ifndef STAGE0_LITEDRAM_COMPAT_H\n'
+        '#define STAGE0_LITEDRAM_COMPAT_H\n'
+        '/* Force-included when building liblitedram and stage-0. Neutralises printf\n'
+        '   so the calibration log strings do not consume boot ROM space. */\n'
+        '#define printf(...) ((void)0)\n'
+        '#endif\n',
+        encoding='utf-8',
+    )
 
 
 def _generate_stage0_sdram_csr_header(soc: Little64LiteXSoC) -> str:
+    """Legacy wrapper retained for backward-compatible callers (e.g. tests).
+
+    New callers should let ``_write_stage0_generated_support`` emit the full
+    CSR header via ``litex_export.get_csr_header``.
+    """
     if not soc.finalized:
         soc.finalize()
-
-    region = soc.csr_regions['sdram']
-    alignment_bytes = int(soc.constants.get('CONFIG_CSR_ALIGNMENT', 32)) // 8
-    busword = region.busword
-    lines = [
-        '#include <generated/soc.h>',
-        '#ifndef __GENERATED_CSR_H',
-        '#define __GENERATED_CSR_H',
-        '#include <stdint.h>',
-        '#include <system.h>',
-        '#ifndef CSR_ACCESSORS_DEFINED',
-        '#include <hw/common.h>',
-        '#endif /* ! CSR_ACCESSORS_DEFINED */',
-        '',
-        '#define CSR_SDRAM_BASE 0x{:x}L'.format(region.origin),
-    ]
-
-    offset = 0
-
-    def add_csr(name: str, csr, *, with_read: bool = True, with_write: bool = True) -> None:
-        nonlocal offset
-        nwords = (csr.size + busword - 1) // busword
-        address = region.origin + offset
-        lines.append('#define CSR_{}_ADDR 0x{:x}L'.format(name, address))
-        lines.append('#define CSR_{}_SIZE {}'.format(name, nwords))
-        if nwords == 1:
-            if with_read:
-                lines.extend([
-                    'static inline uint32_t {}_read(void) {{'.format(name.lower()),
-                    '\treturn csr_read_simple(CSR_{}_ADDR);'.format(name),
-                    '}',
-                ])
-            if with_write:
-                lines.extend([
-                    'static inline void {}_write(uint32_t value) {{'.format(name.lower()),
-                    '\tcsr_write_simple(value, CSR_{}_ADDR);'.format(name),
-                    '}',
-                ])
-        offset += alignment_bytes * nwords
-
-    add_csr('SDRAM_DFII_CONTROL', soc.sdram.dfii._control)
-    for phase_index in range(soc.sdram.controller.settings.phy.nphases):
-        phase = getattr(soc.sdram.dfii, f'pi{phase_index}')
-        prefix = f'SDRAM_DFII_PI{phase_index}'
-        add_csr(f'{prefix}_COMMAND', phase._command)
-        add_csr(f'{prefix}_COMMAND_ISSUE', phase._command_issue)
-        add_csr(f'{prefix}_ADDRESS', phase._address)
-        add_csr(f'{prefix}_BADDRESS', phase._baddress)
-        add_csr(f'{prefix}_WRDATA', phase._wrdata, with_read=False, with_write=False)
-        add_csr(f'{prefix}_RDDATA', phase._rddata, with_read=False, with_write=False)
-
-    lines.append('')
-    lines.append('#endif /* ! __GENERATED_CSR_H */')
-    lines.append('')
-    return '\n'.join(lines)
+    return litex_export.get_csr_header(
+        _ordered_liblitedram_csr_regions(soc),
+        soc.constants,
+        with_access_functions=True,
+        with_fields_access_functions=False,
+    )
 
 
 def _build_stage0(stage0_source: Path, stage0_linker: Path, generated_header_dir: Path, work_dir: Path) -> bytes:
     compilers_bin = REPO_ROOT / 'compilers' / 'bin'
-    obj_path = work_dir / 'litex_sd_boot.o'
     elf_path = work_dir / 'litex_sd_boot.elf'
     bin_path = work_dir / 'litex_sd_boot.bin'
 
-    _run([
-        str(compilers_bin / 'clang'),
+    sdram_phy_header = generated_header_dir / 'generated' / 'sdram_phy.h'
+    use_liblitedram = sdram_phy_header.is_file()
+    compat_header = generated_header_dir / 'litedram_compat.h'
+
+    common_cflags = [
         '-target', 'little64',
         '-Os',
         '-ffreestanding',
@@ -382,25 +521,47 @@ def _build_stage0(stage0_source: Path, stage0_linker: Path, generated_header_dir
         '-fno-stack-protector',
         '-fno-unwind-tables',
         '-fno-asynchronous-unwind-tables',
-        '-I',
-        str(generated_header_dir),
-        '-c',
-        str(stage0_source),
-        '-o',
-        str(obj_path),
-    ])
+        '-I', str(generated_header_dir),
+    ]
+    if use_liblitedram:
+        software_root = _litex_software_root()
+        common_cflags += [
+            '-I', str(software_root),
+            '-I', str(software_root / 'include'),
+            '-include', str(compat_header),
+            '-DSDRAM_TEST_DISABLE',
+        ]
+
+    def _compile(src: Path, obj: Path, *, extra: list[str] | None = None) -> None:
+        _run([
+            str(compilers_bin / 'clang'),
+            *common_cflags,
+            *(extra or []),
+            '-c', str(src),
+            '-o', str(obj),
+        ])
+
+    stage0_obj = work_dir / 'litex_sd_boot.o'
+    _compile(stage0_source, stage0_obj)
+    link_objects: list[Path] = [stage0_obj]
+
+    if use_liblitedram:
+        liblitedram_dir = _litex_software_root() / 'liblitedram'
+        for name in ('sdram.c', 'accessors.c'):
+            src = liblitedram_dir / name
+            obj = work_dir / f'liblitedram_{src.stem}.o'
+            _compile(src, obj)
+            link_objects.append(obj)
+
     _run([
         str(compilers_bin / 'ld.lld'),
-        str(obj_path),
-        '-o',
-        str(elf_path),
-        '-T',
-        str(stage0_linker),
+        *[str(o) for o in link_objects],
+        '-o', str(elf_path),
+        '-T', str(stage0_linker),
     ])
     _run([
         str(compilers_bin / 'llvm-objcopy'),
-        '-O',
-        'binary',
+        '-O', 'binary',
         str(elf_path),
         str(bin_path),
     ])

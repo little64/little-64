@@ -174,7 +174,7 @@ layout used by the current LiteX simulation SoC:
 
 1. the flash ROM window remains at `0x20000000`,
 2. LiteSDCard CSRs are exposed starting at `0xF0000800`,
-3. LiteUART moves to `0xF0003800`,
+3. LiteUART moves to `0xF0004000`,
 4. the timer stays at `0x08001000`,
 5. stage-0 still starts from SPI flash and then loads `VMLINUX` and `BOOT.DTB` from the SD image.
 
@@ -200,6 +200,13 @@ bank, the current stage-0 code also programs the LiteUART PHY tuning word for
 simulation UART model does not expose that PHY CSR, so the same code path
 naturally skips the write there.
 
+When the SD-backed LiteX stage-0 path is selected, the same serial output now
+also includes coarse-grained progress updates while `VMLINUX` PT_LOAD contents
+and `BOOT.DTB` bytes are copied from the SD image into RAM. The SPI-mode SD
+build of the same stage-0 also emits short command breadcrumbs for `CMD0`,
+`CMD8`, `ACMD41`, `CMD58`, and `CMD16` so hardware UART logs show the exact
+init phase that failed.
+
 The Linux helper can still be pointed at this path explicitly for compatibility,
 but `--machine=litex` now defaults to the bootrom path below.
 
@@ -212,7 +219,8 @@ In addition to the integrated ROM, SRAM, RAM, LiteUART, and timer windows, the
 emulator now exposes a minimal LiteDRAM DFII CSR stub at `0xF0003000`. This is
 present so bootrom images built for SDRAM-backed LiteX targets can run the
 generated LiteDRAM initialization sequence under functional emulation before
-continuing to SD or kernel handoff logic.
+continuing to a small stage-0 SDRAM read/write sanity test and then on to SD
+or kernel handoff logic.
 
 The Linux helper `target/linux_port/boot_direct.sh` now generates this bootrom image shape by default for `--machine=litex`, along with a DTS/DTB and SD image derived from the Arty A7-35T LiteX target contract. That default helper path now assumes SDRAM at `0x40000000` with a `0x10000000` RAM window so the emulator, stage-0 metadata, and runtime DT agree on the board-sized memory map.
 
