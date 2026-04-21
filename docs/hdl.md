@@ -190,7 +190,7 @@ This wrapper:
 
 1. regenerates the LiteX simulation DTS and DTB,
 2. rebuilds either the SPI-flash image containing stage-0, the kernel, and the DTB or, with `--with-sdcard`, a SPI-flash stage-0 image plus a raw SD card image,
-3. instantiates the existing `Little64LiteXSimSoC` with the matching flash image and optional LiteSDCard path,
+3. instantiates the existing `Little64LiteXSimSoC` with the matching flash image and either the native LiteSDCard path or an Arty-like SPI SD controller path,
 4. asks LiteX's native simulation builder to generate and compile the simulator,
 5. runs the resulting `Vsim` binary and watches the serial stream for the required boot markers.
 
@@ -208,7 +208,8 @@ Useful options:
 |---|---|
 | `--build-only` | Build the LiteX simulator and flash artifacts without running them |
 | `--run-only` | Reuse an existing LiteX simulator build from the output directory |
-| `--with-sdcard` | Build the SD-capable stage-0 flow, expose LiteSDCard in the SoC, and stage `sdcard.img` into the LiteX simulator run directory |
+| `--with-sdcard` | Build the SD-capable stage-0 flow and stage `sdcard.img` into the LiteX simulator run directory |
+| `--sdcard-mode native|spi` | Select the SD backend when `--with-sdcard` is enabled. `native` keeps the existing LiteSDCard simulation path. `spi` switches to an Arty-like SPI SD controller and a pin-level SPI card model. |
 | `--rootfs-image PATH` | Optional ext4 rootfs override for the second SD partition when `--with-sdcard` is enabled; when omitted the SD artifact builder regenerates the default init.S-based rootfs |
 | `--cpu-variant NAME` | Select the LiteX CPU variant. `standard` now defaults to the V2 core, `standard-basic` keeps the legacy core, `standard-v2*` remains available for explicit V2 selection, and `standard-v3`, `standard-v3-none`, `standard-v3-unified`, and `standard-v3-split` select the experimental V3 forms. |
 | `--timeout-seconds N` | Stop waiting after `N` wall-clock seconds if the boot markers never appear |
@@ -218,6 +219,8 @@ Useful options:
 | `--threads N` | Set LiteX Verilator simulation thread count |
 
 The default output directory for this path is `builddir/hdl-litex-linux-boot/`.
+
+The SPI SD simulation mode is intended specifically for bootrom-stage debugging against the Arty-style SPI controller path. It currently requires `--with-sdram` and defaults to watching for `stage0: sdcard ready (spi)` rather than a Linux banner, because the kernel-side SPI-SD/rootfs integration remains separate from the bootrom-only SPI path.
 With `--with-sdcard`, the wrapper uses `builddir/hdl-litex-linux-boot-sdcard/`
 instead so SPI-flash and SD-card simulator builds do not reuse stale gateware.
 

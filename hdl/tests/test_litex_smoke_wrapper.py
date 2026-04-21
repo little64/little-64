@@ -25,26 +25,42 @@ def test_default_required_markers_use_linux_version_banner() -> None:
 
     assert smoke_wrapper.DEFAULT_REQUIRED_MARKERS == [smoke_wrapper.LINUX_VERSION_MARKER]
     assert smoke_wrapper.DEFAULT_SD_REQUIRED_MARKERS == [smoke_wrapper.LINUX_VERSION_MARKER]
+    assert smoke_wrapper.DEFAULT_SPI_SD_REQUIRED_MARKERS == [smoke_wrapper.SPI_SD_READY_MARKER]
 
 
 def test_resolved_output_dir_uses_sdcard_specific_build_dir() -> None:
     smoke_wrapper = _load_smoke_wrapper_module()
-    args = argparse.Namespace(with_sdcard=True, output_dir=smoke_wrapper.DEFAULT_OUTPUT_DIR)
+    args = argparse.Namespace(with_sdcard=True, sdcard_mode='native', output_dir=smoke_wrapper.DEFAULT_OUTPUT_DIR)
 
     assert smoke_wrapper._resolved_output_dir(args) == smoke_wrapper.DEFAULT_SD_OUTPUT_DIR
 
 
+def test_resolved_output_dir_uses_spi_sdcard_specific_build_dir() -> None:
+    smoke_wrapper = _load_smoke_wrapper_module()
+    args = argparse.Namespace(with_sdcard=True, sdcard_mode='spi', output_dir=smoke_wrapper.DEFAULT_OUTPUT_DIR)
+
+    assert smoke_wrapper._resolved_output_dir(args) == smoke_wrapper.DEFAULT_SD_SPI_OUTPUT_DIR
+
+
 def test_resolve_required_markers_uses_linux_banner_by_default() -> None:
     smoke_wrapper = _load_smoke_wrapper_module()
-    args = argparse.Namespace(with_sdcard=True, require=[], extra_require=[])
+    args = argparse.Namespace(with_sdcard=True, sdcard_mode='native', require=[], extra_require=[])
 
     assert smoke_wrapper._resolve_required_markers(args) == [smoke_wrapper.LINUX_VERSION_MARKER]
+
+
+def test_resolve_required_markers_uses_spi_ready_marker_for_spi_sdcard() -> None:
+    smoke_wrapper = _load_smoke_wrapper_module()
+    args = argparse.Namespace(with_sdcard=True, sdcard_mode='spi', require=[], extra_require=[])
+
+    assert smoke_wrapper._resolve_required_markers(args) == [smoke_wrapper.SPI_SD_READY_MARKER]
 
 
 def test_resolve_required_markers_appends_extra_requirements_without_duplicates() -> None:
     smoke_wrapper = _load_smoke_wrapper_module()
     args = argparse.Namespace(
         with_sdcard=False,
+        sdcard_mode='native',
         require=[],
         extra_require=[smoke_wrapper.LINUX_VERSION_MARKER, 'little64-timer: clocksource + clockevent @ 1 GHz'],
     )
@@ -57,7 +73,7 @@ def test_resolve_required_markers_appends_extra_requirements_without_duplicates(
 
 def test_resolve_required_markers_allows_exact_override() -> None:
     smoke_wrapper = _load_smoke_wrapper_module()
-    args = argparse.Namespace(with_sdcard=False, require=['stage0: handing off to kernel'], extra_require=[])
+    args = argparse.Namespace(with_sdcard=False, sdcard_mode='native', require=['stage0: handing off to kernel'], extra_require=[])
 
     assert smoke_wrapper._resolve_required_markers(args) == ['stage0: handing off to kernel']
 
@@ -72,6 +88,7 @@ def test_create_soc_keeps_full_sim_bootrom_rom_size(tmp_path: Path) -> None:
         integrated_main_ram_size=0,
         with_sdram=False,
         with_sdcard=True,
+        sdcard_mode='native',
         with_timer=True,
     )
 
@@ -90,6 +107,7 @@ def test_create_soc_without_sdcard_uses_spiflash_window_for_standard_v3(tmp_path
         integrated_main_ram_size=0x04000000,
         with_sdram=False,
         with_sdcard=False,
+        sdcard_mode='native',
         with_timer=True,
     )
 
@@ -110,6 +128,7 @@ def test_format_bus_region_summary_handles_missing_rom_region(tmp_path: Path) ->
         integrated_main_ram_size=0x04000000,
         with_sdram=False,
         with_sdcard=False,
+        sdcard_mode='native',
         with_timer=True,
     )
 
@@ -119,6 +138,28 @@ def test_format_bus_region_summary_handles_missing_rom_region(tmp_path: Path) ->
     assert 'rom=absent' in summary
     assert 'spiflash=0x1000000@0x20000000' in summary
     assert 'sram=0x4000@0x10000000' in summary
+
+
+def test_create_soc_with_spi_sdcard_uses_arty_bootrom_contract(tmp_path: Path) -> None:
+    smoke_wrapper = _load_smoke_wrapper_module()
+    flash_image = tmp_path / 'bootrom.bin'
+    flash_image.write_bytes(b'\x00' * LITTLE64_LITEX_BOOTROM_SIZE)
+
+    args = argparse.Namespace(
+        cpu_variant='standard-v3',
+        integrated_main_ram_size=0,
+        with_sdram=True,
+        with_sdcard=True,
+        sdcard_mode='spi',
+        with_timer=True,
+    )
+
+    soc = smoke_wrapper._create_soc(args, tmp_path, flash_image, tmp_path / 'sdcard.img')
+
+    assert soc.litex_target.name == 'arty-a7-35'
+    assert soc.boot_source == 'bootrom'
+    assert hasattr(soc, 'spisdcard')
+    assert not hasattr(soc, 'sdcard_sdemulator')
 
 
 def test_load_rom_init_words_uses_64bit_little_endian_words(tmp_path: Path) -> None:

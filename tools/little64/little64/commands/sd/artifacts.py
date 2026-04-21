@@ -591,6 +591,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help='Named LiteX target descriptor used for SoC metadata and the default boot source.')
     parser.add_argument('--boot-source', choices=LITTLE64_LITEX_BOOT_SOURCES, default=None,
         help='Override the LiteX target default boot source while deriving the SoC CSR layout.')
+    parser.add_argument('--sdcard-mode', choices=('native', 'spi'), default='native',
+        help='Select the SD controller backend when deriving the LiteX CSR layout.')
     parser.add_argument('--with-sdram', action='store_true',
         help='Enable the LiteDRAM-backed SDRAM model even for simulation targets that default to integrated RAM.')
     parser.add_argument('--stage0-source', type=Path, default=Path('target/c_boot/litex_sd_boot.c'), help='SD-capable stage-0 C source to compile into the internal boot ROM image.')
@@ -631,6 +633,7 @@ def main(argv: list[str] | None = None) -> int:
         with_sdram=resolved_with_sdram,
         with_spi_flash=(target.with_spi_flash or boot_source == 'spiflash'),
         with_sdcard=True,
+        sdcard_mode=args.sdcard_mode,
         with_timer=True,
         litex_target=args.litex_target,
         boot_source=boot_source,

@@ -9,6 +9,7 @@ import selectors
 import shutil
 import subprocess
 import sys
+import termios
 import time
 from pathlib import Path
 from typing import Any, cast
@@ -31,14 +32,19 @@ LITEX_SIM_CORE_DIR = Path(litex.__file__).resolve().parent / 'build' / 'sim' / '
 LITEX_SIM_MODULES_DIR = REPO_ROOT / 'hdl' / 'tools' / 'litex_sim_modules'
 DEFAULT_OUTPUT_DIR = REPO_ROOT / 'builddir' / 'hdl-litex-linux-boot'
 DEFAULT_SD_OUTPUT_DIR = REPO_ROOT / 'builddir' / 'hdl-litex-linux-boot-sdcard'
+DEFAULT_SD_SPI_OUTPUT_DIR = REPO_ROOT / 'builddir' / 'hdl-litex-linux-boot-sdcard-spi'
 DEFAULT_KERNEL_ELF = REPO_ROOT / 'target' / 'linux_port' / 'build-litex' / 'vmlinux'
 DEFAULT_BOOTARGS = ''
 LINUX_VERSION_MARKER = 'Linux version '
+SPI_SD_READY_MARKER = 'stage0: sdcard ready (spi)'
 DEFAULT_REQUIRED_MARKERS = [
     LINUX_VERSION_MARKER,
 ]
 DEFAULT_SD_REQUIRED_MARKERS = [
     LINUX_VERSION_MARKER,
+]
+DEFAULT_SPI_SD_REQUIRED_MARKERS = [
+    SPI_SD_READY_MARKER,
 ]
 LITEX_BUILTIN_SIM_MODULES = {
     'clocker',
@@ -55,6 +61,7 @@ RESETPULSE_SOURCE = LITEX_SIM_MODULES_DIR / 'resetpulse.c'
 RESETPULSE_SO_NAME = 'resetpulse.so'
 SIMTRACEON_SOURCE = LITEX_SIM_MODULES_DIR / 'simtraceon.c'
 SDCARDIMAGE_SOURCE = LITEX_SIM_MODULES_DIR / 'sdcardimage.c'
+SPISDCARD_SOURCE = LITEX_SIM_MODULES_DIR / 'spisdcard.c'
 LITEX_SIM_COMPAT_PATCHES = {
     Path('modules/clocker/clocker.c'): [
         ('static int clocker_start()', 'static int clocker_start(void *unused)'),
@@ -180,16 +187,23 @@ def _load_rom_init_words(image_path: Path) -> list[int]:
 
 def _resolved_output_dir(args: argparse.Namespace) -> Path:
     if args.with_sdcard and args.output_dir == DEFAULT_OUTPUT_DIR:
+        if getattr(args, 'sdcard_mode', 'native') == 'spi':
+            return DEFAULT_SD_SPI_OUTPUT_DIR
         return DEFAULT_SD_OUTPUT_DIR
     return args.output_dir
 
 
-def _default_required_markers(*, with_sdcard: bool) -> list[str]:
+def _default_required_markers(*, with_sdcard: bool, sdcard_mode: str = 'native') -> list[str]:
+    if with_sdcard and sdcard_mode == 'spi':
+        return list(DEFAULT_SPI_SD_REQUIRED_MARKERS)
     return list(DEFAULT_SD_REQUIRED_MARKERS if with_sdcard else DEFAULT_REQUIRED_MARKERS)
 
 
 def _resolve_required_markers(args: argparse.Namespace) -> list[str]:
-    required_markers = list(args.require) if args.require else _default_required_markers(with_sdcard=args.with_sdcard)
+    required_markers = list(args.require) if args.require else _default_required_markers(
+        with_sdcard=args.with_sdcard,
+        sdcard_mode=getattr(args, 'sdcard_mode', 'native'),
+    )
     for marker in args.extra_require:
         if marker not in required_markers:
             required_markers.append(marker)
@@ -199,6 +213,7 @@ def _resolve_required_markers(args: argparse.Namespace) -> list[str]:
 def _build_config(args: argparse.Namespace) -> dict[str, object]:
     return {
         'with_sdcard': args.with_sdcard,
+        'sdcard_mode': getattr(args, 'sdcard_mode', 'native'),
         'with_sdram': args.with_sdram,
         'integrated_main_ram_size': args.integrated_main_ram_size,
         'cpu_variant': args.cpu_variant,
@@ -283,6 +298,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         '--with-sdcard',
         action='store_true',
         help='Expose LiteSDCard in the LiteX simulation SoC.',
+    )
+    parser.add_argument(
+        '--sdcard-mode',
+        choices=('native', 'spi'),
+        default='native',
+        help='Select the SD backend to model when --with-sdcard is enabled. `native` uses LiteSDCard, `spi` uses the Arty-style SPI SD controller.',
     )
     parser.add_argument(
         '--bootargs',
@@ -401,6 +422,11 @@ def _ensure_prerequisites(args: argparse.Namespace) -> None:
             'Install the package that provides pkg-config module "libevent" '
             '(for example libevent-devel or libevent-dev).'
         )
+    if args.sdcard_mode == 'spi':
+        if not args.with_sdcard:
+            raise SystemExit('--sdcard-mode=spi requires --with-sdcard')
+        if not args.with_sdram:
+            raise SystemExit('--sdcard-mode=spi currently requires --with-sdram to match the Arty SDRAM-backed boot contract')
 
 
 def _apply_litex_sim_compatibility_patches() -> None:
@@ -444,8 +470,15 @@ def _build_dts(output_dir: Path, args: argparse.Namespace) -> Path:
         '--bootargs',
         args.bootargs,
     ]
-    if args.with_sdcard:
+    if args.with_sdcard and args.sdcard_mode == 'native':
         command.append('--with-sdcard')
+    if args.with_sdcard and args.sdcard_mode == 'spi':
+        command.extend([
+            '--litex-target',
+            'arty-a7-35',
+            '--boot-source',
+            'bootrom',
+        ])
     if args.with_sdram:
         command.append('--with-sdram')
     else:
@@ -500,13 +533,27 @@ def _build_sd_artifacts(output_dir: Path, args: argparse.Namespace, dtb_path: Pa
         str(sd_image_path),
         '--cpu-variant',
         args.cpu_variant,
-        '--ram-size',
-        hex(args.integrated_main_ram_size),
-        '--litex-target',
-        'sim-bootrom',
-        '--boot-source',
-        'bootrom',
     ]
+    if args.sdcard_mode == 'spi':
+        command.extend([
+            '--litex-target',
+            'arty-a7-35',
+            '--boot-source',
+            'bootrom',
+            '--sdcard-mode',
+            'spi',
+        ])
+    else:
+        command.extend([
+            '--ram-size',
+            hex(args.integrated_main_ram_size),
+            '--litex-target',
+            'sim-bootrom',
+            '--boot-source',
+            'bootrom',
+            '--sdcard-mode',
+            'native',
+        ])
     if args.rootfs_image is not None and args.rootfs_image.exists():
         command.extend(['--rootfs-image', str(args.rootfs_image)])
     _run_checked(command, label=f'Building SD boot artifacts under {output_dir}')
@@ -550,12 +597,12 @@ def _build_local_sim_module(gateware_dir: Path, source_path: Path) -> None:
     ], label=f'Linking simulator helper {shared_object_path.name}')
 
 
-def _build_local_sim_modules(gateware_dir: Path, *, enable_trace: bool, with_sdcard: bool) -> None:
+def _build_local_sim_modules(gateware_dir: Path, *, enable_trace: bool, with_sdcard: bool, sdcard_mode: str) -> None:
     _build_local_sim_module(gateware_dir, RESETPULSE_SOURCE)
     if enable_trace:
         _build_local_sim_module(gateware_dir, SIMTRACEON_SOURCE)
     if with_sdcard:
-        _build_local_sim_module(gateware_dir, SDCARDIMAGE_SOURCE)
+        _build_local_sim_module(gateware_dir, SPISDCARD_SOURCE if sdcard_mode == 'spi' else SDCARDIMAGE_SOURCE)
 
 
 def _create_soc(
@@ -569,15 +616,17 @@ def _create_soc(
         'integrated_main_ram_size': 0 if args.with_sdram else args.integrated_main_ram_size,
         'with_sdram': args.with_sdram,
         'with_sdcard': args.with_sdcard,
+        'sdcard_mode': args.sdcard_mode,
         'with_timer': True,
-        'sdcard_image_path': sd_image_path,
     }
     if args.with_sdcard:
         soc_kwargs.update({
-            'litex_target': 'sim-bootrom',
+            'litex_target': 'arty-a7-35' if args.sdcard_mode == 'spi' else 'sim-bootrom',
             'boot_source': 'bootrom',
             'integrated_rom_init': _load_rom_init_words(flash_image_path),
         })
+        if args.sdcard_mode == 'native':
+            soc_kwargs['sdcard_image_path'] = sd_image_path
     else:
         soc_kwargs.update({
             'with_spi_flash': True,
@@ -630,7 +679,10 @@ def _build_simulator(
         sim_config.add_module('simtraceon', [], clocks='sim_trace', tickfirst=True)
     sim_config.add_module('serial2console', 'serial')
     if args.with_sdcard:
-        sim_config.add_module('sdcardimage', 'sdcard_img', clocks='sys_clk', tickfirst=True)
+        if args.sdcard_mode == 'spi':
+            sim_config.add_module('spisdcard', 'spisdcard', clocks='sys_clk', tickfirst=True)
+        else:
+            sim_config.add_module('sdcardimage', 'sdcard_img', clocks='sys_clk', tickfirst=True)
 
     _log_progress('Creating LiteX simulation SoC')
     soc = _create_soc(args, output_dir, flash_image_path, sd_image_path)
@@ -669,7 +721,12 @@ def _build_simulator(
     _restrict_sim_modules(build_script, sim_config)
     _run_checked(['bash', build_script.name], cwd=gateware_dir, label='Building LiteX simulator binary with Verilator')
     _log_progress('Building local simulator helper modules')
-    _build_local_sim_modules(gateware_dir, enable_trace=enable_trace, with_sdcard=args.with_sdcard)
+    _build_local_sim_modules(
+        gateware_dir,
+        enable_trace=enable_trace,
+        with_sdcard=args.with_sdcard,
+        sdcard_mode=args.sdcard_mode,
+    )
 
     binary_path = gateware_dir / 'obj_dir' / 'Vsim'
     if not binary_path.exists():
@@ -704,6 +761,35 @@ def _wait_for_exit(process: subprocess.Popen[bytes], timeout_seconds: float) -> 
         process.wait()
 
 
+def _capture_terminal_state() -> list[Any] | None:
+    try:
+        stdin_fd = sys.stdin.fileno()
+    except (AttributeError, OSError, ValueError):
+        return None
+    if not os.isatty(stdin_fd):
+        return None
+    try:
+        return termios.tcgetattr(stdin_fd)
+    except termios.error:
+        return None
+
+
+def _restore_terminal_state(state: list[Any] | None, *, emit_newline: bool = False) -> None:
+    if state is None:
+        return
+    try:
+        stdin_fd = sys.stdin.fileno()
+    except (AttributeError, OSError, ValueError):
+        return
+    try:
+        termios.tcsetattr(stdin_fd, termios.TCSANOW, state)
+    except termios.error:
+        return
+    if emit_newline:
+        sys.stdout.write('\n')
+        sys.stdout.flush()
+
+
 def _run_simulator(
     *,
     gateware_dir: Path,
@@ -714,6 +800,7 @@ def _run_simulator(
 ) -> int:
     _set_phase('running simulator')
     _log_progress(f'Launching LiteX simulator binary {binary_path}')
+    terminal_state = _capture_terminal_state()
     process = subprocess.Popen(
         [str(binary_path)],
         cwd=gateware_dir,
@@ -801,6 +888,7 @@ def _run_simulator(
                 process.kill()
                 process.wait()
             exit_code = process.returncode
+            _restore_terminal_state(terminal_state, emit_newline=interrupted)
 
     selector.close()
     _RUN_DEBUG_STATE.exit_code = exit_code
@@ -851,7 +939,12 @@ def main(argv: list[str] | None = None) -> int:
                 raise SystemExit(f'Missing SD image for --run-only: {sd_image_path}')
             _set_phase('reusing simulator build')
             _log_progress('Reusing existing LiteX simulator build (--run-only)')
-            _build_local_sim_modules(gateware_dir, enable_trace=args.trace or args.trace_fst, with_sdcard=args.with_sdcard)
+            _build_local_sim_modules(
+                gateware_dir,
+                enable_trace=args.trace or args.trace_fst,
+                with_sdcard=args.with_sdcard,
+                sdcard_mode=args.sdcard_mode,
+            )
             _stage_sd_image_for_run(gateware_dir=gateware_dir, sd_image_path=sd_image_path)
             return _run_simulator(
                 gateware_dir=gateware_dir,

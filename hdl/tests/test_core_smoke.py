@@ -81,6 +81,92 @@ def test_core_reset_contract_and_external_startup_state(shared_core_config) -> N
         assert seeded['special_registers'][name] == value
 
 
+def test_indirect_call_via_literal_pool_target(shared_core_config) -> None:
+    prefix = assemble_source('\n'.join([
+        'LOAD @literal, R1',
+        'MOVE R15+2, R14',
+        'MOVE R1, R15',
+        'STOP',
+        'literal:',
+    ]))
+    literal_words = [0x0000, 0x0000, 0x0000, 0x0000]
+    target_words = assemble_source('\n'.join([
+        'target:',
+        'LDI #0x5A, R2',
+        'MOVE R14, R15',
+        'STOP',
+    ]))
+    program = prefix + literal_words + target_words
+
+    literal_address = len(prefix) * 2
+    target_address = (len(prefix) + len(literal_words)) * 2
+    initial_data_memory = {
+        literal_address + index: byte
+        for index, byte in enumerate(target_address.to_bytes(8, 'little'))
+    }
+
+    observed = run_program_words(
+        program,
+        config=shared_core_config,
+        initial_data_memory=initial_data_memory,
+        max_cycles=128,
+    )
+
+    assert observed['halted'] == 1
+    assert observed['locked_up'] == 0
+    assert observed['registers'][1] == target_address
+    assert observed['registers'][2] == 0x5A
+    assert observed['registers'][14] == 0x06
+    assert observed['registers'][15] == literal_address
+
+
+def test_indirect_call_via_stack_spilled_target(shared_core_config) -> None:
+    prefix = assemble_source('\n'.join([
+        'LDI #0x00, R13',
+        'LDI.S1 #0x20, R13',
+        'LDI #8, R12',
+        'LOAD @literal, R1',
+        'SUB R12, R13',
+        'STORE [R13], R1',
+        'LOAD [R13], R1',
+        'MOVE R15+2, R14',
+        'MOVE R1, R15',
+        'ADD R12, R13',
+        'STOP',
+        'literal:',
+    ]))
+    literal_words = [0x0000, 0x0000, 0x0000, 0x0000]
+    target_words = assemble_source('\n'.join([
+        'target:',
+        'LDI #0x5A, R2',
+        'MOVE R14, R15',
+        'STOP',
+    ]))
+    program = prefix + literal_words + target_words
+
+    literal_address = len(prefix) * 2
+    target_address = (len(prefix) + len(literal_words)) * 2
+    initial_data_memory = {
+        literal_address + index: byte
+        for index, byte in enumerate(target_address.to_bytes(8, 'little'))
+    }
+
+    observed = run_program_words(
+        program,
+        config=shared_core_config,
+        initial_data_memory=initial_data_memory,
+        max_cycles=128,
+    )
+
+    assert observed['halted'] == 1
+    assert observed['locked_up'] == 0
+    assert observed['registers'][1] == target_address
+    assert observed['registers'][2] == 0x5A
+    assert observed['registers'][13] == 0x2000
+    assert observed['registers'][14] == 0x12
+    assert observed['registers'][15] == literal_address
+
+
 def test_core_reset_after_execution_restores_architectural_state(shared_core_config) -> None:
     reset_vector = 0x20
     words = assemble_source('\n'.join([
