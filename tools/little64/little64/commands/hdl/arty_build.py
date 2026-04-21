@@ -6,12 +6,14 @@ import argparse
 import os
 import re
 import shutil
-import subprocess
 import sys
 from pathlib import Path
 from typing import Any, cast
 
+from little64.build_support import run_checked
 from little64.paths import repo_root
+from little64.tooling_support import compile_dts_to_dtb
+from little64.vivado_support import run_vivado_batch, vivado_settings_script_from_env
 
 REPO_ROOT = repo_root()
 HDL_ROOT = REPO_ROOT / 'hdl'
@@ -21,7 +23,7 @@ if str(HDL_ROOT) not in sys.path:
 from litex.build.xilinx import VivadoProgrammer  # type: ignore[import-untyped]
 from litex.soc.integration.builder import Builder  # type: ignore[import-untyped]
 
-from little64 import sd as _BUILD_SD_BOOT_ARTIFACTS
+import little64.commands.sd.artifacts as _BUILD_SD_BOOT_ARTIFACTS
 from little64_cores.litex import LITTLE64_LINUX_RAM_BASE
 from little64_cores.litex_arty import (
     Little64ArtySPISDCardMapping,
@@ -97,10 +99,6 @@ def _clean_litex_output(output_dir: Path) -> None:
         path = output_dir / child
         if path.exists():
             shutil.rmtree(path)
-
-
-def _run_checked(command: list[str], *, cwd: Path | None = None) -> None:
-    subprocess.run(command, check=True, cwd=None if cwd is None else str(cwd))
 
 
 _VENDOR_PRIMITIVE_INPUT_DEFAULTS: dict[str, dict[str, str]] = {
@@ -353,21 +351,14 @@ def _run_vivado_stage(*, output_dir: Path, build_name: str, stop_after: str) -> 
         stop_after=stop_after,
     )
 
-    vivado_settings_root = os.environ.get('LITEX_ENV_VIVADO')
-    if shutil.which('vivado') is None and not vivado_settings_root:
+    vivado_settings_script = vivado_settings_script_from_env()
+    if shutil.which('vivado') is None and vivado_settings_script is None:
         raise SystemExit(
             'Unable to find or source Vivado toolchain. '
             'Source Vivado, set LITEX_ENV_VIVADO, or pass --vivado-settings PATH.'
         )
 
-    if sys.platform in ['win32', 'cygwin']:
-        _run_checked(['cmd', '/c', f'vivado -mode batch -source {stage_tcl.name}'], cwd=gateware_dir)
-    else:
-        shell_lines = ['set -e']
-        if vivado_settings_root:
-            shell_lines.append(f'source "{Path(vivado_settings_root) / "settings64.sh"}"')
-        shell_lines.append(f'vivado -mode batch -source "{stage_tcl.name}"')
-        _run_checked(['bash', '-lc', '\n'.join(shell_lines)], cwd=gateware_dir)
+    run_vivado_batch(stage_tcl, cwd=gateware_dir, source_script=vivado_settings_script)
 
     return stage_tcl
 
@@ -411,7 +402,7 @@ def _rebuild_sd_boot_artifacts(
         include_rootfs=not args.no_rootfs,
     )
     artifact_paths['dts'].write_text(generate_linux_dts(soc, bootargs=bootargs), encoding='utf-8')
-    _run_checked(['dtc', '-I', 'dts', '-O', 'dtb', '-o', str(artifact_paths['dtb']), str(artifact_paths['dts'])])
+    compile_dts_to_dtb(artifact_paths['dts'], dtb_path=artifact_paths['dtb'])
 
     bus_regions = cast(dict[str, Any], getattr(soc.bus, 'regions'))
     main_ram_region = bus_regions['main_ram']

@@ -32,11 +32,10 @@ from __future__ import annotations
 
 import argparse
 import os
-import subprocess
-import sys
 from pathlib import Path
 
 from little64.paths import repo_root
+from little64.vivado_support import run_vivado_batch
 
 REPO_ROOT = repo_root()
 
@@ -45,25 +44,10 @@ REPO_ROOT = repo_root()
 # centralised is essential now that stage-0 pulls in liblitedram's
 # sdram.c/accessors.c, a compat header, and extra include paths;
 # re-implementing it here silently drifts.
-from little64 import sd as bsa  # noqa: E402
+import little64.commands.sd.artifacts as bsa  # noqa: E402
 
 DEFAULT_OUTPUT_DIR = REPO_ROOT / 'builddir' / 'hdl-litex-arty'
 DEFAULT_BUILD_NAME = 'little64_arty_a7_35'
-
-
-def _run(cmd: list[str], *, cwd: Path | None = None) -> None:
-    print('+ ' + ' '.join(str(arg) for arg in cmd))
-    result = subprocess.run(cmd, cwd=None if cwd is None else str(cwd))
-    if result.returncode != 0:
-        raise SystemExit(f'Command failed with exit code {result.returncode}: {cmd}')
-
-
-def _run_vivado(tcl_path: Path, *, cwd: Path, vivado_settings: Path | None) -> None:
-    shell_lines = ['set -e']
-    if vivado_settings is not None:
-        shell_lines.append(f'source "{vivado_settings}"')
-    shell_lines.append(f'vivado -mode batch -source "{tcl_path.name}"')
-    _run(['bash', '-lc', '\n'.join(shell_lines)], cwd=cwd)
 
 
 def _regenerate_rom_init(*, output_dir: Path, build_name: str) -> Path:
@@ -113,7 +97,7 @@ def _regenerate_rom_init(*, output_dir: Path, build_name: str) -> Path:
     stage0_source = REPO_ROOT / 'target' / 'c_boot' / 'litex_sd_boot.c'
     stage0_linker = REPO_ROOT / 'target' / 'c_boot' / 'linker_litex_bootrom.ld'
 
-    stage0_bytes = bsa._build_stage0(stage0_source, stage0_linker, work_dir, work_dir)
+    stage0_bytes = bsa.build_litex_sd_stage0(stage0_source, stage0_linker, work_dir, work_dir)
 
     # Preserve the original ROM image size so the .init line count matches
     # the BRAM organization that updatemem expects.
@@ -122,7 +106,6 @@ def _regenerate_rom_init(*, output_dir: Path, build_name: str) -> Path:
     if expected_word_count == 0:
         raise SystemExit(f'Existing ROM init is empty: {init_path}')
 
-    words_per_byte = 0.125  # 64-bit words
     expected_size = expected_word_count * 8
     if len(stage0_bytes) > expected_size:
         raise SystemExit(
@@ -239,7 +222,7 @@ def _patch_bitstream_via_dcp(
 
     tcl_path = gateware_dir / f'{build_name}_patch_bootrom.tcl'
     tcl_path.write_text('\n'.join(tcl_lines) + '\n', encoding='utf-8')
-    _run_vivado(tcl_path, cwd=gateware_dir, vivado_settings=vivado_settings)
+    run_vivado_batch(tcl_path, cwd=gateware_dir, source_script=vivado_settings)
     if not output_bit.is_file():
         raise SystemExit(f'Vivado did not produce the expected bitstream: {output_bit}')
 

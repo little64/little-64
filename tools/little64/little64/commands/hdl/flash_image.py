@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import argparse
-import subprocess
 import sys
 from pathlib import Path
 
+from little64.build_support import Stage0CompileUnit, build_stage0_binary
 from little64.paths import repo_root as _repo_root_cli
 
 sys.path.insert(0, str(_repo_root_cli() / "hdl"))
@@ -17,48 +17,6 @@ from little64_cores.litex_linux_boot import build_litex_flash_image
 
 def _repo_root() -> Path:
     return _repo_root_cli()
-
-
-def _run(command: list[str]) -> None:
-    subprocess.run(command, check=True)
-
-
-def _build_stage0(stage0_source: Path, stage0_linker: Path, work_dir: Path) -> bytes:
-    repo_root = _repo_root()
-    compilers_bin = repo_root / 'compilers' / 'bin'
-    obj_path = work_dir / 'litex_spi_boot.o'
-    elf_path = work_dir / 'litex_spi_boot.elf'
-    bin_path = work_dir / 'litex_spi_boot.bin'
-
-    _run([
-        str(compilers_bin / 'clang'),
-        '-target', 'little64',
-        '-O3',
-        '-ffreestanding',
-        '-fno-builtin',
-        '-fomit-frame-pointer',
-        '-fno-stack-protector',
-        '-c',
-        str(stage0_source),
-        '-o',
-        str(obj_path),
-    ])
-    _run([
-        str(compilers_bin / 'ld.lld'),
-        str(obj_path),
-        '-o',
-        str(elf_path),
-        '-T',
-        str(stage0_linker),
-    ])
-    _run([
-        str(compilers_bin / 'llvm-objcopy'),
-        '-O',
-        'binary',
-        str(elf_path),
-        str(bin_path),
-    ])
-    return bin_path.read_bytes()
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -85,7 +43,15 @@ def main(argv: list[str] | None = None) -> int:
     work_dir = output_path.parent / f'{output_path.stem}.work'
     work_dir.mkdir(parents=True, exist_ok=True)
 
-    stage0_bytes = _build_stage0((repo_root / args.stage0_source).resolve(), (repo_root / args.stage0_linker).resolve(), work_dir)
+    stage0_bytes = build_stage0_binary(
+        compile_units=[
+            Stage0CompileUnit((repo_root / args.stage0_source).resolve(), 'litex_spi_boot.o'),
+        ],
+        linker_script=(repo_root / args.stage0_linker).resolve(),
+        work_dir=work_dir,
+        output_stem='litex_spi_boot',
+        optimization='-O3',
+    )
     layout = build_litex_flash_image(
         stage0_bytes=stage0_bytes,
         kernel_elf_bytes=args.kernel_elf.resolve().read_bytes(),

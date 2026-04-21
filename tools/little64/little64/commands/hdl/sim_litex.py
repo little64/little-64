@@ -13,7 +13,9 @@ import time
 from pathlib import Path
 from typing import Any, cast
 
+from little64.build_support import run_checked
 from little64.paths import repo_root
+from little64.tooling_support import compile_dts_to_dtb, little64_command
 
 sys.path.insert(0, str(repo_root() / "hdl"))
 
@@ -364,7 +366,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def _run_checked(command: list[str], *, cwd: Path | None = None, label: str | None = None) -> None:
     if label is not None:
         _log_progress(f'{label}: starting')
-    subprocess.run(command, cwd=cwd, check=True)
+    run_checked(command, cwd=cwd)
     if label is not None:
         _log_progress(f'{label}: finished')
 
@@ -433,11 +435,7 @@ def _build_dts(output_dir: Path, args: argparse.Namespace) -> Path:
     _set_phase('generating dts')
     dts_path = output_dir / 'little64-litex-sim.dts'
     command: list[str] = [
-        sys.executable,
-        '-m',
-        'little64',
-        'hdl',
-        'dts-linux',
+        *little64_command('hdl', 'dts-linux', python_bin=sys.executable),
         '--output',
         str(dts_path),
         '--with-spi-flash',
@@ -465,10 +463,9 @@ def _build_dtb(dts_path: Path) -> Path:
     if dtb_path.exists() and dtb_path.stat().st_mtime >= dts_path.stat().st_mtime:
         _log_progress(f'Reusing up-to-date DTB {dtb_path}')
         return dtb_path
-    _run_checked(
-        ['dtc', '-I', 'dts', '-O', 'dtb', '-o', str(dtb_path), str(dts_path)],
-        label=f'Compiling DTB at {dtb_path}',
-    )
+    _log_progress(f'Compiling DTB at {dtb_path}: starting')
+    compile_dts_to_dtb(dts_path, dtb_path=dtb_path)
+    _log_progress(f'Compiling DTB at {dtb_path}: finished')
     return dtb_path
 
 
@@ -476,11 +473,7 @@ def _build_flash_image(output_dir: Path, args: argparse.Namespace, dtb_path: Pat
     _set_phase('building spi flash image')
     flash_image_path = output_dir / 'little64-linux-spiflash.bin'
     _run_checked([
-        sys.executable,
-        '-m',
-        'little64',
-        'hdl',
-        'flash-image',
+        *little64_command('hdl', 'flash-image', python_bin=sys.executable),
         '--kernel-elf',
         str(args.kernel_elf),
         '--dtb',
@@ -496,11 +489,7 @@ def _build_sd_artifacts(output_dir: Path, args: argparse.Namespace, dtb_path: Pa
     flash_image_path = output_dir / 'little64-sd-stage0-bootrom.bin'
     sd_image_path = output_dir / 'little64-linux-sdcard.img'
     command: list[str] = [
-        sys.executable,
-        '-m',
-        'little64',
-        'sd',
-        'build',
+        *little64_command('sd', 'build', python_bin=sys.executable),
         '--kernel-elf',
         str(args.kernel_elf),
         '--dtb',

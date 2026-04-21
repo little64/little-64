@@ -15,14 +15,13 @@ import sys
 from pathlib import Path
 from typing import List, Optional
 
+from little64.build_support import run_checked
 from little64.paths import (
     builddir,
-    compiler_bin,
-    effective_defconfig_name,
     existing_kernel_path,
-    linux_port_dir,
     repo_root,
 )
+from little64.tooling_support import compile_dts_to_dtb, little64_command, python_has_module, resolve_python_bin
 
 
 DEFAULT_MODE = "smoke"
@@ -42,23 +41,12 @@ REQUIRED_LITEX_KERNEL_OPTIONS: tuple[tuple[str, str], ...] = (
 )
 
 
-def _python_bin(root: Path) -> str:
-    override = os.environ.get("LITTLE64_PYTHON")
-    if override:
-        return override
-    venv = root / ".venv" / "bin" / "python"
-    if venv.is_file() and os.access(venv, os.X_OK):
-        return str(venv)
-    return shutil.which("python3") or sys.executable
-
-
 def _ensure_litex_python_env(python_bin: str) -> None:
     if not python_bin or not shutil.which(python_bin) and not os.path.isfile(python_bin):
         print("error: Python interpreter not found for LiteX artifact generation", file=sys.stderr)
         print("hint: set LITTLE64_PYTHON or create <repo>/.venv", file=sys.stderr)
         sys.exit(1)
-    rc = subprocess.run([python_bin, "-c", "import litex"], capture_output=True).returncode
-    if rc != 0:
+    if not python_has_module(python_bin, 'litex'):
         print("error: selected Python environment does not provide the LiteX package", file=sys.stderr)
         print("hint: activate the repo virtualenv or set LITTLE64_PYTHON to an environment with LiteX installed", file=sys.stderr)
         sys.exit(1)
@@ -128,11 +116,7 @@ def _prepare_litex_artifacts(
     attach_rootfs: bool,
     rootfs_image: Optional[Path],
     python_bin: str,
-    root: Path,
 ) -> dict:
-    dts_generator_args = ["hdl", "dts-linux"]
-    sd_builder_args = ["sd", "build"]
-
     if shutil.which("dtc") is None:
         print("error: dtc is required for the LiteX machine profile", file=sys.stderr)
         sys.exit(1)
@@ -143,9 +127,8 @@ def _prepare_litex_artifacts(
     bootrom_path = output_dir / "little64-sd-stage0-bootrom.bin"
     sd_path = output_dir / "little64-linux-sdcard.img"
 
-    little64_cli = [python_bin, "-m", "little64"]
     dts_cmd = [
-        *little64_cli, *dts_generator_args,
+        *little64_command('hdl', 'dts-linux', python_bin=python_bin),
         "--output", str(dts_path),
         "--with-spi-flash", "--with-sdcard", "--with-sdram",
         "--litex-target", litex_target,
@@ -156,11 +139,10 @@ def _prepare_litex_artifacts(
         dts_cmd += ["--ram-size", ram_size]
     subprocess.run(dts_cmd, check=True, stdout=subprocess.DEVNULL)
 
-    if (not dtb_path.exists()) or (dtb_path.stat().st_mtime < dts_path.stat().st_mtime):
-        subprocess.run(["dtc", "-I", "dts", "-O", "dtb", "-o", str(dtb_path), str(dts_path)], check=True)
+    compile_dts_to_dtb(dts_path, dtb_path=dtb_path, only_if_stale=True)
 
     builder_cmd = [
-        *little64_cli, *sd_builder_args,
+        *little64_command('sd', 'build', python_bin=python_bin),
         "--kernel-elf", str(kernel_elf),
         "--dtb", str(dtb_path),
         "--bootrom-output", str(bootrom_path),
@@ -176,7 +158,7 @@ def _prepare_litex_artifacts(
         builder_cmd.append("--no-rootfs")
     elif rootfs_image is not None:
         builder_cmd += ["--rootfs-image", str(rootfs_image)]
-    subprocess.run(builder_cmd, check=True)
+    run_checked(builder_cmd)
 
     return {"dts": dts_path, "dtb": dtb_path, "bootrom": bootrom_path, "sd": sd_path}
 
@@ -286,7 +268,7 @@ def run(argv: List[str]) -> int:
         print("hint: or boot without a root disk via: little64 boot run --no-rootfs", file=sys.stderr)
         return 1
 
-    python_bin = _python_bin(root)
+    python_bin = resolve_python_bin(root)
     _ensure_litex_python_env(python_bin)
 
     output_dir = Path(os.environ.get("LITTLE64_LITEX_OUTPUT_DIR") or builddir(root) / "boot-direct-litex")
@@ -319,7 +301,6 @@ def run(argv: List[str]) -> int:
         attach_rootfs=attach_rootfs,
         rootfs_image=rootfs_image,
         python_bin=python_bin,
-        root=root,
     )
 
     print(f"[little64] machine    : {args.machine}")

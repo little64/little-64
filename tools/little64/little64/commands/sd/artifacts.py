@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import subprocess
 import sys
 from pathlib import Path
 
@@ -11,7 +10,9 @@ import litex
 from litedram.init import get_sdram_phy_c_header
 from litex.soc.integration import export as litex_export
 
+from little64.build_support import Stage0CompileUnit, build_stage0_binary
 from little64.paths import repo_root
+from little64.tooling_support import build_default_rootfs_image
 
 
 def _litex_software_root() -> Path:
@@ -24,9 +25,6 @@ def _repo_root() -> Path:
 
 REPO_ROOT = _repo_root()
 sys.path.insert(0, str(REPO_ROOT / 'hdl'))
-
-DEFAULT_ROOTFS_IMAGE = REPO_ROOT / 'target' / 'linux_port' / 'rootfs' / 'build' / 'rootfs.ext4'
-
 
 from little64_cores.litex import LITTLE64_LINUX_RAM_BASE, LITTLE64_LITEX_BOOT_SOURCES, LITTLE64_LITEX_TARGET_NAMES
 from little64_cores.litex import normalize_litex_boot_source, resolve_litex_target
@@ -230,17 +228,6 @@ static inline void csr_wr_buf_uint64(unsigned long address, const uint64_t *buf,
 """
 
 
-def _run(command: list[str]) -> None:
-    subprocess.run(command, check=True)
-
-
-def _build_default_rootfs() -> Path:
-    _run([sys.executable, '-m', 'little64', 'rootfs', 'build'])
-    if not DEFAULT_ROOTFS_IMAGE.is_file():
-        raise FileNotFoundError(f'default rootfs builder did not produce {DEFAULT_ROOTFS_IMAGE}')
-    return DEFAULT_ROOTFS_IMAGE
-
-
 def _align_up(value: int, alignment: int) -> int:
     return (value + alignment - 1) & -alignment
 
@@ -301,10 +288,6 @@ def _write_stage0_header(
         raise ValueError('stage-0 header generation expects either native SDCard CSRs or SPI SDCard CSRs, not both')
 
     uart_base = uart_region.origin
-    # The emulator's SD-backed litex-bootrom mode exposes LiteUART at a shifted
-    # CSR base compared with the raw simulation SoC. Stage-0 must target the
-    # emulator contract so boot_direct-generated images print to the emulated
-    # console correctly.
     if has_native_sd and soc.boot_source == 'bootrom':
         uart_base = LITEX_BOOTROM_SD_UART_BASE
 
@@ -399,11 +382,6 @@ def _write_stage0_generated_support(output_dir: Path, *, soc: Little64LiteXSoC) 
     generated_dir.mkdir(parents=True, exist_ok=True)
     hw_dir.mkdir(parents=True, exist_ok=True)
 
-    # LiteX's get_soc_header emits `#define CONFIG_CPU_NOP "nop"`, but the
-    # Little64 assembler has no `nop` mnemonic — the NOP is encoded as
-    # `move R0, R0`. We rewrite the definition here instead of relying on our
-    # stage-0 system.h shim, because hw/common.h pulls in soc.h *after*
-    # system.h and would otherwise redefine CONFIG_CPU_NOP back to "nop".
     soc_header_text = litex_export.get_soc_header(soc.constants, with_access_functions=False)
     soc_header_text = soc_header_text.replace(
         '#define CONFIG_CPU_NOP "nop"',
@@ -449,23 +427,6 @@ def _ordered_liblitedram_csr_regions(soc: Little64LiteXSoC) -> dict:
 
 
 def _write_liblitedram_shims(work_dir: Path) -> None:
-    """Create the minimal stub headers needed to build liblitedram freestanding.
-
-    liblitedram's ``sdram.c`` / ``accessors.c`` ``#include`` ``<stdio.h>`` and
-    ``<stdlib.h>``; clang's freestanding environment does not provide either.
-    Everything else (``<libbase/memtest.h>``, ``<libbase/lfsr.h>``,
-    ``<hw/common.h>``) is resolved via ``-I <litex>/soc/software`` and
-    ``-I <litex>/soc/software/include`` against LiteX's own headers.
-
-    The ``litedram_compat.h`` header is force-included on every TU in this
-    build, and its ``#define printf(...) ((void)0)`` neutralises the ~40
-    calibration log sites in liblitedram so none of the format strings make
-    it into the 32 KiB boot ROM.
-    """
-    # sdram.c / accessors.c include <stdio.h> before <libbase/memtest.h>.
-    # printf is already a macro at the point this header is included (via
-    # the force-included litedram_compat.h), so the stub must not redeclare
-    # printf — that would expand to ``int ((void)0)(const char*, ...);``.
     (work_dir / 'stdio.h').write_text(
         '#ifndef STAGE0_STDIO_H\n#define STAGE0_STDIO_H\n#endif\n',
         encoding='utf-8',
@@ -488,11 +449,6 @@ def _write_liblitedram_shims(work_dir: Path) -> None:
 
 
 def _generate_stage0_sdram_csr_header(soc: Little64LiteXSoC) -> str:
-    """Legacy wrapper retained for backward-compatible callers (e.g. tests).
-
-    New callers should let ``_write_stage0_generated_support`` emit the full
-    CSR header via ``litex_export.get_csr_header``.
-    """
     if not soc.finalized:
         soc.finalize()
     return litex_export.get_csr_header(
@@ -503,69 +459,42 @@ def _generate_stage0_sdram_csr_header(soc: Little64LiteXSoC) -> str:
     )
 
 
-def _build_stage0(stage0_source: Path, stage0_linker: Path, generated_header_dir: Path, work_dir: Path) -> bytes:
-    compilers_bin = REPO_ROOT / 'compilers' / 'bin'
-    elf_path = work_dir / 'litex_sd_boot.elf'
-    bin_path = work_dir / 'litex_sd_boot.bin'
-
+def build_litex_sd_stage0(stage0_source: Path, stage0_linker: Path, generated_header_dir: Path, work_dir: Path) -> bytes:
     sdram_phy_header = generated_header_dir / 'generated' / 'sdram_phy.h'
     use_liblitedram = sdram_phy_header.is_file()
     compat_header = generated_header_dir / 'litedram_compat.h'
 
-    common_cflags = [
-        '-target', 'little64',
-        '-Os',
-        '-ffreestanding',
-        '-fno-builtin',
-        '-fomit-frame-pointer',
-        '-fno-stack-protector',
-        '-fno-unwind-tables',
-        '-fno-asynchronous-unwind-tables',
-        '-I', str(generated_header_dir),
+    compile_units = [
+        Stage0CompileUnit(stage0_source, 'litex_sd_boot.o'),
     ]
+    extra_include_dirs: list[Path] = []
+    force_include_headers: list[Path] = []
+    extra_cflags: list[str] = []
     if use_liblitedram:
         software_root = _litex_software_root()
-        common_cflags += [
-            '-I', str(software_root),
-            '-I', str(software_root / 'include'),
-            '-include', str(compat_header),
-            '-DSDRAM_TEST_DISABLE',
+        extra_include_dirs += [
+            software_root,
+            software_root / 'include',
+        ]
+        force_include_headers.append(compat_header)
+        extra_cflags.append('-DSDRAM_TEST_DISABLE')
+        liblitedram_dir = _litex_software_root() / 'liblitedram'
+        compile_units += [
+            Stage0CompileUnit(liblitedram_dir / 'sdram.c', 'liblitedram_sdram.o'),
+            Stage0CompileUnit(liblitedram_dir / 'accessors.c', 'liblitedram_accessors.o'),
         ]
 
-    def _compile(src: Path, obj: Path, *, extra: list[str] | None = None) -> None:
-        _run([
-            str(compilers_bin / 'clang'),
-            *common_cflags,
-            *(extra or []),
-            '-c', str(src),
-            '-o', str(obj),
-        ])
-
-    stage0_obj = work_dir / 'litex_sd_boot.o'
-    _compile(stage0_source, stage0_obj)
-    link_objects: list[Path] = [stage0_obj]
-
-    if use_liblitedram:
-        liblitedram_dir = _litex_software_root() / 'liblitedram'
-        for name in ('sdram.c', 'accessors.c'):
-            src = liblitedram_dir / name
-            obj = work_dir / f'liblitedram_{src.stem}.o'
-            _compile(src, obj)
-            link_objects.append(obj)
-
-    _run([
-        str(compilers_bin / 'ld.lld'),
-        *[str(o) for o in link_objects],
-        '-o', str(elf_path),
-        '-T', str(stage0_linker),
-    ])
-    _run([
-        str(compilers_bin / 'llvm-objcopy'),
-        '-O', 'binary',
-        str(elf_path),
-        str(bin_path),
-    ])
-    return bin_path.read_bytes()
+    return build_stage0_binary(
+        compile_units=compile_units,
+        linker_script=stage0_linker,
+        work_dir=work_dir,
+        output_stem='litex_sd_boot',
+        optimization='-Os',
+        generated_header_dir=generated_header_dir,
+        extra_include_dirs=extra_include_dirs,
+        force_include_headers=force_include_headers,
+        extra_cflags=extra_cflags,
+    )
 
 
 def build_litex_sd_boot_artifacts(
@@ -600,7 +529,7 @@ def build_litex_sd_boot_artifacts(
     )
     _write_stage0_generated_support(work_dir, soc=soc)
 
-    stage0_bytes = _build_stage0(
+    stage0_bytes = build_litex_sd_stage0(
         (REPO_ROOT / stage0_source).resolve(),
         (REPO_ROOT / stage0_linker).resolve(),
         work_dir,
@@ -620,7 +549,7 @@ def build_litex_sd_boot_artifacts(
 
     rootfs_bytes = None
     if not no_rootfs:
-        resolved_rootfs = _build_default_rootfs() if rootfs_image is None else rootfs_image.resolve()
+        resolved_rootfs = build_default_rootfs_image(python_bin=sys.executable) if rootfs_image is None else rootfs_image.resolve()
         rootfs_bytes = resolved_rootfs.read_bytes()
     write_litex_sd_card_image(
         sd_output,

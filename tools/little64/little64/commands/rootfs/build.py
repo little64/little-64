@@ -5,12 +5,10 @@ from __future__ import annotations
 import argparse
 import os
 import shutil
-import stat
-import subprocess
 import sys
-from pathlib import Path
 from typing import List, Optional
 
+from little64.build_support import run_checked
 from little64.paths import compiler_bin, linux_port_dir, repo_root
 
 
@@ -68,15 +66,13 @@ def run(argv: List[str]) -> int:
     for sub in ("dev", "etc", "proc", "sys", "tmp"):
         (staging / sub).mkdir(parents=True, exist_ok=True)
 
-    subprocess.run(
+    run_checked(
         [str(tools / "llvm-mc"), "-triple=little64", "-filetype=obj",
          str(script_dir / "init.S"), "-o", str(init_obj)],
-        check=True,
     )
-    subprocess.run(
+    run_checked(
         [str(tools / "ld.lld"), "-z", "noexecstack", "-e", "_start",
          "-T", str(script_dir / "init.ld"), str(init_obj), "-o", str(init_elf)],
-        check=True,
     )
     os.chmod(init_elf, 0o755)
     shutil.copy2(init_elf, staging / "init")
@@ -87,10 +83,9 @@ def run(argv: List[str]) -> int:
         "It exists to get VFS onto a real disk-backed root filesystem during kernel bring-up.\n"
     )
 
-    subprocess.run(
+    run_checked(
         [mkfs, "-q", "-F", "-t", "ext4", "-L", "little64-rootfs", "-m", "0",
          "-d", str(staging), str(rootfs_image), f"{rootfs_size_mb}M"],
-        check=True,
     )
 
     print(f"[little64-rootfs] built {rootfs_image}")

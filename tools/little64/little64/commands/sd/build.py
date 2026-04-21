@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import List
 
-from little64 import sd
+import little64.commands.sd.artifacts as artifacts
 
 
 def run(argv: List[str]) -> int:
-    return sd.run(argv)
+    return artifacts.run(argv)

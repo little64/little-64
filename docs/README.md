@@ -54,7 +54,7 @@ Alternative entry points:
   - Builds the default ext4 image from `target/linux_port/rootfs/init.S`.
 - Canonical direct-boot helper: `little64 boot run`
 	- The helper targets the LiteX machine profile only, and default mode is `smoke`.
-	- `--machine=litex` builds a matching LiteX DTB, SPI flash stage-0 image, and SD card image, then boots the LiteX kernel profile through the emulator's LiteX SD-compatible flash mode.
+	- `--machine=litex` builds a matching LiteX DTB, bootrom stage-0 image, and SD card image, then boots the LiteX kernel profile through the emulator's `litex-bootrom` flow.
 	- The default LiteX path also regenerates a minimal ext4 rootfs from `target/linux_port/rootfs/init.S` for SD partition 2 unless `--rootfs PATH` or `--no-rootfs` overrides it.
 	- The LiteX machine path also verifies that the selected kernel's adjacent `.config` enables `CONFIG_MMC_LITEX=y`, FAT/MSDOS boot-partition support, and `CONFIG_EXT4_FS=y` for the SD rootfs path, unless `LITTLE64_SKIP_LITEX_KERNEL_CONFIG_CHECK=1` is set.
 	- Use `--mode=smoke` for the faster no-event-capture smoke path.

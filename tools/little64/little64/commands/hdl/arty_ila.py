@@ -31,8 +31,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shlex
-import subprocess
 import sys
 import textwrap
 from dataclasses import dataclass, field
@@ -40,6 +38,7 @@ from pathlib import Path
 from typing import Iterable
 
 from little64.paths import repo_root
+from little64.vivado_support import run_command_with_optional_source
 
 REPO_ROOT = repo_root()
 DEFAULT_BUILD_DIR = REPO_ROOT / 'builddir' / 'hdl-litex-arty'
@@ -241,13 +240,7 @@ def _load_spec(preset: str | None, probes_file: Path | None) -> IlaSpec:
 def _source_and_run(vivado_settings: Path | None, command: list[str], *, cwd: Path) -> int:
     """Run ``command`` under ``vivado_settings`` sourcing if provided."""
 
-    if vivado_settings is not None:
-        shell_cmd = (
-            f'source {shlex.quote(str(vivado_settings))} && '
-            + ' '.join(shlex.quote(c) for c in command)
-        )
-        return subprocess.call(['bash', '-lc', shell_cmd], cwd=str(cwd))
-    return subprocess.call(command, cwd=str(cwd))
+    return run_command_with_optional_source(command, cwd=cwd, source_script=vivado_settings)
 
 
 def _resolve_checkpoint(build_dir: Path, build_name: str,
