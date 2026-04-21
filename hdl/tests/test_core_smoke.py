@@ -5,8 +5,8 @@ from dataclasses import replace
 from amaranth import Elaboratable, Module, ResetInserter, Signal
 from amaranth.sim import Simulator
 
-from little64.isa import CPU_CONTROL_PAGING_ENABLE, CPU_CONTROL_USER_MODE, TrapVector
-from little64.variants import create_core
+from little64_cores.isa import CPU_CONTROL_PAGING_ENABLE, CPU_CONTROL_USER_MODE, TrapVector
+from little64_cores.variants import create_core
 from shared_program import assemble_source, encode_gp_imm, run_program_source, run_program_words
 
 

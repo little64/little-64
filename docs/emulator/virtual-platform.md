@@ -6,7 +6,7 @@ for explicit manual emulator modes.
 
 ## Default Machine Map
 
-The canonical `target/linux_port/boot_direct.sh` and direct-loader Linux path
+The canonical `little64 boot run` and direct-loader Linux path
 use the LiteX SD-capable layout below.
 
 | Region | Base | Size | Meaning |
@@ -159,7 +159,7 @@ There is no separate guest-visible interrupt acknowledge register for the timer.
 
 The emulator still carries the older ns16550A UART and PV block device for
 explicit manual compatibility paths. They are not part of the default LiteX DTB,
-they are not used by `target/linux_port/boot_direct.sh`, and they should not be
+they are not used by `little64 boot run`, and they should not be
 treated as the current Linux-helper contract.
 
 ### ns16550A UART Model

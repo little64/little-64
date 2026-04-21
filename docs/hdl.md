@@ -80,20 +80,19 @@ The top-level `hdl/little64/core.py` module remains as a compatibility export fo
 - `hdl/tests/` — Python simulation and unit tests for unit and ISA coverage
 	- shared HDL suites default to the current `v2,v3` matrix and can be run against `basic`, `v2`, experimental `v3`, or `all` with `./.venv/bin/python -m pytest hdl/tests --core-variants default|basic|v2|v3|all`
 	- includes shared generated ISA/program/MMIO coverage, shared unaligned-access coverage, shared trap/atomic/core-smoke coverage, explicit V3 MMU/trap regression coverage, and V2/V3 cache-topology regression tests
-- `hdl/tools/build_litex_flash_image.py` — build a bootable SPI-flash image containing stage-0, Linux, and a DTB
-- `hdl/tools/export_litex_cpu_verilog.py` — export the generic LiteX CPU wrapper to Verilog
-- `hdl/tools/generate_litex_llvm_wrappers.py` — emit LiteX-compatible triple-prefixed LLVM tool wrappers for the repo toolchain
-- `hdl/tools/generate_litex_linux_dts.py` — emit a Linux DTS for the LiteX simulation SoC shape
-- `hdl/tools/run_verilator_linux_boot_smoke.py` — compiled Linux boot smoke entrypoint using a Verilator-built harness
+- `little64 hdl flash-image` — build a bootable SPI-flash image containing stage-0, Linux, and a DTB
+- `little64 hdl export-cpu` — export the generic LiteX CPU wrapper to Verilog
+- `little64 hdl wrappers-llvm` — emit LiteX-compatible triple-prefixed LLVM tool wrappers for the repo toolchain
+- `little64 hdl dts-linux` — emit a Linux DTS for the LiteX simulation SoC shape
 
-The current Python/Amaranth simulation path is appropriate for unit and ISA coverage but is too slow for practical full-Linux boot validation. Linux-on-HDL boot validation now uses a compiled Verilator harness instead of the pure Python simulator.
+The current Python/Amaranth simulation path is appropriate for unit and ISA coverage but is too slow for practical full-Linux boot validation. Linux-on-HDL boot validation now runs through LiteX's own simulation toolchain via `little64 hdl sim-litex`.
 
 ## Arty Hardware Build Path
 
 The repo now also has a Python-first Arty hardware build/programming entrypoint
 for real LiteX/Vivado workflows:
 
-- `hdl/tools/build_litex_arty_bitstream.py`
+- `little64 hdl arty-build`
 
 The current scope is hardware project generation, bitstream generation, and
 direct board programming for the Digilent Arty A7-35T. It is intentionally
@@ -130,14 +129,14 @@ Current limitation:
 Typical usage:
 
 ```bash
-./.venv/bin/python hdl/tools/build_litex_arty_bitstream.py
-./.venv/bin/python hdl/tools/build_litex_arty_bitstream.py --generate-only
-./.venv/bin/python hdl/tools/build_litex_arty_bitstream.py --vivado-stop-after synthesis
-./.venv/bin/python hdl/tools/build_litex_arty_bitstream.py --vivado-stop-after implementation
-./.venv/bin/python hdl/tools/build_litex_arty_bitstream.py --sdcard-connector pmodd --sdcard-adapter digilent
-./.venv/bin/python hdl/tools/build_litex_arty_bitstream.py --program volatile
-./.venv/bin/python hdl/tools/build_litex_arty_bitstream.py --program flash
-./.venv/bin/python hdl/tools/build_litex_arty_bitstream.py --program-only --program volatile
+./.venv/bin/little64 hdl arty-build
+./.venv/bin/little64 hdl arty-build --generate-only
+./.venv/bin/little64 hdl arty-build --vivado-stop-after synthesis
+./.venv/bin/little64 hdl arty-build --vivado-stop-after implementation
+./.venv/bin/little64 hdl arty-build --sdcard-connector pmodd --sdcard-adapter digilent
+./.venv/bin/little64 hdl arty-build --program volatile
+./.venv/bin/little64 hdl arty-build --program flash
+./.venv/bin/little64 hdl arty-build --program-only --program volatile
 ```
 
 Programming notes:
@@ -167,19 +166,7 @@ The V3 path now shares the same cache-topology contract as V2 for the current 4-
 
 ## Linux Boot Smoke
 
-The Linux boot smoke is the practical full-system validation path for the HDL core.
-It uses:
-
-- `target/linux_port/build-litex/vmlinux` as the default LiteX simulation kernel image,
-- `hdl/tools/generate_litex_linux_dts.py` to emit a LiteX-simulation DTS under `builddir/hdl-verilator-linux-boot/`,
-- `hdl/tools/export_linux_boot_verilog.py` to emit the standalone top-level Verilog,
-- `hdl/tools/verilator_linux_boot_smoke_main.cpp` as the compiled harness,
-- `hdl/tools/run_verilator_linux_boot_smoke.py` as the normal entrypoint.
-
-The Verilator smoke path defaults to the V2 core and can override that by setting:
-
-- `LITTLE64_VERILATOR_CORE_VARIANT=basic|v2|v3`
-- `LITTLE64_VERILATOR_CACHE_TOPOLOGY=none|unified|split`
+The Linux boot smoke is the practical full-system validation path for the HDL core. It runs through LiteX's own simulation toolchain via the `little64 hdl sim-litex` wrapper described in the next section. The previous repo-local Verilator harness has been retired.
 
 ## Native LiteX Simulation Flow
 
@@ -195,8 +182,8 @@ migration is wired through stage-0 and artifact generation.
 Run it with:
 
 ```bash
-target/linux_port/build.sh --machine litex vmlinux -j1
-./.venv/bin/python hdl/tools/run_litex_linux_boot_smoke.py
+./.venv/bin/little64 kernel build --machine litex vmlinux -j1
+./.venv/bin/little64 hdl sim-litex
 ```
 
 This wrapper:
@@ -260,7 +247,7 @@ the repo-local copy when the installed package does not provide those RTL files.
 Before running the smoke:
 
 ```bash
-target/linux_port/build.sh vmlinux -j1
+./.venv/bin/little64 kernel build vmlinux -j1
 ./.venv/bin/pip install -r requirements-hdl.txt
 ```
 
@@ -284,140 +271,6 @@ Typical package names are:
 
 If `vmlinux`, `verilator`, `dtc`, or the required host headers are missing, the
 wrapper exits early with an explicit prerequisite error.
-
-### Recommended Wrapper Flow
-
-Run the smoke through the Python wrapper:
-
-```bash
-./.venv/bin/python hdl/tools/run_verilator_linux_boot_smoke.py
-```
-
-The wrapper:
-
-1. regenerates `builddir/hdl-verilator-linux-boot/little64-litex-sim.dts` from the LiteX simulation SoC description when the HDL sources change,
-2. rebuilds `builddir/hdl-verilator-linux-boot/little64-litex-sim.dtb` from that DTS when needed,
-3. regenerates `builddir/hdl-verilator-linux-boot/little64_linux_boot_top.v` when HDL sources change,
-4. rebuilds the Verilator binary when the exported Verilog or harness changes,
-5. runs the compiled binary against the LiteX simulation `vmlinux` image.
-
-The current default is single-threaded simulation because this harness currently runs faster that way than with wider Verilator threading on the common Linux debug workload.
-
-### Useful Environment Overrides
-
-The wrapper is configured through environment variables:
-
-| Variable | Default | Meaning |
-|---|---|---|
-| `LITTLE64_VERILATOR_MAX_CYCLES` | `200000000` | Maximum simulated cycles before timing out |
-| `LITTLE64_VERILATOR_THREADS` | `1` | Verilator simulation thread count |
-| `LITTLE64_VERILATOR_BUILD_JOBS` | host CPU count | Parallelism for compiling the generated C++ model |
-| `LITTLE64_VERILATOR_COMPILE_DEBUG` | `1` | Compile the harness with debug-only trace/symbol/page-walk diagnostics enabled (`0` builds a leaner non-debug binary) |
-| `LITTLE64_VERILATOR_TIME_SCALE_NS` | `10` | Guest nanoseconds advanced per simulated core cycle in the harness timer model |
-| `LITTLE64_VERILATOR_CFLAGS` | `-O3 -std=c++20 -march=native -flto -DNDEBUG` | Extra C++ compile flags for the harness build |
-| `LITTLE64_VERILATOR_LDFLAGS` | `-O3 -march=native -flto` | Link flags for the harness build |
-| `LITTLE64_VERILATOR_DEBUG_TRACE` | unset | Enables the harness' recent execute-trace capture in failure diagnostics |
-| `LITTLE64_VERILATOR_BOOTARGS` | `console=liteuart earlycon=liteuart,0xf0001000 ignore_loglevel loglevel=8` | Bootargs injected into the generated LiteX simulation DTS |
-
-Typical examples:
-
-```bash
-# Quick timing/sample run
-LITTLE64_VERILATOR_MAX_CYCLES=1000000 \
-	./.venv/bin/python hdl/tools/run_verilator_linux_boot_smoke.py
-
-# Force a clean single-thread debug run with verbose failure trace capture
-LITTLE64_VERILATOR_THREADS=1 \
-LITTLE64_VERILATOR_DEBUG_TRACE=1 \
-LITTLE64_VERILATOR_MAX_CYCLES=500000 \
-	./.venv/bin/python hdl/tools/run_verilator_linux_boot_smoke.py
-
-# Build and run the lean non-debug harness variant
-LITTLE64_VERILATOR_COMPILE_DEBUG=0 \
-	./.venv/bin/python hdl/tools/run_verilator_linux_boot_smoke.py
-
-# Override the guest-time scale if timer cadence experiments are needed
-LITTLE64_VERILATOR_TIME_SCALE_NS=100 \
-	./.venv/bin/python hdl/tools/run_verilator_linux_boot_smoke.py
-```
-
-The default `LITTLE64_VERILATOR_TIME_SCALE_NS=10` models a 100 MHz-equivalent
-core cadence relative to the Linux-visible 1 GHz nanosecond timer. Larger
-values make guest time advance faster per simulated cycle and therefore increase
-the effective timer interrupt rate seen by the guest.
-
-The default build keeps the richer diagnostics compiled in. Setting
-`LITTLE64_VERILATOR_COMPILE_DEBUG=0` produces a separate `_ndbg` binary that
-excludes the symbol-capture, recent-trace, percpu-entry, and page-walk debug
-machinery at compile time.
-
-### Success And Failure Contract
-
-The wrapper treats the smoke as successful only after the UART output contains all of these markers:
-
-- `little64-timer: clocksource + clockevent @ 1 GHz`
-- `physmap platform flash device:`
-- `VFS: Unable to mount root fs`
-
-The root-mount failure is intentional here. This smoke is validating that the HDL core gets far enough into Linux boot to enumerate the LiteX simulation timer and memory-mapped flash path and then reaches the expected no-rootfs panic path.
-
-During the run, UART bytes are streamed to stdout as they are produced by the guest. The harness also keeps an internal copy of the serial stream so it can keep searching for required markers and print a recent serial tail in failure diagnostics.
-
-On success, the harness exits `0` once all required markers have been observed.
-
-On failure, it exits `1` and prints a summary like:
-
-```text
-Verilator Linux boot smoke failed: cycles=1000000 timed_out=1 locked_up=0 halted=0 invalid_pc=0 zero_instruction=0
-state=2 current_instruction=0x830c fetch_pc=0xffffffc0004dd306 fetch_phys_addr=0x5dd308 commit_valid=0 commit_pc=0xffffffc0004dd306
-serial_tail:
-0
-B
-P
-```
-
-Important failure bits:
-
-- `timed_out=1`: hit the cycle cap before the required markers appeared,
-- `locked_up=1`: architectural lockup,
-- `halted=1`: core executed a halt/stop state,
-- `invalid_pc=1`: fetch escaped the valid RAM/image window,
-- `zero_instruction=1`: execution reached a zero-filled region, which is usually a useful early indicator of bad control flow.
-
-### Timing And Progress Expectations
-
-For the current single-threaded harness on the LiteX simulation `vmlinux` image, `1000000` cycles is enough to see only very early stage-0 UART output. It is useful for rough performance estimates, not for reaching the later smoke markers.
-
-If you need a quick throughput sample:
-
-```bash
-/usr/bin/time -f 'elapsed=%e user=%U sys=%S' \
-	env LITTLE64_VERILATOR_MAX_CYCLES=1000000 \
-	./.venv/bin/python hdl/tools/run_verilator_linux_boot_smoke.py
-```
-
-For deeper Linux bring-up work, raise `LITTLE64_VERILATOR_MAX_CYCLES` substantially.
-
-### Direct Binary Mode
-
-For timing experiments or when iterating on harness behavior, it is sometimes more useful to run the compiled binary directly after the wrapper has built it:
-
-```bash
-builddir/hdl-verilator-linux-boot/obj/little64_linux_boot_smoke_t1 \
-	--kernel target/linux_port/build-litex/vmlinux \
-	--flash builddir/hdl-verilator-linux-boot/little64-linux-spiflash.bin \
-	--max-cycles 1000000 \
-	--require 'little64-timer: clocksource + clockevent @ 1 GHz' \
-	--require 'physmap platform flash device:' \
-	--require 'VFS: Unable to mount root fs'
-```
-
-Direct mode avoids the Python wrapper overhead and makes it easier to benchmark different cycle caps or thread-count builds. The current binary accepts only:
-
-- `--kernel <path>`
-- `--flash <path>`
-- `--max-cycles <n>`
-- repeated `--require <substring>`
 
 ## LiteX Integration Status
 
@@ -447,7 +300,7 @@ than only a generic exported wrapper. The current LiteX support includes:
 Generate a baseline DTS with:
 
 ```bash
-./.venv/bin/python hdl/tools/generate_litex_linux_dts.py \
+./.venv/bin/little64 hdl dts-linux \
 	--output builddir/little64-litex.dts \
 	--with-spi-flash \
 	--integrated-main-ram-size 0x4000000
@@ -456,7 +309,7 @@ Generate a baseline DTS with:
 Build a bootable flash image with:
 
 ```bash
-./.venv/bin/python hdl/tools/build_litex_flash_image.py \
+./.venv/bin/little64 hdl flash-image \
 	--kernel-elf target/linux_port/build-litex/vmlinux \
 	--dtb builddir/hdl-verilator-linux-boot/little64-litex-sim.dtb \
 	--output builddir/little64-linux-spiflash.bin
@@ -465,7 +318,7 @@ Build a bootable flash image with:
 Build SD-oriented LiteX boot artifacts with:
 
 ```bash
-./.venv/bin/python target/linux_port/build_sd_boot_artifacts.py \
+./.venv/bin/little64 sd build \
 	--kernel-elf target/linux_port/build-litex/vmlinux \
 	--dtb builddir/hdl-litex-linux-boot/little64-litex-sim.dtb \
 	--flash-output builddir/little64-sd-stage0-spiflash.bin \
@@ -542,7 +395,7 @@ For the current SD milestone, the on-disk contract is intentionally narrow:
 Emit the LiteX LLVM wrapper tools with:
 
 ```bash
-./.venv/bin/python hdl/tools/generate_litex_llvm_wrappers.py \
+./.venv/bin/little64 hdl wrappers-llvm \
 	--output-dir builddir/litex-toolchain
 ```
 
@@ -582,7 +435,7 @@ The HDL smoke is also wired into the optional HDL Meson subtree as `hdl-linux-bo
 meson test -C builddir-hdl hdl-linux-boot-smoke --print-errorlogs
 ```
 
-That test simply invokes `hdl/tools/run_verilator_linux_boot_smoke.py`, so the same prerequisites and environment variables apply.
+That test simply invokes `little64 hdl sim-litex`, so the same prerequisites and environment variables apply.
 
 ## Running HDL Tests
 

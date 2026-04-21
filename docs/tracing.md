@@ -2,19 +2,19 @@
 
 The Little-64 emulator includes a high-performance binary tracing subsystem
 for recording CPU events during execution.  All trace data is written in the
-L64T binary format (41 bytes per event) and decoded offline with
-`target/linux_port/l64trace.py`.
+L64T binary format (41 bytes per event) and decoded offline with the
+`little64 trace` subcommand group.
 
 ## Quick Start
 
 ```bash
 # Boot Linux with default tracing (control flow + boot events + MMIO)
-target/linux_port/boot_direct.sh
+little64 boot run
 
 # Decode the trace
-target/linux_port/l64trace.py stats /tmp/little64_boot_events.l64t
-target/linux_port/l64trace.py tail  /tmp/little64_boot_events.l64t -n 50
-target/linux_port/l64trace.py watch /tmp/little64_boot_events.l64t
+./.venv/bin/little64 trace stats /tmp/little64_boot_events.l64t
+./.venv/bin/little64 trace tail  /tmp/little64_boot_events.l64t -n 50
+./.venv/bin/little64 trace watch /tmp/little64_boot_events.l64t
 ```
 
 ## CLI Flags
@@ -88,7 +88,7 @@ Example:
 LITTLE64_TRACE_WATCH=1 \
   LITTLE64_TRACE_WATCH_START=0xffffffc0006a3f40 \
   LITTLE64_TRACE_WATCH_END=0xffffffc0006a3f70 \
-  target/linux_port/boot_direct.sh
+  little64 boot run
 ```
 
 ### Link Register (LR) Tracing
@@ -121,7 +121,7 @@ Example:
 LITTLE64_TRACE_LR=1 \
   LITTLE64_TRACE_LR_START=0xffffffc0000ad000 \
   LITTLE64_TRACE_LR_END=0xffffffc0000b4700 \
-  target/linux_port/boot_direct.sh
+  little64 boot run
 ```
 
 ### PC Probe (Instruction-Level Inspection)
@@ -161,7 +161,7 @@ LITTLE64_TRACE_PC_PROBE=1 \
   LITTLE64_TRACE_PC_PROBE0=0xffffffc000013816 \
   LITTLE64_TRACE_PC_PROBE_DEREF=1 \
   LITTLE64_TRACE_PC_PROBE_LIMIT=100 \
-  target/linux_port/boot_direct.sh
+  little64 boot run
 ```
 
 ## Always-On Tags
@@ -210,16 +210,16 @@ The writer updates the header and tag table on every buffer flush so that
 live watchers can decode tags from an in-progress file.
 
 **Important**: Trace files (`.l64t`) are binary and cannot be read with
-`cat` or text editors.  Always use `l64trace.py` subcommands.
+`cat` or text editors.  Always use `little64 trace` subcommands.
 
-## Decoder Tool (l64trace.py)
+## Decoder Tool (`little64 trace`)
 
 ```bash
-l64trace.py decode <file>                      # Full text conversion
-l64trace.py stats <file>                       # File and tag statistics
-l64trace.py tail <file> -n N                   # Last N events (default 100)
-l64trace.py search <file> --tags TAG --pc 0xADDR  # Filter events
-l64trace.py watch <file>                       # Live-tail (like tail -f)
+little64 trace decode <file>                      # Full text conversion
+little64 trace stats <file>                       # File and tag statistics
+little64 trace tail <file> -n N                   # Last N events (default 100)
+little64 trace search <file> --tags TAG --pc 0xADDR  # Filter events
+little64 trace watch <file>                       # Live-tail (like tail -f)
 ```
 
 The `watch` subcommand survives file recreation between emulator runs and
@@ -228,7 +228,7 @@ shows the last 20 events on startup (configurable with `-n`).
 ## Lockup Analyzer
 
 ```bash
-target/linux_port/analyze_lockup_flow.py --log /tmp/little64_boot_events.l64t --tail 24
+./.venv/bin/little64 kernel analyze-lockup --log /tmp/little64_boot_events.l64t --tail 24
 ```
 
 Detects control-flow loops, identifies suspect transfers (odd PC, below
@@ -249,11 +249,11 @@ LITTLE64_TRACE_LR=1 \
   LITTLE64_TRACE_LR_END=0xffffffc0000b4700 \
 LITTLE64_TRACE_START_CYCLE=50000000 \
   LITTLE64_TRACE_END_CYCLE=60000000 \
-  target/linux_port/boot_direct.sh
+  little64 boot run
 ```
 
 All features write to the same L64T stream and can be filtered offline
-with `l64trace.py search --tags`.
+with `little64 trace search --tags`.
 
 ## Boot Event Ring Buffer
 

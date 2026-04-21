@@ -3,8 +3,8 @@ from __future__ import annotations
 import pytest
 from amaranth.sim import Simulator
 
-from little64.config import Little64CoreConfig
-from little64.v3 import Little64V3Core
+from little64_cores.config import Little64CoreConfig
+from little64_cores.v3 import Little64V3Core
 from shared_program import assemble_source, encode_gp_imm, encode_ls_reg
 
 

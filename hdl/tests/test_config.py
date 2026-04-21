@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from little64.config import Little64CoreConfig
+from little64_cores.config import Little64CoreConfig
 
 
 def test_default_config_matches_reference_choices() -> None:

@@ -11,7 +11,7 @@
 ///
 /// Format:
 ///   [Header: 64 bytes] [Event records: 41 bytes each] [Tag table: at EOF]
-///   Use l64trace.py to decode.
+///   Use `little64 trace` to decode.
 ///
 /// Supports cycle-window filtering and file size caps.
 class TraceWriter {

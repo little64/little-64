@@ -1,0 +1,738 @@
+#!/usr/bin/env python3
+
+from __future__ import annotations
+
+import argparse
+import os
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any, cast
+
+from little64.paths import repo_root
+
+REPO_ROOT = repo_root()
+HDL_ROOT = REPO_ROOT / 'hdl'
+if str(HDL_ROOT) not in sys.path:
+    sys.path.insert(0, str(HDL_ROOT))
+
+from litex.build.xilinx import VivadoProgrammer  # type: ignore[import-untyped]
+from litex.soc.integration.builder import Builder  # type: ignore[import-untyped]
+
+from little64 import sd as _BUILD_SD_BOOT_ARTIFACTS
+from little64_cores.litex import LITTLE64_LINUX_RAM_BASE
+from little64_cores.litex_arty import (
+    Little64ArtySPISDCardMapping,
+    Little64LiteXArtySoC,
+    create_arty_platform,
+    resolve_arty_spi_sdcard_mapping,
+)
+from little64_cores.litex_soc import generate_linux_dts
+
+
+DEFAULT_OUTPUT_DIR = REPO_ROOT / 'builddir' / 'hdl-litex-arty'
+DEFAULT_BUILD_NAME = 'little64_arty_a7_35'
+DEFAULT_KERNEL_ELF = REPO_ROOT / 'target' / 'linux_port' / 'build-litex' / 'vmlinux'
+DEFAULT_VIVADO_FLASH_PART = 's25fl128l-spi-x1_x2_x4'
+DEFAULT_SD_BOOTROM_SOURCE = Path('target/c_boot/litex_sd_boot.c')
+DEFAULT_SD_BOOTROM_LINKER = Path('target/c_boot/linker_litex_bootrom.ld')
+BOOT_ARTIFACT_DIRNAME = 'boot'
+PROGRAM_OPERATION_VOLATILE = 'volatile'
+PROGRAM_OPERATION_FLASH = 'flash'
+PROGRAM_OPERATIONS = (PROGRAM_OPERATION_VOLATILE, PROGRAM_OPERATION_FLASH)
+PROGRAMMER_AUTO = 'auto'
+PROGRAMMER_VIVADO = 'vivado'
+PROGRAMMER_OPENOCD = 'openocd'
+VIVADO_STOP_AFTER_SYNTHESIS = 'synthesis'
+VIVADO_STOP_AFTER_IMPLEMENTATION = 'implementation'
+VIVADO_STOP_AFTER_BITSTREAM = 'bitstream'
+VIVADO_STOP_AFTER_CHOICES = (
+    VIVADO_STOP_AFTER_SYNTHESIS,
+    VIVADO_STOP_AFTER_IMPLEMENTATION,
+    VIVADO_STOP_AFTER_BITSTREAM,
+)
+_VIVADO_STOP_AFTER_MARKERS = {
+    VIVADO_STOP_AFTER_SYNTHESIS: 'write_checkpoint -force {build_name}_synth.dcp',
+    VIVADO_STOP_AFTER_IMPLEMENTATION: 'report_power -file {build_name}_power.rpt',
+}
+
+
+def _parse_int(value: str) -> int:
+    return int(value, 0)
+
+
+def _sanitize_build_name(value: str) -> str:
+    sanitized = re.sub(r'[^A-Za-z0-9_$]', '_', value)
+    if not sanitized:
+        raise SystemExit('Build name must contain at least one Verilog-safe character')
+    if sanitized[0].isdigit():
+        sanitized = f'_{sanitized}'
+    return sanitized
+
+
+def _boot_artifact_paths(output_dir: Path, build_name: str) -> dict[str, Path]:
+    artifact_dir = output_dir / BOOT_ARTIFACT_DIRNAME
+    return {
+        'dir': artifact_dir,
+        'dts': artifact_dir / f'{build_name}.dts',
+        'dtb': artifact_dir / f'{build_name}.dtb',
+        'bootrom': artifact_dir / f'{build_name}_sd_bootrom.bin',
+        'sd_image': artifact_dir / f'{build_name}_sdcard.img',
+    }
+
+
+def _compose_arty_bootargs(*, uart_origin: int | None, include_rootfs: bool) -> str | None:
+    bootargs: list[str] = []
+    if uart_origin is not None:
+        bootargs.append(f'console=liteuart earlycon=liteuart,0x{uart_origin:x} ignore_loglevel loglevel=8')
+    if include_rootfs:
+        bootargs.append('root=/dev/mmcblk0p2 rootwait init=/init')
+    return ' '.join(bootargs) if bootargs else None
+
+
+def _clean_litex_output(output_dir: Path) -> None:
+    for child in ('gateware', 'software', BOOT_ARTIFACT_DIRNAME):
+        path = output_dir / child
+        if path.exists():
+            shutil.rmtree(path)
+
+
+def _run_checked(command: list[str], *, cwd: Path | None = None) -> None:
+    subprocess.run(command, check=True, cwd=None if cwd is None else str(cwd))
+
+
+_VENDOR_PRIMITIVE_INPUT_DEFAULTS: dict[str, dict[str, str]] = {
+    'IDELAYCTRL': {},
+    'OSERDESE2': {
+        'SHIFTIN1': "1'd0",
+        'SHIFTIN2': "1'd0",
+        'T1': "1'd0",
+        'T2': "1'd0",
+        'T3': "1'd0",
+        'T4': "1'd0",
+        'TBYTEIN': "1'd0",
+        'TCE': "1'd0",
+    },
+    'ISERDESE2': {
+        'CE2': "1'd0",
+        'CLKDIVP': "1'd0",
+        'D': "1'd0",
+        'DYNCLKDIVSEL': "1'd0",
+        'DYNCLKSEL': "1'd0",
+        'OCLK': "1'd0",
+        'OCLKB': "1'd0",
+        'OFB': "1'd0",
+        'SHIFTIN1': "1'd0",
+        'SHIFTIN2': "1'd0",
+    },
+    'IDELAYE2': {
+        'CINVCTRL': "1'd0",
+        'CNTVALUEIN': "5'd0",
+        'DATAIN': "1'd0",
+        'REGRST': "1'd0",
+    },
+    'IOBUFDS': {},
+    'PLLE2_ADV': {
+        'CLKIN2': "1'd0",
+        'CLKINSEL': "1'd1",
+        'DADDR': "7'd0",
+        'DCLK': "1'd0",
+        'DEN': "1'd0",
+        'DI': "16'd0",
+        'DWE': "1'd0",
+    },
+}
+
+_VENDOR_PRIMITIVE_OUTPUT_WIDTHS: dict[str, dict[str, int]] = {
+    'IDELAYCTRL': {'RDY': 1},
+    'OSERDESE2': {
+        'OFB': 1,
+        'SHIFTOUT1': 1,
+        'SHIFTOUT2': 1,
+        'TBYTEOUT': 1,
+        'TFB': 1,
+        'TQ': 1,
+    },
+    'ISERDESE2': {
+        'O': 1,
+        'SHIFTOUT1': 1,
+        'SHIFTOUT2': 1,
+    },
+    'IDELAYE2': {'CNTVALUEOUT': 5},
+    'IOBUFDS': {'O': 1},
+    'PLLE2_ADV': {
+        'CLKOUT4': 1,
+        'CLKOUT5': 1,
+        'DO': 16,
+        'DRDY': 1,
+    },
+}
+
+
+def _find_instance_name(block_lines: list[str]) -> str | None:
+    head_match = re.match(r'^\s*([A-Za-z0-9_]+)\s+([A-Za-z0-9_]+)\s*\($', block_lines[0])
+    if head_match is not None:
+        return head_match.group(2)
+
+    single_line_param_match = re.match(r'^\s*[A-Za-z0-9_]+\s*#.*\)\s*([A-Za-z0-9_]+)\s*\($', block_lines[0])
+    if single_line_param_match is not None:
+        return single_line_param_match.group(1)
+
+    for line in block_lines:
+        match = re.match(r'^\s*\)\s*([A-Za-z0-9_]+)\s*\($', line)
+        if match is not None:
+            return match.group(1)
+    return None
+
+
+def _connection_indent(block_lines: list[str]) -> str:
+    for line in block_lines:
+        match = re.match(r'^(\s*)\.[A-Za-z0-9_]+\s*\(', line)
+        if match is not None:
+            return match.group(1)
+    return '\t'
+
+
+def _patch_vendor_primitive_block(module_name: str, block_lines: list[str]) -> tuple[list[str], list[str]]:
+    existing_ports = set(re.findall(r'\.(\w+)\s*\(', ''.join(block_lines)))
+    missing_inputs = [
+        (port, value)
+        for port, value in _VENDOR_PRIMITIVE_INPUT_DEFAULTS[module_name].items()
+        if port not in existing_ports
+    ]
+    missing_outputs = [
+        (port, width)
+        for port, width in _VENDOR_PRIMITIVE_OUTPUT_WIDTHS[module_name].items()
+        if port not in existing_ports
+    ]
+    if not missing_inputs and not missing_outputs:
+        return block_lines, []
+
+    instance_name = _find_instance_name(block_lines)
+    if instance_name is None:
+        return block_lines, []
+
+    indent = _connection_indent(block_lines)
+    declarations: list[str] = []
+    inserted_lines: list[str] = []
+    for port, value in missing_inputs:
+        inserted_lines.append(f"{indent}.{port:<10} ({value})")
+    for port, width in missing_outputs:
+        net_name = f"little64_vendor_unused_{module_name.lower()}_{instance_name.lower()}_{port.lower()}"
+        width_prefix = '' if width == 1 else f'[{width - 1}:0] '
+        declarations.append(f'wire {width_prefix}{net_name};\n')
+        inserted_lines.append(f"{indent}.{port:<10} ({net_name})")
+
+    closing_index = next((index for index, line in enumerate(block_lines) if line.strip() == ');'), None)
+    if closing_index is None:
+        return block_lines, []
+
+    last_connection_index = None
+    for index in range(closing_index - 1, -1, -1):
+        stripped = block_lines[index].strip()
+        if stripped.startswith('.'):
+            last_connection_index = index
+            break
+    if last_connection_index is not None and not block_lines[last_connection_index].rstrip().endswith(','):
+        block_lines[last_connection_index] = block_lines[last_connection_index].rstrip('\n') + ',\n'
+
+    for index in range(len(inserted_lines) - 1):
+        inserted_lines[index] += ',\n'
+    inserted_lines[-1] += '\n'
+
+    patched = list(block_lines[:closing_index]) + inserted_lines + list(block_lines[closing_index:])
+    return patched, declarations
+
+
+def _inject_vendor_declarations(verilog_text: str, declarations: list[str]) -> str:
+    if not declarations:
+        return verilog_text
+
+    module_start = verilog_text.find('module ')
+    if module_start == -1:
+        return verilog_text
+
+    header_end = verilog_text.find('\n);\n', module_start)
+    if header_end == -1:
+        return verilog_text
+
+    insert_at = header_end + len('\n);\n')
+    unique_declarations: list[str] = []
+    for declaration in declarations:
+        if declaration not in unique_declarations and declaration not in verilog_text:
+            unique_declarations.append(declaration)
+    if not unique_declarations:
+        return verilog_text
+
+    return verilog_text[:insert_at] + ''.join(unique_declarations) + verilog_text[insert_at:]
+
+
+def _patch_generated_arty_verilog(gateware_dir: Path, build_name: str) -> bool:
+    verilog_path = gateware_dir / f'{build_name}.v'
+    if not verilog_path.is_file():
+        return False
+
+    original_lines = verilog_path.read_text(encoding='utf-8').splitlines(keepends=True)
+    patched_lines: list[str] = []
+    declarations: list[str] = []
+    changed = False
+    index = 0
+    target_modules = tuple(_VENDOR_PRIMITIVE_INPUT_DEFAULTS)
+
+    while index < len(original_lines):
+        line = original_lines[index]
+        match = re.match(r'^\s*(' + '|'.join(target_modules) + r')\b', line)
+        if match is None:
+            patched_lines.append(line)
+            index += 1
+            continue
+
+        module_name = match.group(1)
+        block_lines = [line]
+        index += 1
+        while index < len(original_lines):
+            block_lines.append(original_lines[index])
+            if original_lines[index].strip() == ');':
+                index += 1
+                break
+            index += 1
+
+        patched_block, block_declarations = _patch_vendor_primitive_block(module_name, block_lines)
+        if patched_block != block_lines:
+            changed = True
+        patched_lines.extend(patched_block)
+        declarations.extend(block_declarations)
+
+    if not changed:
+        return False
+
+    patched_text = ''.join(patched_lines)
+    patched_text = _inject_vendor_declarations(patched_text, declarations)
+    verilog_path.write_text(patched_text, encoding='utf-8')
+    return True
+
+
+def _render_vivado_stage_tcl(*, gateware_dir: Path, build_name: str, stop_after: str) -> Path:
+    base_tcl = gateware_dir / f'{build_name}.tcl'
+    if not base_tcl.is_file():
+        raise SystemExit(f'Expected generated Vivado Tcl was not found: {base_tcl}')
+    if stop_after == VIVADO_STOP_AFTER_BITSTREAM:
+        return base_tcl
+
+    stop_marker = _VIVADO_STOP_AFTER_MARKERS[stop_after].format(build_name=build_name)
+    stage_lines: list[str] = []
+    found_stop_marker = False
+    for line in base_tcl.read_text(encoding='utf-8').splitlines():
+        if line.strip() == 'quit':
+            continue
+        stage_lines.append(line)
+        if line.strip() == stop_marker:
+            found_stop_marker = True
+            break
+
+    if not found_stop_marker:
+        raise SystemExit(f'Unable to find Vivado stage marker `{stop_marker}` in {base_tcl}')
+
+    stage_lines.extend([
+        '',
+        '# End (truncated by build_litex_arty_bitstream.py)',
+        'quit',
+    ])
+    stage_tcl = gateware_dir / f'{build_name}_{stop_after}.tcl'
+    stage_tcl.write_text('\n'.join(stage_lines) + '\n', encoding='utf-8')
+    return stage_tcl
+
+
+def _run_vivado_stage(*, output_dir: Path, build_name: str, stop_after: str) -> Path:
+    gateware_dir = output_dir / 'gateware'
+    stage_tcl = _render_vivado_stage_tcl(
+        gateware_dir=gateware_dir,
+        build_name=build_name,
+        stop_after=stop_after,
+    )
+
+    vivado_settings_root = os.environ.get('LITEX_ENV_VIVADO')
+    if shutil.which('vivado') is None and not vivado_settings_root:
+        raise SystemExit(
+            'Unable to find or source Vivado toolchain. '
+            'Source Vivado, set LITEX_ENV_VIVADO, or pass --vivado-settings PATH.'
+        )
+
+    if sys.platform in ['win32', 'cygwin']:
+        _run_checked(['cmd', '/c', f'vivado -mode batch -source {stage_tcl.name}'], cwd=gateware_dir)
+    else:
+        shell_lines = ['set -e']
+        if vivado_settings_root:
+            shell_lines.append(f'source "{Path(vivado_settings_root) / "settings64.sh"}"')
+        shell_lines.append(f'vivado -mode batch -source "{stage_tcl.name}"')
+        _run_checked(['bash', '-lc', '\n'.join(shell_lines)], cwd=gateware_dir)
+
+    return stage_tcl
+
+
+def _rebuild_sd_boot_artifacts(
+    *,
+    args: argparse.Namespace,
+    output_dir: Path,
+) -> list[int] | None:
+    if not args.with_sdcard:
+        return None
+    if shutil.which('dtc') is None:
+        raise SystemExit('Missing required host tool: dtc')
+
+    kernel_elf = args.kernel_elf.resolve()
+    if not kernel_elf.is_file():
+        raise SystemExit(
+            f'SD boot artifact rebuild requires a kernel ELF, but none was found at: {kernel_elf}. '
+            'Build target/linux_port/build-litex/vmlinux first or pass --kernel-elf PATH.'
+        )
+
+    artifact_paths = _boot_artifact_paths(output_dir, args.build_name)
+    artifact_paths['dir'].mkdir(parents=True, exist_ok=True)
+
+    soc = Little64LiteXArtySoC(
+        sys_clk_freq=int(args.sys_clk_freq),
+        cpu_variant=args.cpu_variant,
+        integrated_main_ram_size=0 if args.with_sdram else args.integrated_main_ram_size,
+        with_sdram=args.with_sdram,
+        with_spi_flash=args.with_spi_flash,
+        with_sdcard=True,
+        spisdcard_mapping=_resolve_sdcard_mapping(args),
+        toolchain=args.toolchain,
+    )
+    soc.platform.output_dir = str(artifact_paths['dir'])
+    soc.finalize()
+    csr_regions = cast(dict[str, Any], getattr(soc.csr, 'regions'))
+    uart_region = csr_regions.get('uart')
+    bootargs = _compose_arty_bootargs(
+        uart_origin=None if uart_region is None else uart_region.origin,
+        include_rootfs=not args.no_rootfs,
+    )
+    artifact_paths['dts'].write_text(generate_linux_dts(soc, bootargs=bootargs), encoding='utf-8')
+    _run_checked(['dtc', '-I', 'dts', '-O', 'dtb', '-o', str(artifact_paths['dtb']), str(artifact_paths['dts'])])
+
+    bus_regions = cast(dict[str, Any], getattr(soc.bus, 'regions'))
+    main_ram_region = bus_regions['main_ram']
+    bootrom_image = _BUILD_SD_BOOT_ARTIFACTS.build_litex_sd_boot_artifacts(
+        soc=soc,
+        kernel_elf=kernel_elf,
+        dtb=artifact_paths['dtb'],
+        bootrom_output=artifact_paths['bootrom'],
+        sd_output=artifact_paths['sd_image'],
+        ram_base=main_ram_region.origin,
+        ram_size=main_ram_region.size,
+        kernel_physical_base=max(main_ram_region.origin, LITTLE64_LINUX_RAM_BASE),
+        rootfs_image=args.rootfs_image,
+        no_rootfs=args.no_rootfs,
+        stage0_source=args.sd_bootrom_source,
+        stage0_linker=args.sd_bootrom_linker,
+    )
+    print(f'Rebuilt SD boot artifacts: {artifact_paths["bootrom"]} and {artifact_paths["sd_image"]}')
+    print(
+        'Compiled the staged bootrom from target/c_boot/litex_sd_boot.c against the Arty SPI-mode SD CSR layout and will preload it into the integrated boot ROM.'
+    )
+    return _BUILD_SD_BOOT_ARTIFACTS.pack_litex_memory_words(
+        bootrom_image,
+        data_width=int(soc.bus.data_width),
+        endianness='little',
+    )
+
+
+def _normalize_program_operations(operations: list[str] | None) -> tuple[str, ...]:
+    if not operations:
+        return ()
+    return tuple(dict.fromkeys(operations))
+
+
+def _has_vivado_tool() -> bool:
+    return shutil.which('vivado') is not None or bool(os.environ.get('LITEX_ENV_VIVADO'))
+
+
+def _has_openocd_tool() -> bool:
+    return shutil.which('openocd') is not None
+
+
+def _resolve_programmer_backend(
+    *,
+    requested_backend: str,
+    operations: tuple[str, ...],
+    vivado_available: bool,
+    openocd_available: bool,
+) -> str:
+    if not operations:
+        return requested_backend
+    if requested_backend != PROGRAMMER_AUTO:
+        return requested_backend
+    if PROGRAM_OPERATION_FLASH in operations and vivado_available:
+        return PROGRAMMER_VIVADO
+    if PROGRAM_OPERATION_VOLATILE in operations and vivado_available:
+        return PROGRAMMER_VIVADO
+    if openocd_available:
+        return PROGRAMMER_OPENOCD
+    if vivado_available:
+        return PROGRAMMER_VIVADO
+    raise SystemExit(
+        'Programming was requested, but neither Vivado nor OpenOCD is available. '
+        'Source Vivado, pass --vivado-settings PATH, or install openocd.'
+    )
+
+
+def _resolve_programming_artifact(output_dir: Path, build_name: str, operation: str) -> Path:
+    suffix = '.bit' if operation == PROGRAM_OPERATION_VOLATILE else '.bin'
+    return output_dir / 'gateware' / f'{build_name}{suffix}'
+
+
+def _validate_requested_actions(args: argparse.Namespace, program_operations: tuple[str, ...]) -> None:
+    if args.generate_only and program_operations:
+        raise SystemExit('--generate-only cannot be combined with --program; no programmable artifact would be produced')
+    if args.generate_only and args.program_only:
+        raise SystemExit('--generate-only cannot be combined with --program-only')
+    if args.program_only and not program_operations:
+        raise SystemExit('--program-only requires at least one --program operation')
+    if args.program_only and args.vivado_stop_after != VIVADO_STOP_AFTER_BITSTREAM:
+        raise SystemExit('--vivado-stop-after cannot be combined with --program-only')
+    if args.toolchain != 'vivado' and args.vivado_stop_after != VIVADO_STOP_AFTER_BITSTREAM:
+        raise SystemExit('--vivado-stop-after is only supported with --toolchain vivado')
+    if program_operations and not args.program_only and args.vivado_stop_after != VIVADO_STOP_AFTER_BITSTREAM:
+        raise SystemExit('--program requires --vivado-stop-after bitstream because earlier stops do not emit programmable artifacts')
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description='Build a Little64 LiteX hardware bitstream for the Digilent Arty A7-35T.',
+    )
+    parser.add_argument('--output-dir', type=Path, default=DEFAULT_OUTPUT_DIR, help='Output directory for generated LiteX gateware and project files.')
+    parser.add_argument('--build-name', default=DEFAULT_BUILD_NAME, help='LiteX/Vivado build name.')
+    parser.add_argument('--sys-clk-freq', type=float, default=100e6, help='Requested system clock frequency in Hz.')
+    parser.add_argument(
+        '--cpu-variant',
+        default='standard',
+        help='Little64 LiteX CPU variant to synthesize. `standard` selects the V2 core; use `standard-basic` for the legacy core.',
+    )
+    parser.add_argument('--toolchain', default='vivado', help='LiteX toolchain backend. Vivado is the supported path for Arty.')
+    parser.add_argument('--vivado-settings', type=Path, default=None,
+        help='Optional path to Vivado settings64.sh. When provided, exports LITEX_ENV_VIVADO for the current build.')
+    parser.add_argument('--with-sdram', action=argparse.BooleanOptionalAction, default=True, help='Enable the onboard DDR3 controller and expose main RAM in SDRAM.')
+    parser.add_argument('--integrated-main-ram-size', type=_parse_int, default=0x008000, help='Integrated main RAM size to use when SDRAM is disabled.')
+    parser.add_argument('--with-spi-flash', action='store_true', help='Expose the onboard SPI flash as a memory-mapped LiteSPI controller.')
+    parser.add_argument('--with-sdcard', action=argparse.BooleanOptionalAction, default=True, help='Expose an SPI-mode SD card controller using the selected connector mapping.')
+    parser.add_argument('--sdcard-connector', choices=('arduino', 'pmoda', 'pmodb', 'pmodc', 'pmodd'), default='arduino', help='Board connector used for the external SD wiring.')
+    parser.add_argument('--sdcard-adapter', choices=('digilent', 'numato'), default='digilent', help='Wiring convention used when the SD card is attached through a PMOD adapter.')
+    parser.add_argument('--sdcard-clk-pin', help='Override the resolved SPI clock pin or connector pin expression.')
+    parser.add_argument('--sdcard-mosi-pin', help='Override the resolved MOSI pin or connector pin expression.')
+    parser.add_argument('--sdcard-miso-pin', help='Override the resolved MISO pin or connector pin expression.')
+    parser.add_argument('--sdcard-cs-pin', help='Override the resolved chip-select pin or connector pin expression.')
+    parser.add_argument('--kernel-elf', type=Path, default=DEFAULT_KERNEL_ELF,
+        help='Kernel ELF packed into regenerated SD boot artifacts when the SD boot path is enabled.')
+    rootfs_group = parser.add_mutually_exclusive_group()
+    rootfs_group.add_argument('--rootfs-image', type=Path,
+        help='Optional ext4 rootfs image to place in the regenerated SD card artifact. When omitted, the default rootfs is rebuilt.')
+    rootfs_group.add_argument('--no-rootfs', action='store_true',
+        help='Leave the second SD partition empty when regenerating SD boot artifacts.')
+    parser.add_argument('--sd-bootrom-source', type=Path, default=DEFAULT_SD_BOOTROM_SOURCE,
+        help='SD bootrom stage-0 source file to compile into the integrated boot ROM image.')
+    parser.add_argument('--sd-bootrom-linker', type=Path, default=DEFAULT_SD_BOOTROM_LINKER,
+        help='Linker script used when compiling the SD bootrom stage-0 image.')
+    parser.add_argument('--with-ethernet', action='store_true', help='Reserved for future Arty peripheral expansion. Not implemented yet.')
+    parser.add_argument('--generate-only', action='store_true', help='Generate the LiteX/Vivado project without invoking Vivado.')
+    parser.add_argument('--vivado-stop-after', choices=VIVADO_STOP_AFTER_CHOICES, default=VIVADO_STOP_AFTER_BITSTREAM,
+        help='Stop the Vivado flow after `synthesis`, after `implementation` (route/checkpoint/reports), or run through `bitstream` generation.')
+    parser.add_argument('--vivado-max-threads', type=int, default=None, help='Optional maximum thread count for Vivado runs.')
+    parser.add_argument('--program', action='append', choices=PROGRAM_OPERATIONS,
+        help='Program the built artifact onto hardware. Use `volatile` for a temporary JTAG bitstream load or `flash` for persistent SPI-flash programming. Repeat to request both.')
+    parser.add_argument('--program-only', action='store_true', help='Skip the build step and program existing artifacts from output-dir/gateware.')
+    parser.add_argument('--programmer', choices=(PROGRAMMER_AUTO, PROGRAMMER_VIVADO, PROGRAMMER_OPENOCD), default=PROGRAMMER_AUTO,
+        help='Programmer backend to use. `auto` prefers Vivado when available, otherwise OpenOCD.')
+    parser.add_argument('--programmer-device-index', type=int, default=0,
+        help='Hardware device index used by the programmer backend when supported.')
+    parser.add_argument('--vivado-hw-target', default='',
+        help='Optional Vivado hw_target argument used for volatile JTAG programming.')
+    parser.add_argument('--vivado-flash-part', default=DEFAULT_VIVADO_FLASH_PART,
+        help='Vivado cfgmem flash part used for persistent flash programming.')
+    parser.add_argument('--flash-address', type=_parse_int, default=0,
+        help='Flash offset used when programming the persistent configuration image.')
+    return parser.parse_args(argv)
+
+
+def _configure_vivado_environment(args: argparse.Namespace) -> None:
+    if args.vivado_settings is not None:
+        settings_path = args.vivado_settings.resolve()
+        if not settings_path.is_file():
+            raise SystemExit(f'Vivado settings script not found: {settings_path}')
+        os.environ['LITEX_ENV_VIVADO'] = str(settings_path.parent)
+
+
+def _ensure_requested_toolchain_is_available(args: argparse.Namespace) -> None:
+    if args.generate_only or args.program_only:
+        return
+    if args.toolchain == 'vivado':
+        if _has_vivado_tool():
+            return
+        raise SystemExit(
+            'Vivado is required for a full Arty bitstream build. '
+            'Source the Vivado settings script, set LITEX_ENV_VIVADO, or pass --vivado-settings PATH.'
+        )
+
+
+def _resolve_sdcard_mapping(args: argparse.Namespace) -> Little64ArtySPISDCardMapping | None:
+    if not args.with_sdcard:
+        return None
+    return resolve_arty_spi_sdcard_mapping(
+        connector=args.sdcard_connector,
+        adapter=args.sdcard_adapter,
+        clk=args.sdcard_clk_pin,
+        mosi=args.sdcard_mosi_pin,
+        miso=args.sdcard_miso_pin,
+        cs_n=args.sdcard_cs_pin,
+    )
+
+
+def _create_programmer(backend: str, args: argparse.Namespace) -> Any:
+    if backend == PROGRAMMER_VIVADO:
+        return VivadoProgrammer(flash_part=args.vivado_flash_part)
+    platform = create_arty_platform(variant='a7-35', toolchain=args.toolchain)
+    return platform.create_programmer()
+
+
+def _program_artifacts(
+    *,
+    backend: str,
+    args: argparse.Namespace,
+    output_dir: Path,
+    program_operations: tuple[str, ...],
+) -> None:
+    programmer = _create_programmer(backend, args)
+    for operation in program_operations:
+        artifact_path = _resolve_programming_artifact(output_dir, args.build_name, operation)
+        if not artifact_path.is_file():
+            raise SystemExit(
+                f'Programming requested for {operation}, but the required artifact is missing: {artifact_path}'
+            )
+
+        print(f'Programming {operation} image via {backend}: {artifact_path}')
+        if operation == PROGRAM_OPERATION_VOLATILE:
+            if backend == PROGRAMMER_VIVADO:
+                programmer.load_bitstream(
+                    str(artifact_path),
+                    target=args.vivado_hw_target,
+                    device=args.programmer_device_index,
+                )
+            else:
+                programmer.load_bitstream(str(artifact_path))
+        else:
+            if backend == PROGRAMMER_VIVADO:
+                programmer.flash(
+                    args.flash_address,
+                    str(artifact_path),
+                    device=args.programmer_device_index,
+                )
+            else:
+                programmer.flash(args.flash_address, str(artifact_path))
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    requested_build_name = args.build_name
+    args.build_name = _sanitize_build_name(args.build_name)
+    program_operations = _normalize_program_operations(args.program)
+    _validate_requested_actions(args, program_operations)
+    _configure_vivado_environment(args)
+    _ensure_requested_toolchain_is_available(args)
+
+    if args.with_ethernet:
+        raise SystemExit('Ethernet support is reserved for a later Arty hardware iteration and is not implemented yet')
+
+    sdcard_mapping = _resolve_sdcard_mapping(args)
+    output_dir = args.output_dir.resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    programmer_backend = _resolve_programmer_backend(
+        requested_backend=args.programmer,
+        operations=program_operations,
+        vivado_available=_has_vivado_tool(),
+        openocd_available=_has_openocd_tool(),
+    )
+
+    if args.build_name != requested_build_name:
+        print(f'Adjusted build name for Verilog compatibility: {requested_build_name} -> {args.build_name}')
+
+    if sdcard_mapping is not None:
+        print('Little64 Arty SPI SD mapping:')
+        print(f'  source: {sdcard_mapping.name}')
+        print(f'  clk:    {sdcard_mapping.clk}')
+        print(f'  mosi:   {sdcard_mapping.mosi}')
+        print(f'  miso:   {sdcard_mapping.miso}')
+        print(f'  cs_n:   {sdcard_mapping.cs_n}')
+
+    if not args.program_only:
+        _clean_litex_output(output_dir)
+        bootrom_init = _rebuild_sd_boot_artifacts(
+            args=args,
+            output_dir=output_dir,
+        )
+        soc = Little64LiteXArtySoC(
+            sys_clk_freq=int(args.sys_clk_freq),
+            integrated_rom_init=[] if bootrom_init is None else bootrom_init,
+            integrated_main_ram_size=0 if args.with_sdram else args.integrated_main_ram_size,
+            with_sdram=args.with_sdram,
+            with_spi_flash=args.with_spi_flash,
+            with_sdcard=args.with_sdcard,
+            cpu_variant=args.cpu_variant,
+            spisdcard_mapping=sdcard_mapping,
+            toolchain=args.toolchain,
+        )
+
+        builder = Builder(
+            soc,
+            output_dir=str(output_dir),
+            compile_software=False,
+            compile_gateware=not args.generate_only,
+        )
+        build_kwargs: dict[str, Any] = {
+            'build_name': args.build_name,
+            'vivado_max_threads': args.vivado_max_threads,
+        }
+        if args.toolchain == 'vivado':
+            build_kwargs['run'] = False
+        else:
+            build_kwargs['run'] = not args.generate_only
+        cast(Any, builder).build(**build_kwargs)
+        if _patch_generated_arty_verilog(output_dir / 'gateware', args.build_name):
+            print('Patched generated gateware to tie off optional Xilinx primitive ports and reduce noisy synthesis warnings.')
+        if args.toolchain == 'vivado' and not args.generate_only:
+            stage_tcl = _run_vivado_stage(
+                output_dir=output_dir,
+                build_name=args.build_name,
+                stop_after=args.vivado_stop_after,
+            )
+            print(f'Executed Vivado stage script: {stage_tcl}')
+
+    print(f'LiteX output directory: {output_dir}')
+    print(f'Gateware directory: {output_dir / "gateware"}')
+    if args.generate_only:
+        print('Vivado execution was skipped; generated project files are ready for inspection.')
+    elif args.vivado_stop_after == VIVADO_STOP_AFTER_SYNTHESIS:
+        print(f'Synthesis checkpoint: {output_dir / "gateware" / f"{args.build_name}_synth.dcp"}')
+        print(f'Synthesis timing report: {output_dir / "gateware" / f"{args.build_name}_timing_synth.rpt"}')
+    elif args.vivado_stop_after == VIVADO_STOP_AFTER_IMPLEMENTATION:
+        print(f'Implementation checkpoint: {output_dir / "gateware" / f"{args.build_name}_route.dcp"}')
+        print(f'Implementation timing report: {output_dir / "gateware" / f"{args.build_name}_timing.rpt"}')
+    else:
+        print(f'Expected bitstream path: {output_dir / "gateware" / f"{args.build_name}.bit"}')
+    if program_operations:
+        _program_artifacts(
+            backend=programmer_backend,
+            args=args,
+            output_dir=output_dir,
+            program_operations=program_operations,
+        )
+    return 0
+
+
+def run(argv: list[str]) -> int:
+    return main(argv) or 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

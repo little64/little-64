@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from amaranth.sim import Simulator
 
-from little64.config import Little64CoreConfig
-from little64.v2 import Little64V2FetchFrontend
-from little64.v2.lsu import Little64V2LSU, V2LSUState
-from little64.v3 import Little64V3Core
+from little64_cores.config import Little64CoreConfig
+from little64_cores.v2 import Little64V2FetchFrontend
+from little64_cores.v2.lsu import Little64V2LSU, V2LSUState
+from little64_cores.v3 import Little64V3Core
 
 
 def _run_frontend_with_stuck_bus(*, bus_timeout_cycles: int, cycles: int) -> dict[str, object]:

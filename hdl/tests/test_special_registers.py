@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from amaranth.sim import Settle, Simulator
 
-from little64.config import Little64CoreConfig
-from little64.isa import CPU_CONTROL_WRITABLE_MASK, SpecialRegister
-from little64.v2.special_registers import Little64V2SpecialRegisterFile
+from little64_cores.config import Little64CoreConfig
+from little64_cores.isa import CPU_CONTROL_WRITABLE_MASK, SpecialRegister
+from little64_cores.v2.special_registers import Little64V2SpecialRegisterFile
 
 
 def test_optional_platform_register_reads_zero_when_disabled() -> None:

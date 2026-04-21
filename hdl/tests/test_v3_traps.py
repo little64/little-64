@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from little64.config import Little64CoreConfig
-from little64.isa import (
+from little64_cores.config import Little64CoreConfig
+from little64_cores.isa import (
     CPU_CONTROL_INT_ENABLE,
     CPU_CONTROL_PAGING_ENABLE,
     CPU_CONTROL_USER_MODE,

@@ -12,8 +12,8 @@ from pathlib import Path
 from amaranth.sim import Simulator
 import pytest
 
-from little64.config import Little64CoreConfig
-from little64.litex import (
+from little64_cores.config import Little64CoreConfig
+from little64_cores.litex import (
     LITTLE64_LITEX_BOOTROM_MAIN_RAM_BASE,
     LITTLE64_LITEX_BOOTROM_SIZE,
     LITTLE64_LITEX_BOOT_SOURCE_BOOTROM,
@@ -28,26 +28,26 @@ from little64.litex import (
     normalize_litex_boot_source,
     resolve_litex_target,
 )
-from little64.litex_sdcard import EMULATOR_VERILOG_FILENAMES, _resolve_emulator_verilog_dir
-from little64.litex_cpu import Little64, Little64WishboneDataBridge, ensure_litex_llvm_toolchain_wrappers, register_little64_with_litex
-from little64.litex_arty import Little64ArtySPISDCardMapping, arty_spi_sdcard_extension, resolve_arty_spi_sdcard_mapping
-from little64.litex_arty import Little64LiteXArtySoC
-from little64.litex_linux_boot import (
+from little64_cores.litex_sdcard import EMULATOR_VERILOG_FILENAMES, _resolve_emulator_verilog_dir
+from little64_cores.litex_cpu import Little64, Little64WishboneDataBridge, ensure_litex_llvm_toolchain_wrappers, register_little64_with_litex
+from little64_cores.litex_arty import Little64ArtySPISDCardMapping, arty_spi_sdcard_extension, resolve_arty_spi_sdcard_mapping
+from little64_cores.litex_arty import Little64LiteXArtySoC
+from little64_cores.litex_linux_boot import (
     FLASH_BOOT_HEADER,
     build_litex_flash_image,
     build_litex_sd_card_image,
     flatten_little64_linux_elf_image,
     write_litex_sd_card_image,
 )
-from little64.litex_soc import Little64LiteXSimSoC, _load_spi_flash_init, generate_linux_dts
-from little64.variants import config_for_litex_variant, resolve_litex_cache_topology
-from little64.v2 import Little64V2Core, Little64V2FetchFrontend
-from little64.variants import resolve_litex_core_variant
+from little64_cores.litex_soc import Little64LiteXSimSoC, _load_spi_flash_init, generate_linux_dts
+from little64_cores.variants import config_for_litex_variant, resolve_litex_cache_topology
+from little64_cores.v2 import Little64V2Core, Little64V2FetchFrontend
+from little64_cores.variants import resolve_litex_core_variant
 
 
 _BUILD_SD_BOOT_ARTIFACTS_SPEC = importlib.util.spec_from_file_location(
     'little64_build_sd_boot_artifacts',
-    Path(__file__).resolve().parents[2] / 'target' / 'linux_port' / 'build_sd_boot_artifacts.py',
+    Path(__file__).resolve().parents[2] / 'tools' / 'little64' / 'little64' / 'sd.py',
 )
 assert _BUILD_SD_BOOT_ARTIFACTS_SPEC is not None and _BUILD_SD_BOOT_ARTIFACTS_SPEC.loader is not None
 _BUILD_SD_BOOT_ARTIFACTS = importlib.util.module_from_spec(_BUILD_SD_BOOT_ARTIFACTS_SPEC)
@@ -55,7 +55,7 @@ _BUILD_SD_BOOT_ARTIFACTS_SPEC.loader.exec_module(_BUILD_SD_BOOT_ARTIFACTS)
 
 _BUILD_ARTY_BITSTREAM_SPEC = importlib.util.spec_from_file_location(
     'little64_build_litex_arty_bitstream',
-    Path(__file__).resolve().parents[1] / 'tools' / 'build_litex_arty_bitstream.py',
+    Path(__file__).resolve().parents[2] / 'tools' / 'little64' / 'little64' / 'commands' / 'hdl' / 'arty_build.py',
 )
 assert _BUILD_ARTY_BITSTREAM_SPEC is not None and _BUILD_ARTY_BITSTREAM_SPEC.loader is not None
 _BUILD_ARTY_BITSTREAM = importlib.util.module_from_spec(_BUILD_ARTY_BITSTREAM_SPEC)
@@ -63,7 +63,7 @@ _BUILD_ARTY_BITSTREAM_SPEC.loader.exec_module(_BUILD_ARTY_BITSTREAM)
 
 _BUILD_FLASH_IMAGE_SPEC = importlib.util.spec_from_file_location(
     'little64_build_litex_flash_image',
-    Path(__file__).resolve().parents[1] / 'tools' / 'build_litex_flash_image.py',
+    Path(__file__).resolve().parents[2] / 'tools' / 'little64' / 'little64' / 'commands' / 'hdl' / 'flash_image.py',
 )
 assert _BUILD_FLASH_IMAGE_SPEC is not None and _BUILD_FLASH_IMAGE_SPEC.loader is not None
 _BUILD_FLASH_IMAGE = importlib.util.module_from_spec(_BUILD_FLASH_IMAGE_SPEC)
@@ -300,7 +300,7 @@ def test_create_arty_platform_reports_missing_litex_boards(monkeypatch) -> None:
     monkeypatch.setitem(sys.modules, 'litex_boards', None)
     monkeypatch.setitem(sys.modules, 'litex_boards.platforms', None)
 
-    from little64 import litex_arty
+    from little64_cores import litex_arty
 
     with pytest.raises(ModuleNotFoundError, match='litex-boards is required'):
         litex_arty.create_arty_platform()

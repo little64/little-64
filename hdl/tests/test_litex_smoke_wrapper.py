@@ -4,11 +4,14 @@ import argparse
 import importlib.util
 from pathlib import Path
 
-from little64.litex import LITTLE64_LITEX_BOOTROM_SIZE
+from little64_cores.litex import LITTLE64_LITEX_BOOTROM_SIZE
 
 
 def _load_smoke_wrapper_module():
-    module_path = Path(__file__).resolve().parents[1] / 'tools' / 'run_litex_linux_boot_smoke.py'
+    module_path = (
+        Path(__file__).resolve().parents[2]
+        / 'tools' / 'little64' / 'little64' / 'commands' / 'hdl' / 'sim_litex.py'
+    )
     spec = importlib.util.spec_from_file_location('little64_run_litex_linux_boot_smoke', module_path)
     assert spec is not None
     assert spec.loader is not None

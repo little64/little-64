@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from amaranth.sim import Simulator
 
-from little64.config import Little64CoreConfig
-from little64.isa import TrapVector
-from little64.v2 import Little64V2Core, Little64V2FetchFrontend, V2PipelineState
+from little64_cores.config import Little64CoreConfig
+from little64_cores.isa import TrapVector
+from little64_cores.v2 import Little64V2Core, Little64V2FetchFrontend, V2PipelineState
 
 
 STOP_INSTRUCTION = 0xDF00

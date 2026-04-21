@@ -26,83 +26,78 @@ This file documents practical update paths and maintenance rules for common proj
 - Clang driver integration: Little64 is handled by the BareMetal toolchain (`clang/lib/Driver/ToolChains/BareMetal.cpp`), which defaults to `--rtlib=compiler-rt`.
 - The Linux kernel does **not** use this library; it has its own stubs in `arch/little64/lib/`.
 
-## Temporary Linux Build Script
+## Linux Kernel Build
 
-- A temporary Linux kernel build helper exists at `target/linux_port/build.sh`.
-- The shell entrypoint now delegates to the Python helper `target/linux_port/linux_build.py`.
-- It invokes the Linux kernel `make` target with the Little64 LLVM toolchain from `compilers/bin`.
-- The helper is currently not part of the Meson graph and is meant for local Linux port experimentation only.
-- It supports the canonical `--machine litex` profile, plus explicit overrides via `--defconfig <name>` and `--build-dir <path>`.
-- It auto-syncs the selected defconfig into a profile-specific build directory when the canonical defconfig changes, the selected defconfig changes, or the build config is missing.
-- The default LiteX profile output directory is `target/linux_port/build-litex/`.
-- Explicit defconfigs build into `target/linux_port/build-<defconfig>/` unless `LITTLE64_LINUX_BUILD_DIR` or `--build-dir` overrides it.
-- Usage: `target/linux_port/build.sh [--machine litex] [--defconfig <name>] [--build-dir <path>] [target] [make-args...]` where the default target is `vmlinux`.
-- The default machine profile is `litex`; use `--defconfig <name>` only when you explicitly need a separate non-default kernel config.
-- The helper normally passes `-j$(nproc)` to `make` unless a `-j` argument is already provided.
+- Kernel build is the `little64 kernel build` subcommand:
+  - Usage: `./.venv/bin/little64 kernel build [--machine litex] [--defconfig <name>] [--build-dir <path>] [target] [make-args...]` where the default target is `vmlinux`.
+  - Invokes the Linux kernel `make` target with the Little64 LLVM toolchain from `compilers/bin`.
+  - Not part of the Meson graph and is meant for local Linux port experimentation only.
+  - Supports the canonical `--machine litex` profile, plus explicit overrides via `--defconfig <name>` and `--build-dir <path>`.
+  - Auto-syncs the selected defconfig into a profile-specific build directory when the canonical defconfig changes, the selected defconfig changes, or the build config is missing.
+  - Default LiteX profile output directory: `target/linux_port/build-litex/`.
+  - Explicit defconfigs build into `target/linux_port/build-<defconfig>/` unless `LITTLE64_LINUX_BUILD_DIR` or `--build-dir` overrides it.
+  - Default machine profile is `litex`; use `--defconfig <name>` only when you explicitly need a separate non-default kernel config.
+  - Normally passes `-j$(nproc)` to `make` unless a `-j` argument is already provided.
 - Optional guarded-clang mode can be enabled to catch backend non-termination/memory blowups:
-  - `LITTLE64_CLANG_GUARD=1` enables `target/linux_port/clang_guard.sh` wrapper.
+  - `LITTLE64_CLANG_GUARD=1` enables the `target/linux_port/clang_guard.sh` wrapper.
   - `LITTLE64_CLANG_TIMEOUT_SEC` sets per-clang timeout (default `120`).
   - `LITTLE64_CLANG_MAX_VMEM_KB` sets per-clang virtual memory cap in KB (default `10485760`, ~10 GB).
   - `LITTLE64_CLANG_GUARD_LOG_DIR` sets log directory (default `/tmp/little64-clang-guard`).
-- Direct ELF boot helper for first Linux bring-up exists at `target/linux_port/boot_direct.sh`:
+- Direct ELF boot helper for first Linux bring-up exists at `little64 boot run`:
   - Default image path: `target/linux_port/build-litex/vmlinux`.
   - Default rootfs path: `target/linux_port/rootfs/build/rootfs.ext4`.
-  - Usage: `target/linux_port/boot_direct.sh [--machine litex] [--mode trace|smoke|rsp] [--rootfs PATH | --no-rootfs] [--max-cycles N] [--port N] [optional-path-to-vmlinux]`.
-  - The helper now targets the LiteX machine profile only.
+  - Usage: `little64 boot run [--machine litex] [--mode trace|smoke|rsp] [--rootfs PATH | --no-rootfs] [--max-cycles N] [--port N] [optional-path-to-vmlinux]`.
+  - Targets the LiteX machine profile only.
   - Default mode `smoke` launches the lower-overhead direct boot flow without boot-event capture.
-  - The `litex` profile now generates a bootrom-first LiteX image and launches emulator `--boot-mode=litex-bootrom` so the default path matches the SDRAM-backed hardware-oriented SoC layout.
+  - The `litex` profile generates a bootrom-first LiteX image and launches emulator `--boot-mode=litex-bootrom` so the default path matches the SDRAM-backed hardware-oriented SoC layout.
   - The `litex` profile regenerates a minimal ext4 rootfs from `target/linux_port/rootfs/init.S` for SD partition 2 unless `--rootfs PATH` or `--no-rootfs` overrides it.
   - In `trace` mode it streams full boot events to `/tmp/little64_boot_events.l64t` via `--boot-events-file`.
   - Default file size cap: 500 MB (override with `LITTLE64_BOOT_EVENTS_MAX_MB`).
   - Supports cycle-window tracing: `LITTLE64_TRACE_START_CYCLE=N LITTLE64_TRACE_END_CYCLE=N`.
   - Use `--mode=smoke` for the lower-overhead direct boot flow without boot-event capture or stderr event dumping.
   - Use `--mode=rsp` to launch the direct-boot debug server on TCP port `9000` by default, or override it with `--port N`.
-- Compatibility wrappers remain available during migration:
-  - `target/linux_port/boot_direct_no_event_logging.sh` forwards to `target/linux_port/boot_direct.sh --mode=smoke`.
-  - `target/linux_port/boot_direct_debugserver.sh` forwards to `target/linux_port/boot_direct.sh --mode=rsp`.
-- Minimal Linux rootfs build helper exists at `target/linux_port/rootfs/build.sh`:
+- Minimal Linux rootfs build helper exists at `little64 rootfs build`:
   - Output directory: `target/linux_port/rootfs/build/`.
   - Default image path: `target/linux_port/rootfs/build/rootfs.ext4`.
-  - Usage: `target/linux_port/rootfs/build.sh` or `target/linux_port/rootfs/build.sh clean`.
+  - Usage: `little64 rootfs build` or `little64 rootfs build clean`.
   - It builds a minimal `/init` ELF using the Little64 LLVM tools and packs it into an ext4 image used by the LiteX SD boot helpers.
   - The LiteX SD artifact builder reuses this helper when it needs the default SD rootfs payload.
   - This is the main bring-up rootfs path and should remain independent of targeted boot regressions; the dedicated Linux userspace-write smoke test builds its own test-only init/rootfs under `tests/host/boot/`.
-- Boot-event analysis helper exists at `target/linux_port/analyze_lockup_flow.py`:
-  - Usage: `target/linux_port/analyze_lockup_flow.py --log /tmp/little64_boot_events.l64t [--tail N] [--defconfig <name>] [--elf <path>]`.
+- Boot-event analysis is the `little64 kernel analyze-lockup` subcommand:
+  - Usage: `./.venv/bin/little64 kernel analyze-lockup --log /tmp/little64_boot_events.l64t [--tail N] [--defconfig <name>] [--elf <path>]`.
   - Reads binary `.l64t` trace files.
-  - The shell wrapper `target/linux_port/analyze_lockup_flow.sh` forwards to the Python analyzer.
-- Binary trace decoder exists at `target/linux_port/l64trace.py`:
-  - Usage: `l64trace.py decode <file>` to convert binary to text.
-  - Usage: `l64trace.py stats <file>` for trace statistics.
-  - Usage: `l64trace.py tail <file> -n N` for last N events.
-  - Usage: `l64trace.py search <file> --tags TAG --pc 0xADDR` for filtering.
-  - Usage: `l64trace.py watch <file>` for live-tailing (like `tail -f`), survives file recreation between runs.
-  - **Important**: Trace files (`.l64t`) are binary and cannot be read directly. Always use `l64trace.py` subcommands to inspect them.
-- PC-to-source lookup helper for Linux kernel debugging exists at `target/linux_port/pc_to_line.sh`:
+- Binary trace decoder is the `little64 trace` subcommand group:
+  - Usage: `./.venv/bin/little64 trace decode <file>` to convert binary to text.
+  - Usage: `./.venv/bin/little64 trace stats <file>` for trace statistics.
+  - Usage: `./.venv/bin/little64 trace tail <file> -n N` for last N events.
+  - Usage: `./.venv/bin/little64 trace search <file> --tags TAG --pc 0xADDR` for filtering.
+  - Usage: `./.venv/bin/little64 trace watch <file>` for live-tailing (like `tail -f`), survives file recreation between runs.
+  - **Important**: Trace files (`.l64t`) are binary and cannot be read directly. Always use `little64 trace` subcommands to inspect them.
+- PC-to-source lookup is the `little64 kernel pc2line` subcommand:
   - Default image path: selected profile `vmlinux` under `target/linux_port/build-litex/` or `target/linux_port/build-<defconfig>/`.
-  - Usage: `target/linux_port/pc_to_line.sh [--defconfig <name>] [--elf <path>] [--context-bytes N] [--no-disasm] <pc>`.
+  - Usage: `./.venv/bin/little64 kernel pc2line [--defconfig <name>] [--elf <path>] [--context-bytes N] [--no-disasm] <pc>`.
   - It resolves a PC to function/file/line using LLVM tools from `compilers/bin` and can show nearby disassembly.
-- Repeated fast-boot outcome sampler exists at `target/linux_port/sample_fast_boots.py`:
-  - Shell wrapper: `target/linux_port/sample_fast_boots.sh`.
-  - Usage: `target/linux_port/sample_fast_boots.sh [--runs N] [--max-cycles N] [--rootfs PATH | --no-rootfs] [--kernel PATH] [--output-dir PATH] [--jobs N] [--cpu-list LIST]`.
-  - It runs `boot_direct.sh --mode=smoke` repeatedly by default, stores per-run stdout/stderr logs, and clusters recurring outcomes by normalized serial output plus warning/BUG marker lines.
+- Repeated fast-boot outcome sampler exists at `little64 boot sample`:
+  - Shell wrapper: `little64 boot sample`.
+  - Usage: `little64 boot sample [--runs N] [--max-cycles N] [--rootfs PATH | --no-rootfs] [--kernel PATH] [--output-dir PATH] [--jobs N] [--cpu-list LIST]`.
+  - It runs `little64 boot run --mode=smoke` repeatedly by default, stores per-run stdout/stderr logs, and clusters recurring outcomes by normalized serial output plus warning/BUG marker lines.
   - It can run multiple samples concurrently and pins each worker to a distinct CPU from the current affinity set (or `--cpu-list`).
   - Default output directory is under `/tmp/little64-fastboot-samples/<timestamp>/`.
 - To override core count or pass custom `make` arguments, add them after the target, for example:
-  - `target/linux_port/build.sh vmlinux -j4`
-  - `target/linux_port/build.sh --defconfig <name> vmlinux LOCALVERSION=-custom CONFIG_DEBUG_INFO=y`
-  - `LITTLE64_CLANG_GUARD=1 LITTLE64_CLANG_TIMEOUT_SEC=90 target/linux_port/build.sh vmlinux -j4`
-  - `LITTLE64_CLANG_GUARD=1 LITTLE64_CLANG_MAX_VMEM_KB=10485760 target/linux_port/build.sh --defconfig <name> vmlinux -j1`
-- If you have made adjustmens to the LLVM toolchain, you **MUST** first clean the Linux build folder:
-  - `target/linux_port/build.sh clean`
+  - `./.venv/bin/little64 kernel build vmlinux -j4`
+  - `./.venv/bin/little64 kernel build --defconfig <name> vmlinux LOCALVERSION=-custom CONFIG_DEBUG_INFO=y`
+  - `LITTLE64_CLANG_GUARD=1 LITTLE64_CLANG_TIMEOUT_SEC=90 ./.venv/bin/little64 kernel build vmlinux -j4`
+  - `LITTLE64_CLANG_GUARD=1 LITTLE64_CLANG_MAX_VMEM_KB=10485760 ./.venv/bin/little64 kernel build --defconfig <name> vmlinux -j1`
+- If you have made adjustments to the LLVM toolchain, you **MUST** first clean the Linux build folder:
+  - `./.venv/bin/little64 kernel build clean`
   - Do **NOT** use mrproper, use `clean`.
 
 ## LiteX Linux Boot Helpers
 
-- LiteX Linux DTS helper: `hdl/tools/generate_litex_linux_dts.py`
-- LiteX LLVM wrapper helper: `hdl/tools/generate_litex_llvm_wrappers.py`
-- LiteX SPI-flash image helper: `hdl/tools/build_litex_flash_image.py`
-- LiteX Arty hardware bitstream helper: `hdl/tools/build_litex_arty_bitstream.py`
+- LiteX Linux DTS helper: `little64 hdl dts-linux`
+- LiteX LLVM wrapper helper: `little64 hdl wrappers-llvm`
+- LiteX SPI-flash image helper: `little64 hdl flash-image`
+- LiteX Arty hardware bitstream helper: `little64 hdl arty-build`
   - Builds a real LiteX/Vivado hardware project for the Digilent Arty A7-35T and can also program the board.
   - Supports `--program volatile` for JTAG bitstream loads, `--program flash` for persistent configuration-flash writes, and `--program-only` to reuse existing artifacts.
   - Supports `--vivado-stop-after synthesis|implementation|bitstream` to stop after the synth checkpoint, after routed implementation reports/checkpoints, or after full bitstream generation.
@@ -110,11 +105,11 @@ This file documents practical update paths and maintenance rules for common proj
   - Each non-`--program-only` build also cleans stale `gateware/`, `software/`, and `boot/` outputs and regenerates staged SD boot artifacts under `builddir/hdl-litex-arty/boot/`.
   - The staged SD bootrom is built from `target/c_boot/litex_sd_boot.c`, which now supports both the native LiteSDCard and SPI-mode SD backends from the same C source via generated register-header selection.
   - The Arty hardware path now preloads the SPI-mode build of that stage-0 into the integrated boot ROM. Linux DT/rootfs support for SPI-mode SD remains separate follow-up work.
-- Little64 SD boot artifact helper: `target/linux_port/build_sd_boot_artifacts.py`
+- Little64 SD boot artifact helper: `little64 sd build`
   - Builds the bootrom stage-0 image plus the SD card image used by the emulator's `--machine=litex` path and by the bootrom-first LiteX smoke flows.
   - Pass `--with-sdram` when a simulation target should emit generated LiteDRAM init support instead of the integrated-RAM-only contract.
   - Unless `--no-rootfs` or `--rootfs-image PATH` is passed, it regenerates the default ext4 rootfs from `target/linux_port/rootfs/init.S` and installs it into SD partition 2.
-- LiteX-native Linux smoke helper: `hdl/tools/run_litex_linux_boot_smoke.py`
+- LiteX-native Linux smoke helper: `little64 hdl sim-litex`
   - Uses LiteX's own simulation builder / `SimPlatform` flow instead of the repo-local custom Verilator harness.
   - Default output directory: `builddir/hdl-litex-linux-boot/`.
   - Supports `--build-only` and `--run-only` for iteration on the generated simulator.
@@ -152,7 +147,7 @@ Use this loop for Arty timing work on any Little64 CPU variant. The goal is to m
 Recommended Arty synthesis loop:
 
 ```bash
-./.venv/bin/python hdl/tools/build_litex_arty_bitstream.py \
+./.venv/bin/little64 hdl arty-build \
   --cpu-variant <variant> \
   --output-dir builddir/hdl-litex-arty-<tag> \
   --build-name little64_arty_a7_35_<tag> \
@@ -228,11 +223,11 @@ For compatibility updates:
 | `host/emulator/device.hpp` | Base lifecycle contract (`reset`, `tick`) |
 | `host/emulator/machine_config.hpp/.cpp` | Machine map registration path (including interrupt sink wiring) |
 | `host/emulator/cpu.cpp` | Runtime wiring if device behavior impacts load/reset/cycle |
-| `host/tools/new_device.py` | Scaffold hints/messages when integration path changes |
+| `little64 dev new-device` | Scaffold hints/messages when integration path changes |
 | `docs/device-framework.md` | Update extension workflow |
 | tests (`tests/host/test_devices.cpp`) | Add conformance coverage |
 
-Note: `host/tools/new_device.py` currently instructs contributors to add new device sources in `host/emulator/meson.build`.
+Note: `little64 dev new-device` currently instructs contributors to add new device sources in `host/emulator/meson.build`.
 
 ## Test Structure
 
@@ -261,7 +256,7 @@ sys.path.insert(0, str(repo / "hdl/tests"))
 - After that bootstrap, the usual helpers work as expected, for example:
 
 ```python
-from little64.config import Little64CoreConfig
+from little64_cores.config import Little64CoreConfig
 from shared_program import run_program_words, encode_ls_reg, encode_gp_imm
 ```
 

@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "little64-tools"
+version = "0.1.0"
+description = "Unified CLI and helper library for the Little64 project."
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+little64 = "little64.cli:main"
+l64 = "little64.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["little64*"]

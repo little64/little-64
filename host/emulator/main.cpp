@@ -66,7 +66,7 @@ static void printUsage(const char* argv0) {
               << "  --trace-control-flow  Record non-fallthrough PC changes into boot events.\n"
               << "  --boot-events    Always dump boot event log to stderr on exit.\n"
               << "  --boot-events-file=PATH  Stream full boot event history to PATH (binary L64T format).\n"
-              << "                   Use l64trace.py to decode binary traces.\n"
+              << "                   Use `little64 trace` to decode binary traces.\n"
               << "  --boot-events-max-mb=N   Cap trace file at N megabytes (default: unlimited).\n"
               << "  --trace-start-cycle=N    Only trace events at or after cycle N.\n"
               << "  --trace-end-cycle=N      Only trace events at or before cycle N.\n"

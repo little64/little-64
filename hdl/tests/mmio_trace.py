@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from amaranth.sim import Simulator
 
-from little64.config import Little64CoreConfig
-from little64.variants import create_core
+from little64_cores.config import Little64CoreConfig
+from little64_cores.variants import create_core
 from shared_program import assemble_source
 
 

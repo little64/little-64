@@ -16,7 +16,7 @@ The direct boot method is:
 
 Or via helper script:
 
-- `target/linux_port/boot_direct.sh`
+- `little64 boot run`
 
 ## Current State Snapshot
 
@@ -72,14 +72,14 @@ Or via helper script:
 - `meson compile -C builddir`
 
 2. Build kernel ELF (single-threaded for deterministic bring-up logs)
-- `target/linux_port/build.sh vmlinux -j1`
+- `./.venv/bin/little64 kernel build vmlinux -j1`
 
 3. Run direct boot
-- `target/linux_port/boot_direct.sh`
+- `little64 boot run`
  - This writes full boot events to `/tmp/little64_boot_events.log` by default.
 
 4. Analyze control-flow failures
-- `target/linux_port/analyze_lockup_flow.py --log /tmp/little64_boot_events.log`
+- `./.venv/bin/little64 kernel analyze-lockup --log /tmp/little64_boot_events.log`
 
 5. Capture first-failure evidence
 - record first serial lines,

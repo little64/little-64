@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from little64.config import Little64CoreConfig
-from little64.isa import CPU_CONTROL_PAGING_ENABLE, CPU_CONTROL_USER_MODE, TrapVector
+from little64_cores.config import Little64CoreConfig
+from little64_cores.isa import CPU_CONTROL_PAGING_ENABLE, CPU_CONTROL_USER_MODE, TrapVector
 from shared_program import assemble_source, run_program_source, run_program_words
 from test_traps import (
     AUX_CANONICAL,

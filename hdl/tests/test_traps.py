@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from little64.isa import (
+from little64_cores.isa import (
     CPU_CONTROL_CUR_INT_SHIFT,
     CPU_CONTROL_IN_INTERRUPT,
     CPU_CONTROL_PAGING_ENABLE,

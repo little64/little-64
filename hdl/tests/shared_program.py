@@ -8,12 +8,12 @@ from typing import Any
 
 from amaranth.sim import Simulator
 
-from little64.config import Little64CoreConfig
-from little64.core import CoreState
-from little64.mmu import ACCESS_EXECUTE
-from little64.v2 import V2PipelineState
-from little64.v3 import V3PipelineState
-from little64.variants import create_core
+from little64_cores.config import Little64CoreConfig
+from little64_cores.core import CoreState
+from little64_cores.mmu import ACCESS_EXECUTE
+from little64_cores.v2 import V2PipelineState
+from little64_cores.v3 import V3PipelineState
+from little64_cores.variants import create_core
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]

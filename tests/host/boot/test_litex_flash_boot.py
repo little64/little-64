@@ -7,7 +7,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[3]
 BIN = ROOT / "compilers" / "bin"
 LLVM_MC = BIN / "llvm-mc"
 LD = BIN / "ld.lld"
-BOOT_HELPER = ROOT / "target" / "linux_port" / "boot_direct.sh"
+LITTLE64_PKG = ROOT / "tools" / "little64"
 PYTHON_ENV = ROOT / ".venv" / "bin" / "python"
 
 EXPECTED_STAGE0_MARKER = "stage0: entered from internal bootrom"
@@ -20,7 +20,7 @@ EXPECTED_STAGE0_RAM_SIZE_DEFINE = "#define L64_RAM_SIZE 0x0000000010000000ULL"
 
 
 def main() -> int:
-    if not BOOT_HELPER.exists() or not PYTHON_ENV.exists():
+    if not PYTHON_ENV.exists():
         raise SystemExit(77)
     if not LLVM_MC.exists() or not LD.exists():
         raise SystemExit(77)
@@ -87,10 +87,17 @@ def main() -> int:
     env["LITTLE64_PYTHON"] = str(PYTHON_ENV)
     env["LITTLE64_SKIP_LITEX_KERNEL_CONFIG_CHECK"] = "1"
     env["LITTLE64_LITEX_OUTPUT_DIR"] = str(litex_output_dir)
+    env["PYTHONPATH"] = os.pathsep.join(
+        [str(LITTLE64_PKG), env.get("PYTHONPATH", "")]
+    ).strip(os.pathsep)
 
     res = subprocess.run(
         [
-            str(BOOT_HELPER),
+            str(PYTHON_ENV),
+            "-m",
+            "little64",
+            "boot",
+            "run",
             "--machine=litex",
             "--mode=smoke",
             "--max-cycles",

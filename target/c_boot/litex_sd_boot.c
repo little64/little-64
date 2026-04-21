@@ -47,20 +47,6 @@
 #define SDCARD_SPI_CS_MODE_MANUAL 0x00010000U
 #define SDCARD_SPI_CS_ASSERT (SDCARD_SPI_CS_MODE_MANUAL | SDCARD_SPI_CS_SELECT_CHIP0)
 #define SDCARD_SPI_CS_DEASSERT SDCARD_SPI_CS_MODE_MANUAL
-#define SDCARD_SPI_IDENT_CLK_HZ 100000U
-#define SDCARD_SPI_RECOVERY_CLK_HZ 25000U
-#define SDCARD_SPI_POST_INIT_CLK_HZ 4000000U
-#define SDCARD_SPI_POWER_ON_DELAY_CYCLES 200000U
-#define SDCARD_SPI_INIT_IDLE_CLOCK_BYTES 32U
-#define SDCARD_SPI_CMD0_RETRY_IDLE_CLOCK_BYTES 8U
-#define SDCARD_SPI_CMD0_ATTEMPTS 64U
-#define SDCARD_SPI_CMD0_PROGRESS_INTERVAL 8U
-#define SDCARD_SPI_TRANSFER_TRACE_BUDGET 0U
-#define SDCARD_SPI_TRANSFER_MINIMAL_TRACE_BUDGET 2U
-#define SDCARD_SPI_TRANSFER_PROGRESS_INTERVAL 25000U
-#define SDCARD_SPI_IDENT_CLK_DIVIDER ((((u32)L64_SYS_CLK_FREQ) + SDCARD_SPI_IDENT_CLK_HZ - 1U) / SDCARD_SPI_IDENT_CLK_HZ)
-#define SDCARD_SPI_RECOVERY_CLK_DIVIDER ((((u32)L64_SYS_CLK_FREQ) + SDCARD_SPI_RECOVERY_CLK_HZ - 1U) / SDCARD_SPI_RECOVERY_CLK_HZ)
-#define SDCARD_SPI_POST_INIT_CLK_DIVIDER ((((u32)L64_SYS_CLK_FREQ) + SDCARD_SPI_POST_INIT_CLK_HZ - 1U) / SDCARD_SPI_POST_INIT_CLK_HZ)
 #endif
 
 typedef unsigned char u8;
@@ -134,9 +120,6 @@ static volatile u32* const sdcard_spi_cs = (volatile u32*)L64_SDCARD_SPI_CS_ADDR
 static volatile u32* const sdcard_spi_loopback = (volatile u32*)L64_SDCARD_SPI_LOOPBACK_ADDR;
 static volatile u32* const sdcard_spi_clk_divider = (volatile u32*)L64_SDCARD_SPI_CLK_DIVIDER_ADDR;
 static u32 sdcard_spi_uses_block_addressing;
-static u32 sdcard_spi_transfer_trace_budget = SDCARD_SPI_TRANSFER_TRACE_BUDGET;
-static u32 sdcard_spi_transfer_minimal_trace_budget = SDCARD_SPI_TRANSFER_MINIMAL_TRACE_BUDGET;
-static u32 sdcard_spi_transfer_counter;
 #else
 #error "stage0 requires either L64_SDCARD_INTERFACE_NATIVE or L64_SDCARD_INTERFACE_SPI"
 #endif
@@ -243,34 +226,11 @@ static void serial_put_labeled_hex32(const char* label, u32 value) {
     serial_put_hex_u32(value);
 }
 
-static void serial_put_hex_u8(u8 value) {
-    serial_puts("0x");
-    serial_put_hex_digit((u8)((value >> 4U) & 0x0FU));
-    serial_put_hex_digit((u8)(value & 0x0FU));
-}
-
-static void serial_put_labeled_hex8(const char* label, u8 value) {
-    serial_puts(label);
-    serial_put_hex_u8(value);
-}
-
 __attribute__((noreturn))
 static void fail_hard(const char* message);
 
 __attribute__((noreturn))
 static void fail_hard_hex64(const char* message, u64 value);
-
-#if defined(L64_SDCARD_INTERFACE_SPI)
-static void sdcard_spi_report_transfer_stage(
-    const char* stage,
-    u32 transfer_id,
-    u32 bit_count,
-    u32 value,
-    u32 shift,
-    u32 extra0,
-    u32 extra1
-);
-#endif
 
 static void clear_bss(void) {
     volatile u8* p = __bss_start;
@@ -292,7 +252,6 @@ static void spin_delay(u32 iterations) {
 #endif
 
 #if L64_HAVE_SDRAM_INIT
-
 static void sdram_memory_test_or_fail(void) {
     volatile u64* const test_words = (volatile u64*)L64_RAM_BASE;
     u32 index = 0U;
@@ -557,7 +516,8 @@ static u32 sdcard_send_command(u32 argument, u32 cmd, u32 response_type, u32 dat
 }
 
 #elif defined(L64_SDCARD_INTERFACE_SPI)
-static void sdcard_set_clk_divider(u32 divider) {
+static void sdcard_set_clk_freq(u32 clk_freq) {
+    u32 divider = clk_freq != 0U ? (u32)((L64_SYS_CLK_FREQ + clk_freq - 1U) / clk_freq) : 0xFFFFU;
     if (divider < 2U) {
         divider = 2U;
     }
@@ -570,205 +530,26 @@ static void sdcard_set_clk_divider(u32 divider) {
 static u32 sdcard_spi_transfer_bits_u32(u32 value, u32 bit_count) {
     u32 timeout = 100000U;
     u32 shift = 0U;
-    u32 transfer_id = ++sdcard_spi_transfer_counter;
-    int trace_this_transfer = sdcard_spi_transfer_trace_budget != 0U;
-    int minimal_trace_this_transfer = sdcard_spi_transfer_minimal_trace_budget != 0U;
 
     if (bit_count < L64_SDCARD_SPI_DATA_WIDTH) {
         shift = L64_SDCARD_SPI_DATA_WIDTH - bit_count;
     }
 
-    if (minimal_trace_this_transfer) {
-        serial_puts("stage0: spisdcard xfer enter\n");
-    }
-
-    if (trace_this_transfer) {
-        sdcard_spi_report_transfer_stage(
-            "xfer-start",
-            transfer_id,
-            bit_count,
-            value,
-            shift,
-            *sdcard_spi_cs,
-            *sdcard_spi_clk_divider
-        );
-    }
-
-    if (minimal_trace_this_transfer) {
-        serial_puts("stage0: spisdcard xfer pre-mosi\n");
-    }
     *sdcard_spi_mosi = value << shift;
-    if (minimal_trace_this_transfer) {
-        serial_puts("stage0: spisdcard xfer post-mosi\n");
-    }
-    if (trace_this_transfer) {
-        sdcard_spi_report_transfer_stage(
-            "xfer-after-mosi",
-            transfer_id,
-            bit_count,
-            value,
-            shift,
-            *sdcard_spi_mosi,
-            *sdcard_spi_cs
-        );
-    }
-    if (minimal_trace_this_transfer) {
-        serial_puts("stage0: spisdcard xfer pre-control\n");
-    }
     *sdcard_spi_control = SDCARD_SPI_CONTROL_START | (bit_count << SDCARD_SPI_CONTROL_LENGTH_SHIFT);
-    if (minimal_trace_this_transfer) {
-        serial_puts("stage0: spisdcard xfer post-control\n");
-    }
-    if (trace_this_transfer) {
-        sdcard_spi_report_transfer_stage(
-            "xfer-after-ctrl",
-            transfer_id,
-            bit_count,
-            value,
-            shift,
-            *sdcard_spi_control,
-            *sdcard_spi_status
-        );
-        if (sdcard_spi_transfer_trace_budget != 0U) {
-            --sdcard_spi_transfer_trace_budget;
-        }
-    }
     while (timeout != 0U) {
-        if (minimal_trace_this_transfer && timeout == 100000U) {
-            serial_puts("stage0: spisdcard xfer pre-status\n");
-        }
-        if (trace_this_transfer && timeout == 100000U) {
-            sdcard_spi_report_transfer_stage(
-                "xfer-before-status-read",
-                transfer_id,
-                bit_count,
-                value,
-                shift,
-                *sdcard_spi_control,
-                *sdcard_spi_cs
-            );
-        }
-        u32 status = *sdcard_spi_status;
-        if (minimal_trace_this_transfer && timeout == 100000U) {
-            serial_puts("stage0: spisdcard xfer post-status\n");
-            if (sdcard_spi_transfer_minimal_trace_budget != 0U) {
-                --sdcard_spi_transfer_minimal_trace_budget;
-            }
-        }
-        if (trace_this_transfer && timeout == 100000U) {
-            sdcard_spi_report_transfer_stage(
-                "xfer-after-status-read",
-                transfer_id,
-                bit_count,
-                value,
-                shift,
-                status,
-                timeout
-            );
-        }
-        if ((status & SDCARD_SPI_STATUS_DONE) != 0U) {
-            if (minimal_trace_this_transfer) {
-                serial_puts("stage0: spisdcard xfer pre-miso\n");
-            }
-            if (trace_this_transfer) {
-                sdcard_spi_report_transfer_stage(
-                    "xfer-before-miso-read",
-                    transfer_id,
-                    bit_count,
-                    value,
-                    shift,
-                    status,
-                    *sdcard_spi_control
-                );
-            }
-            u32 result = *sdcard_spi_miso;
-            if (minimal_trace_this_transfer) {
-                serial_puts("stage0: spisdcard xfer post-miso\n");
-            }
-            if (trace_this_transfer) {
-                sdcard_spi_report_transfer_stage(
-                    "xfer-done",
-                    transfer_id,
-                    bit_count,
-                    value,
-                    shift,
-                    status,
-                    result
-                );
-            }
-            return result;
-        }
-        if ((timeout % SDCARD_SPI_TRANSFER_PROGRESS_INTERVAL) == 0U) {
-            sdcard_spi_report_transfer_stage(
-                "xfer-wait",
-                transfer_id,
-                bit_count,
-                value,
-                shift,
-                status,
-                timeout
-            );
+        if ((*sdcard_spi_status & SDCARD_SPI_STATUS_DONE) != 0U) {
+            return *sdcard_spi_miso;
         }
         spin_delay(8U);
         --timeout;
     }
-
-    sdcard_spi_report_transfer_stage(
-        "xfer-timeout",
-        transfer_id,
-        bit_count,
-        value,
-        shift,
-        *sdcard_spi_status,
-        *sdcard_spi_control
-    );
 
     fail_hard("spisdcard transfer timed out");
 }
 
 static u8 sdcard_spi_transfer_byte(u8 value) {
     return (u8)(sdcard_spi_transfer_bits_u32((u32)value, 8U) & 0xFFU);
-}
-
-static u8 sdcard_spi_transfer_byte_probe(u8 value) {
-    u32 timeout = 100000U;
-    u32 shift = 0U;
-
-    if (8U < L64_SDCARD_SPI_DATA_WIDTH) {
-        shift = L64_SDCARD_SPI_DATA_WIDTH - 8U;
-    }
-
-    serial_puts("stage0: spisdcard probe enter\n");
-    serial_puts("stage0: spisdcard probe pre-mosi\n");
-    *sdcard_spi_mosi = (u32)value << shift;
-    serial_puts("stage0: spisdcard probe post-mosi\n");
-    serial_puts("stage0: spisdcard probe pre-control\n");
-    *sdcard_spi_control = SDCARD_SPI_CONTROL_START | (8U << SDCARD_SPI_CONTROL_LENGTH_SHIFT);
-    serial_puts("stage0: spisdcard probe post-control\n");
-
-    while (timeout != 0U) {
-        u32 status;
-
-        if (timeout == 100000U) {
-            serial_puts("stage0: spisdcard probe pre-status\n");
-        }
-        status = *sdcard_spi_status;
-        if (timeout == 100000U) {
-            serial_puts("stage0: spisdcard probe post-status\n");
-        }
-        if ((status & SDCARD_SPI_STATUS_DONE) != 0U) {
-            u32 result;
-
-            serial_puts("stage0: spisdcard probe pre-miso\n");
-            result = *sdcard_spi_miso;
-            serial_puts("stage0: spisdcard probe post-miso\n");
-            return (u8)(result & 0xFFU);
-        }
-        spin_delay(8U);
-        --timeout;
-    }
-
-    fail_hard("spisdcard probe timed out");
 }
 
 static void sdcard_spi_wait_not_busy(void) {
@@ -820,74 +601,6 @@ static void sdcard_spi_deselect(void) {
 
 static void sdcard_spi_select(void) {
     *sdcard_spi_cs = SDCARD_SPI_CS_ASSERT;
-}
-
-static void sdcard_spi_send_idle_clocks(u32 byte_count) {
-    u32 issued = 0U;
-
-    while (byte_count != 0U) {
-        if (issued < 2U) {
-            serial_puts("stage0: spisdcard idle byte start");
-            serial_put_labeled_hex32(" index=", issued);
-            serial_putc('\n');
-        }
-        if (issued == 0U) {
-            (void)sdcard_spi_transfer_byte_probe(0xFFU);
-        } else {
-            (void)sdcard_spi_transfer_byte(0xFFU);
-        }
-        if (issued < 2U) {
-            serial_puts("stage0: spisdcard idle byte ok");
-            serial_put_labeled_hex32(" index=", issued);
-            serial_putc('\n');
-        }
-        ++issued;
-        --byte_count;
-    }
-}
-
-static void sdcard_spi_report_idle_samples(const char* label, u32 sample_count) {
-    serial_puts(label);
-    while (sample_count != 0U) {
-        serial_putc(' ');
-        serial_put_hex_u8(sdcard_spi_transfer_byte(0xFFU));
-        --sample_count;
-    }
-    serial_putc('\n');
-}
-
-static void sdcard_spi_report_cmd0_progress(const char* phase, u32 attempts_used, u8 last_response) {
-    serial_puts("stage0: sdcard SPI CMD0 ");
-    serial_puts(phase);
-    serial_put_labeled_hex32(" attempts=", attempts_used);
-    serial_put_labeled_hex8(" last_r1=", last_response);
-    serial_putc('\n');
-}
-
-static void sdcard_spi_report_transfer_stage(
-    const char* stage,
-    u32 transfer_id,
-    u32 bit_count,
-    u32 value,
-    u32 shift,
-    u32 extra0,
-    u32 extra1
-) {
-    serial_puts("stage0: spisdcard ");
-    serial_puts(stage);
-    serial_put_labeled_hex32(" id=", transfer_id);
-    serial_put_labeled_hex32(" bits=", bit_count);
-    serial_put_labeled_hex32(" value=", value);
-    serial_put_labeled_hex32(" shift=", shift);
-    serial_put_labeled_hex32(" a=", extra0);
-    serial_put_labeled_hex32(" b=", extra1);
-    serial_putc('\n');
-}
-
-static void sdcard_spi_report_register_value(const char* label, u32 value) {
-    serial_puts(label);
-    serial_put_hex_u32(value);
-    serial_putc('\n');
 }
 
 static u8 sdcard_spi_compute_crc7(const u8* data, u32 size) {
@@ -964,32 +677,6 @@ static u8 sdcard_spi_send_command(u8 cmd, u32 argument, u8* response_tail, u32 r
 
 static u8 sdcard_spi_send_stop_command(void) {
     return sdcard_spi_send_command_core(12U, 0U, (u8*)0, 0U, 1, 1U);
-}
-
-static u8 sdcard_spi_try_cmd0_sequence(const char* phase, u32 clk_divider, u32 idle_clock_bytes, u32 command_attempts) {
-    u8 response = 0xFFU;
-    u32 attempts_used = 0U;
-
-    sdcard_set_clk_divider(clk_divider);
-    *sdcard_spi_cs = SDCARD_SPI_CS_DEASSERT;
-    spin_delay(SDCARD_SPI_POWER_ON_DELAY_CYCLES);
-    sdcard_spi_send_idle_clocks(idle_clock_bytes);
-
-    while (command_attempts != 0U) {
-        response = sdcard_spi_send_command(0U, 0U, (u8*)0, 0U, 0);
-        ++attempts_used;
-        if (response == SDCARD_SPI_R1_IDLE) {
-            return response;
-        }
-        if ((attempts_used % SDCARD_SPI_CMD0_PROGRESS_INTERVAL) == 0U || command_attempts == 1U) {
-            sdcard_spi_report_cmd0_progress(phase, attempts_used, response);
-        }
-        sdcard_spi_send_idle_clocks(SDCARD_SPI_CMD0_RETRY_IDLE_CLOCK_BYTES);
-        spin_delay(20000U);
-        --command_attempts;
-    }
-
-    return response;
 }
 
 static void sdcard_spi_wait_for_data_token_or_fail(u32 block) {
@@ -1228,95 +915,48 @@ static void sdcard_initialize_or_fail(void) {
 #elif defined(L64_SDCARD_INTERFACE_SPI)
     u32 timeout = 1000U;
     u8 response_tail[4];
-    u8 response;
 
     serial_puts("stage0: initializing sdcard (spi)\n");
-    serial_puts("stage0: spisdcard loopback write\n");
     *sdcard_spi_loopback = 0U;
-    serial_puts("stage0: spisdcard loopback ok\n");
-    serial_puts("stage0: spisdcard loopback readback\n");
-    sdcard_spi_report_register_value("stage0: spisdcard loopback=", *sdcard_spi_loopback);
-    serial_puts("stage0: spisdcard cs deassert write\n");
     *sdcard_spi_cs = SDCARD_SPI_CS_DEASSERT;
-    serial_puts("stage0: spisdcard cs deassert ok\n");
-    serial_puts("stage0: spisdcard cs readback\n");
-    sdcard_spi_report_register_value("stage0: spisdcard cs=", *sdcard_spi_cs);
-    serial_puts("stage0: spisdcard clk divider write\n");
-    sdcard_set_clk_divider(SDCARD_SPI_IDENT_CLK_DIVIDER);
-    serial_puts("stage0: spisdcard clk divider ok\n");
-    serial_puts("stage0: spisdcard clk divider readback\n");
-    sdcard_spi_report_register_value("stage0: spisdcard clk_div=", *sdcard_spi_clk_divider);
+    sdcard_set_clk_freq(400000U);
 
-    /*
-     * Real boards vary more than the simulator here: some cards need a longer
-     * quiet power-on window plus a larger CS-high dummy-clock burst before they
-     * reliably acknowledge CMD0 over the external Arty wiring.
-     */
-    serial_puts("stage0: spisdcard settle delay\n");
-    spin_delay(SDCARD_SPI_POWER_ON_DELAY_CYCLES);
-    serial_puts("stage0: spisdcard settle delay ok\n");
-    serial_puts("stage0: spisdcard idle clocks\n");
-    sdcard_spi_send_idle_clocks(SDCARD_SPI_INIT_IDLE_CLOCK_BYTES);
-    serial_puts("stage0: spisdcard idle clocks ok\n");
+    /* Power-on settle: spec requires >=1ms of Vcc ramp before any SD activity. */
+    spin_delay(200000U);
 
-    /*
-     * Retry CMD0 at the normal identification clock first, then retry once more
-     * after a full bus re-sync. This keeps the fast path unchanged for good
-     * cards while tolerating slower real-hardware power-up behavior.
-     */
-    serial_puts("stage0: sdcard SPI CMD0\n");
-    response = sdcard_spi_try_cmd0_sequence(
-        "fast",
-        SDCARD_SPI_IDENT_CLK_DIVIDER,
-        SDCARD_SPI_INIT_IDLE_CLOCK_BYTES,
-        SDCARD_SPI_CMD0_ATTEMPTS
-    );
-    if (response != SDCARD_SPI_R1_IDLE) {
-        serial_puts("stage0: sdcard SPI CMD0 slow-retry");
-        serial_put_labeled_hex8(" last_r1=", response);
-        serial_putc('\n');
-        response = sdcard_spi_try_cmd0_sequence(
-            "slow",
-            SDCARD_SPI_RECOVERY_CLK_DIVIDER,
-            SDCARD_SPI_INIT_IDLE_CLOCK_BYTES,
-            SDCARD_SPI_CMD0_ATTEMPTS
-        );
+    /* Send >=74 dummy clocks with CS high and MOSI high. Use 160 clocks for margin. */
+    timeout = 20U;
+    while (timeout != 0U) {
+        (void)sdcard_spi_transfer_byte(0xFFU);
+        --timeout;
     }
-    if (response != SDCARD_SPI_R1_IDLE) {
-        serial_puts("stage0: sdcard SPI CMD0 failed");
-        serial_put_labeled_hex8(" last_r1=", response);
-        serial_putc('\n');
-        *sdcard_spi_cs = SDCARD_SPI_CS_DEASSERT;
-        sdcard_spi_report_idle_samples("stage0: sdcard SPI idle samples:", 8U);
+
+    /* Retry CMD0 a few times: some cards need a couple of attempts after cold power-on. */
+    timeout = 16U;
+    while (timeout != 0U) {
+        if (sdcard_spi_send_command(0U, 0U, (u8*)0, 0U, 0) == SDCARD_SPI_R1_IDLE) {
+            break;
+        }
+        spin_delay(20000U);
+        --timeout;
+    }
+    if (timeout == 0U) {
         fail_hard("sdcard SPI CMD0 failed");
     }
-    serial_puts("stage0: sdcard SPI CMD0 ok");
-    serial_put_labeled_hex8(" r1=", response);
-    serial_putc('\n');
 
-    serial_puts("stage0: sdcard SPI CMD8\n");
-    response = sdcard_spi_send_command(8U, 0x000001AAU, response_tail, 4U, 0);
-    if (response != SDCARD_SPI_R1_IDLE) {
+    if (sdcard_spi_send_command(8U, 0x000001AAU, response_tail, 4U, 0) != SDCARD_SPI_R1_IDLE) {
         fail_hard("sdcard SPI CMD8 failed");
     }
     if (response_tail[2] != 0x01U || response_tail[3] != 0xAAU) {
         fail_hard("sdcard SPI CMD8 response invalid");
     }
-    serial_puts("stage0: sdcard SPI CMD8 ok");
-    serial_put_labeled_hex8(" r1=", response);
-    serial_put_labeled_hex8(" tail2=", response_tail[2]);
-    serial_put_labeled_hex8(" tail3=", response_tail[3]);
-    serial_putc('\n');
 
-    serial_puts("stage0: sdcard SPI ACMD41\n");
     timeout = 1000U;
     while (timeout != 0U) {
-        response = sdcard_spi_send_command(55U, 0U, (u8*)0, 0U, 0);
-        if (response > SDCARD_SPI_R1_IDLE) {
+        if (sdcard_spi_send_command(55U, 0U, (u8*)0, 0U, 0) > SDCARD_SPI_R1_IDLE) {
             fail_hard("sdcard SPI CMD55 failed");
         }
-        response = sdcard_spi_send_command(41U, 0x40000000U, (u8*)0, 0U, 0);
-        if (response == 0U) {
+        if (sdcard_spi_send_command(41U, 0x40000000U, (u8*)0, 0U, 0) == 0U) {
             break;
         }
         spin_delay(1024U);
@@ -1325,27 +965,11 @@ static void sdcard_initialize_or_fail(void) {
     if (timeout == 0U) {
         fail_hard("sdcard SPI ACMD41 timed out");
     }
-    serial_puts("stage0: sdcard SPI ACMD41 ready");
-    serial_put_labeled_hex8(" r1=", response);
-    serial_put_labeled_hex32(" retries=", 1000U - timeout);
-    serial_putc('\n');
 
-    serial_puts("stage0: sdcard SPI CMD58\n");
-    response = sdcard_spi_send_command(58U, 0U, response_tail, 4U, 0);
-    if (response != 0U) {
+    if (sdcard_spi_send_command(58U, 0U, response_tail, 4U, 0) != 0U) {
         fail_hard("sdcard SPI CMD58 failed");
     }
     sdcard_spi_uses_block_addressing = (response_tail[0] & 0x40U) != 0U;
-    serial_puts("stage0: sdcard SPI CMD58 ok");
-    serial_put_labeled_hex8(" r1=", response);
-    serial_put_labeled_hex32(
-        " ocr=",
-        ((u32)response_tail[0] << 24) |
-            ((u32)response_tail[1] << 16) |
-            ((u32)response_tail[2] << 8) |
-            (u32)response_tail[3]
-    );
-    serial_putc('\n');
 
     /*
      * Post-init clock: the SD physical spec allows up to 25 MHz, but in practice
@@ -1356,13 +980,11 @@ static void sdcard_initialize_or_fail(void) {
      * 4 MHz for now; signal integrity, not card capability, is the bottleneck
      * here. If a specific board is known good this can be raised.
      */
-    sdcard_set_clk_divider(SDCARD_SPI_POST_INIT_CLK_DIVIDER);
+    sdcard_set_clk_freq(10000000U);
     if (!sdcard_spi_uses_block_addressing) {
-        serial_puts("stage0: sdcard SPI CMD16\n");
         if (sdcard_spi_send_command(16U, 512U, (u8*)0, 0U, 0) != 0U) {
             fail_hard("sdcard SPI CMD16 failed");
         }
-        serial_puts("stage0: sdcard SPI CMD16 ok\n");
     }
 
     serial_puts("stage0: sdcard ready (spi)\n");

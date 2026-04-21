@@ -9,7 +9,8 @@ ROOT = pathlib.Path(__file__).resolve().parents[3]
 BIN = ROOT / "compilers" / "bin"
 LLVM_MC = BIN / "llvm-mc"
 LD = BIN / "ld.lld"
-BOOT_HELPER = ROOT / "target" / "linux_port" / "boot_direct.sh"
+LITTLE64_PKG = ROOT / "tools" / "little64"
+PYTHON_ENV = ROOT / ".venv" / "bin" / "python"
 KERNEL_ELF = ROOT / "target" / "linux_port" / "build-litex" / "vmlinux"
 
 INIT_SOURCE = pathlib.Path(__file__).with_name("linux_userspace_write_init.S")
@@ -114,7 +115,7 @@ def build_rootfs(builddir: pathlib.Path) -> pathlib.Path:
 
 
 def main() -> int:
-    if not KERNEL_ELF.exists() or not BOOT_HELPER.exists():
+    if not KERNEL_ELF.exists() or not PYTHON_ENV.exists():
         raise SystemExit(77)
 
     builddir = ROOT / "builddir"
@@ -125,10 +126,17 @@ def main() -> int:
 
     env = os.environ.copy()
     env["LITTLE64_LITEX_OUTPUT_DIR"] = str(litex_output_dir)
+    env["PYTHONPATH"] = os.pathsep.join(
+        [str(LITTLE64_PKG), env.get("PYTHONPATH", "")]
+    ).strip(os.pathsep)
 
     res = subprocess.run(
         [
-            str(BOOT_HELPER),
+            str(PYTHON_ENV),
+            "-m",
+            "little64",
+            "boot",
+            "run",
             "--machine=litex",
             "--mode=smoke",
             "--rootfs",

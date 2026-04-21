@@ -15,7 +15,7 @@ HDL_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HDL_ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from little64.config import CORE_VARIANTS, Little64CoreConfig, SUPPORTED_CORE_VARIANTS
+from little64_cores.config import CORE_VARIANTS, Little64CoreConfig, SUPPORTED_CORE_VARIANTS
 
 
 def _parse_shared_core_variants(raw_value: str) -> list[str]:

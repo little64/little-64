@@ -4,7 +4,7 @@ import argparse
 import importlib.util
 from pathlib import Path
 
-SCRIPT_PATH = Path(__file__).resolve().parents[1] / 'tools' / 'generate_litex_linux_dts.py'
+SCRIPT_PATH = Path(__file__).resolve().parents[2] / 'tools' / 'little64' / 'little64' / 'commands' / 'hdl' / 'dts_linux.py'
 spec = importlib.util.spec_from_file_location('generate_litex_linux_dts', str(SCRIPT_PATH))
 generate_litex_linux_dts = importlib.util.module_from_spec(spec)
 assert spec.loader is not None

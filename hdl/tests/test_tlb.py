@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from amaranth.sim import Settle, Simulator
 
-from little64.v2.tlb import Little64V2TLB
+from little64_cores.v2.tlb import Little64V2TLB
 
 
 def test_tlb_fill_lookup_and_flush() -> None:

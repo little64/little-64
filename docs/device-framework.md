@@ -75,7 +75,7 @@ All `Device` instances inherit shared MMIO trace support.
 ### Step 1: scaffold
 
 ```bash
-python3 host/tools/new_device.py TimerDevice
+little64 dev new-device TimerDevice
 ```
 
 ### Step 2: register source file

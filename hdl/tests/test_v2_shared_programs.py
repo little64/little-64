@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from little64.config import Little64CoreConfig
+from little64_cores.config import Little64CoreConfig
 from shared_program import load_jump_program_cases, load_memory_program_cases, run_program_source
 
 

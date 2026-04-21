@@ -90,6 +90,30 @@ Key docs:
 - `docs/vscode-integration.md` — editor/debug workflow integration
 - `GUI_DEBUGGER.md` — frontend behavior and usage
 
+## Tooling CLI
+
+All project-specific scripting lives in a single Python package under
+[tools/little64/](tools/little64/), exposed as the `little64` console entry
+point after `pip install -e tools/little64` into the project `.venv`. Run
+`little64 --help` for the full command tree; the top-level groups are:
+
+| Group | Purpose |
+|---|---|
+| `little64 paths` | Resolve repository root, build directory, compiler bin, Linux build profiles |
+| `little64 trace` | Decode, tail, search, stats, and watch binary `.l64t` trace files |
+| `little64 rsp` | Start/stop/check the BIOS and Linux direct-boot RSP debug servers |
+| `little64 lldb` | Launch an LLDB TUI against a Little64 RSP server |
+| `little64 kernel` | Build the Linux kernel, resolve PCs to source, analyze boot-lockup traces |
+| `little64 boot` | Direct-boot a Little64 kernel ELF; sample and cluster fast-boot outcomes |
+| `little64 sd` | Build the bootrom stage-0 and SD card image used by the LiteX flows |
+| `little64 rootfs` | Build minimal init-based or mlibc-based ext4 rootfs images |
+| `little64 bios` | Build and run the C-BIOS ELF under the emulator |
+| `little64 dev` | Developer scaffolding (e.g. new MMIO device skeletons) |
+| `little64 hdl` | HDL/LiteX bitstream, simulation, and Verilog-export helpers |
+
+Legacy shell wrappers under `target/` and `host/tools/` have been retired;
+`tests/host/test_no_shell_wrappers.py` enforces that they do not return.
+
 ## Linux Direct Boot
 
 The Linux bring-up flow lives under `target/linux_port/` and is intentionally outside the Meson graph.
@@ -97,28 +121,24 @@ The Linux bring-up flow lives under `target/linux_port/` and is intentionally ou
 Typical direct-boot flow with the LiteX SD-capable machine:
 
 ```bash
-target/linux_port/build.sh vmlinux -j1
-target/linux_port/rootfs/build.sh
-target/linux_port/boot_direct.sh
+./.venv/bin/little64 kernel build vmlinux -j1
+little64 rootfs build
+little64 boot run
 ```
 
 The default direct-boot rootfs image is `target/linux_port/rootfs/build/rootfs.ext4`.
-For the LiteX machine, `target/linux_port/boot_direct.sh` now regenerates a minimal ext4 SD rootfs from `target/linux_port/rootfs/init.S` unless you override it with `--rootfs PATH` or disable it with `--no-rootfs`.
-Use `target/linux_port/boot_direct.sh --no-rootfs` to boot the selected machine profile without attaching a rootfs image.
-Use `target/linux_port/boot_direct.sh --mode=smoke` for the lower-overhead no-event-capture smoke path.
-Use `target/linux_port/boot_direct.sh --mode=rsp` to launch the direct-boot RSP debug server.
+For the LiteX machine, `little64 boot run` regenerates a minimal ext4 SD rootfs from `target/linux_port/rootfs/init.S` unless you override it with `--rootfs PATH` or disable it with `--no-rootfs`.
+Use `little64 boot run --no-rootfs` to boot the selected machine profile without attaching a rootfs image.
+Use `little64 boot run --mode=smoke` for the lower-overhead no-event-capture smoke path.
+Use `little64 boot run --mode=rsp` to launch the direct-boot RSP debug server.
 
-The legacy wrappers `target/linux_port/boot_direct_no_event_logging.sh` and
-`target/linux_port/boot_direct_debugserver.sh` remain available as compatibility
-entrypoints, but `target/linux_port/boot_direct.sh` is now the canonical CLI.
-
-The Linux build helper now defaults to `little64_litex_sim_defconfig`. To switch away from that default,
+The Linux build helper defaults to `little64_litex_sim_defconfig`. To switch away from that default,
 use `--defconfig <name>` or `LITTLE64_LINUX_DEFCONFIG=<name>`, for example:
 
 ```bash
-target/linux_port/build.sh vmlinux -j1
+./.venv/bin/little64 kernel build vmlinux -j1
 # or
-target/linux_port/build.sh --defconfig <name> vmlinux -j1
+./.venv/bin/little64 kernel build --defconfig <name> vmlinux -j1
 ```
 
 The default LiteX profile builds into a stable directory, and any explicit defconfig uses its own profile-derived directory:
@@ -129,21 +149,21 @@ Explicit defconfigs build into `target/linux_port/build-<defconfig>/` by default
 
 ## LiteX Linux Boot Helpers
 
-The LiteX-oriented Linux boot helpers live under `hdl/tools/` and `target/c_boot/`.
+The LiteX-oriented Linux boot helpers are exposed as `little64` CLI subcommands; stage-0 C sources live under `target/c_boot/`.
 The current flow is:
 
 ```bash
-./.venv/bin/python hdl/tools/generate_litex_llvm_wrappers.py --output-dir builddir/litex-toolchain
-./.venv/bin/python hdl/tools/generate_litex_linux_dts.py --output builddir/little64-litex.dts --with-spi-flash
-./.venv/bin/python hdl/tools/build_litex_flash_image.py --kernel-elf target/linux_port/build-litex/vmlinux --dtb builddir/hdl-verilator-linux-boot/little64-litex-sim.dtb --output builddir/little64-linux-spiflash.bin
-./.venv/bin/python target/linux_port/build_sd_boot_artifacts.py --kernel-elf target/linux_port/build-litex/vmlinux --dtb builddir/hdl-verilator-linux-boot/little64-litex-sim.dtb --flash-output builddir/little64-sd-stage0-spiflash.bin --sd-output builddir/little64-linux-sdcard.img
+./.venv/bin/little64 hdl wrappers-llvm --output-dir builddir/litex-toolchain
+./.venv/bin/little64 hdl dts-linux --output builddir/little64-litex.dts --with-spi-flash
+./.venv/bin/little64 hdl flash-image --kernel-elf target/linux_port/build-litex/vmlinux --dtb builddir/hdl-verilator-linux-boot/little64-litex-sim.dtb --output builddir/little64-linux-spiflash.bin
+./.venv/bin/little64 sd build --kernel-elf target/linux_port/build-litex/vmlinux --dtb builddir/hdl-verilator-linux-boot/little64-litex-sim.dtb --flash-output builddir/little64-sd-stage0-spiflash.bin --sd-output builddir/little64-linux-sdcard.img
 ```
 
 For a LiteX-native simulation run, use:
 
 ```bash
-target/linux_port/build.sh vmlinux -j1
-./.venv/bin/python hdl/tools/run_litex_linux_boot_smoke.py
+./.venv/bin/little64 kernel build vmlinux -j1
+./.venv/bin/little64 hdl sim-litex
 ```
 
 This path uses LiteX's own simulation builder and `SimPlatform` plumbing rather than the repo-local custom Linux-on-Verilator harness.
@@ -154,9 +174,9 @@ The generated flash image contains a dedicated stage-0 entry at
 clears its own `.bss`, copies kernel plus DTB into RAM, and then jumps into the
 normal Little64 Linux physical-entry contract.
 
-The SD boot helper at `target/linux_port/build_sd_boot_artifacts.py` builds the
+The SD boot helper at `little64 sd build` builds the
 paired SPI-flash stage-0 image plus SD card image used by both the LiteX-native
-smoke path and the emulator's `target/linux_port/boot_direct.sh --machine=litex`
+smoke path and the emulator's `little64 boot run --machine=litex`
 flow. By default it also regenerates the minimal ext4 rootfs from
 `target/linux_port/rootfs/init.S` and installs that filesystem into the second
 SD partition; `--rootfs-image PATH` remains available as an explicit override.
@@ -175,18 +195,18 @@ Little64 gateware for the Digilent Arty A7-35T:
 
 ```bash
 ./.venv/bin/pip install -r requirements-hdl.txt
-./.venv/bin/python hdl/tools/build_litex_arty_bitstream.py
+./.venv/bin/little64 hdl arty-build
 ```
 
 Useful variants:
 
 ```bash
-./.venv/bin/python hdl/tools/build_litex_arty_bitstream.py --generate-only
-./.venv/bin/python hdl/tools/build_litex_arty_bitstream.py --sdcard-connector pmodd --sdcard-adapter digilent
-./.venv/bin/python hdl/tools/build_litex_arty_bitstream.py --with-spi-flash
-./.venv/bin/python hdl/tools/build_litex_arty_bitstream.py --program volatile
-./.venv/bin/python hdl/tools/build_litex_arty_bitstream.py --program flash
-./.venv/bin/python hdl/tools/build_litex_arty_bitstream.py --program-only --program volatile
+./.venv/bin/little64 hdl arty-build --generate-only
+./.venv/bin/little64 hdl arty-build --sdcard-connector pmodd --sdcard-adapter digilent
+./.venv/bin/little64 hdl arty-build --with-spi-flash
+./.venv/bin/little64 hdl arty-build --program volatile
+./.venv/bin/little64 hdl arty-build --program flash
+./.venv/bin/little64 hdl arty-build --program-only --program volatile
 ```
 
 The helper now also supports direct board programming. `--program volatile`

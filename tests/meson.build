@@ -34,6 +34,24 @@ test('linux-port-build-helper',
   timeout : 60,
 )
 
+test('little64-cli-smoke',
+  python3,
+  args : [
+    meson.project_source_root() / 'tests/host/test_little64_cli.py',
+  ],
+  suite : ['unit', 'tooling'],
+  timeout : 30,
+)
+
+test('no-shell-wrappers',
+  python3,
+  args : [
+    meson.project_source_root() / 'tests/host/test_no_shell_wrappers.py',
+  ],
+  suite : ['unit', 'tooling'],
+  timeout : 30,
+)
+
 cpu_tests = {
   'gp':          'target/test_cpu_gp.cpp',
   'ldi':         'target/test_cpu_ldi.cpp',
