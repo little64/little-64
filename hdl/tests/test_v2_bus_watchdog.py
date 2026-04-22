@@ -3,8 +3,7 @@ from __future__ import annotations
 from amaranth.sim import Simulator
 
 from little64_cores.config import Little64CoreConfig
-from little64_cores.v2 import Little64V2FetchFrontend
-from little64_cores.v2.lsu import Little64V2LSU, V2LSUState
+from little64_cores.v2 import Little64V2FetchFrontend, Little64V2LSU, V2LSUState
 from little64_cores.v3 import Little64V3Core
 
 
@@ -19,27 +18,27 @@ def _run_frontend_with_stuck_bus(*, bus_timeout_cycles: int, cycles: int) -> dic
         'cyc_history': [],
     }
 
-    def driver_process():
-        yield frontend.pc.eq(0)
+    async def driver_process(ctx):
+        ctx.set(frontend.pc, 0)
         for cycle in range(cycles):
-            fetch_error = (yield frontend.fetch_error)
-            cyc = (yield frontend.i_bus.cyc)
+            fetch_error = ctx.get(frontend.fetch_error)
+            cyc = ctx.get(frontend.i_bus.cyc)
             observed['cyc_history'].append(cyc)
             if fetch_error and observed['fetch_error_cycle'] is None:
                 observed['fetch_error_cycle'] = cycle
-            yield
-        observed['fetch_error_final'] = (yield frontend.fetch_error)
+            await ctx.tick()
+        observed['fetch_error_final'] = ctx.get(frontend.fetch_error)
 
-    def bus_process():
+    async def bus_process(ctx):
         while True:
-            yield frontend.i_bus.ack.eq(0)
-            yield frontend.i_bus.err.eq(0)
-            yield frontend.i_bus.dat_r.eq(0)
-            yield
+            ctx.set(frontend.i_bus.ack, 0)
+            ctx.set(frontend.i_bus.err, 0)
+            ctx.set(frontend.i_bus.dat_r, 0)
+            await ctx.tick()
 
-    sim.add_sync_process(driver_process)
-    sim.add_sync_process(bus_process)
-    sim.run_until((cycles + 4) * 1e-6, run_passive=True)
+    sim.add_testbench(bus_process, background=True)
+    sim.add_testbench(driver_process)
+    sim.run_until((cycles + 4) * 1e-6)
     return observed
 
 
@@ -71,37 +70,37 @@ def _run_lsu_with_stuck_bus(*, bus_timeout_cycles: int, cycles: int) -> dict[str
         'cyc_history': [],
     }
 
-    def driver_process():
-        yield lsu.request_valid.eq(0)
-        yield lsu.request_addr.eq(0)
-        yield lsu.request_width_bytes.eq(8)
-        yield lsu.request_write.eq(0)
-        yield lsu.request_store_value.eq(0)
-        yield
-        yield lsu.request_valid.eq(1)
-        yield
-        yield lsu.request_valid.eq(0)
+    async def driver_process(ctx):
+        ctx.set(lsu.request_valid, 0)
+        ctx.set(lsu.request_addr, 0)
+        ctx.set(lsu.request_width_bytes, 8)
+        ctx.set(lsu.request_write, 0)
+        ctx.set(lsu.request_store_value, 0)
+        await ctx.tick()
+        ctx.set(lsu.request_valid, 1)
+        await ctx.tick()
+        ctx.set(lsu.request_valid, 0)
         for cycle in range(cycles):
-            cyc = (yield lsu.bus.cyc)
-            response_error = (yield lsu.response_error)
-            response_valid = (yield lsu.response_valid)
+            cyc = ctx.get(lsu.bus.cyc)
+            response_error = ctx.get(lsu.response_error)
+            response_valid = ctx.get(lsu.response_valid)
             observed['cyc_history'].append(cyc)
             if response_error and observed['response_error_cycle'] is None:
                 observed['response_error_cycle'] = cycle
                 observed['response_valid_at_error'] = response_valid
-            yield
-        observed['response_error_final'] = (yield lsu.response_error)
+            await ctx.tick()
+        observed['response_error_final'] = ctx.get(lsu.response_error)
 
-    def bus_process():
+    async def bus_process(ctx):
         while True:
-            yield lsu.bus.ack.eq(0)
-            yield lsu.bus.err.eq(0)
-            yield lsu.bus.dat_r.eq(0)
-            yield
+            ctx.set(lsu.bus.ack, 0)
+            ctx.set(lsu.bus.err, 0)
+            ctx.set(lsu.bus.dat_r, 0)
+            await ctx.tick()
 
-    sim.add_sync_process(driver_process)
-    sim.add_sync_process(bus_process)
-    sim.run_until((cycles + 8) * 1e-6, run_passive=True)
+    sim.add_testbench(bus_process, background=True)
+    sim.add_testbench(driver_process)
+    sim.run_until((cycles + 8) * 1e-6)
     return observed
 
 

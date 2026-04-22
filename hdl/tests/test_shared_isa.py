@@ -13,6 +13,9 @@ from shared_program import (
 )
 
 
+pytestmark = pytest.mark.core_capabilities('shared-architecture')
+
+
 POST_SINGLE_INSTRUCTION_PC = 4
 
 

@@ -15,17 +15,19 @@ HDL_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HDL_ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from little64_cores.config import CORE_VARIANTS, Little64CoreConfig, SUPPORTED_CORE_VARIANTS
+from little64_cores.config import Little64CoreConfig, SUPPORTED_CORE_VARIANTS
+
+from core_test_contract import adapter_for_variant, variants_with_capabilities
 
 
 def _parse_shared_core_variants(raw_value: str) -> list[str]:
 	normalized = raw_value.strip().lower()
 	if normalized in ('', 'default', 'current'):
 		return ['v2', 'v3']
-	if normalized == 'v2':
-		return ['v2']
 	if normalized == 'all':
-		return list(CORE_VARIANTS)
+		return list(SUPPORTED_CORE_VARIANTS)
+	if normalized in SUPPORTED_CORE_VARIANTS:
+		return [normalized]
 
 	variants = [value.strip().lower() for value in raw_value.split(',') if value.strip()]
 	if not variants:
@@ -42,8 +44,14 @@ def _parse_shared_core_variants(raw_value: str) -> list[str]:
 def _parse_pipelined_core_variants(raw_value: str) -> list[str]:
 	"""Parse core variants, excluding 'basic' (for pipelined-core-only tests like MMIO)."""
 	variants = _parse_shared_core_variants(raw_value)
-	# Remove basic core since MMIO tests are designed for pipelined cores
-	return [v for v in variants if v != 'basic']
+	return variants_with_capabilities(variants, {'pipelined'})
+
+
+def _required_core_capabilities(metafunc: pytest.Metafunc) -> set[str]:
+	required: set[str] = set()
+	for marker in metafunc.definition.iter_markers('core_capabilities'):
+		required.update(str(capability) for capability in marker.args)
+	return required
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -55,12 +63,22 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 	)
 
 
+def pytest_configure(config: pytest.Config) -> None:
+	config.addinivalue_line(
+		'markers',
+		'core_capabilities(*names): restrict a matrixed HDL test to variants that advertise the named capabilities.',
+	)
+
+
 def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
+	required_capabilities = _required_core_capabilities(metafunc)
 	if 'shared_core_variant' in metafunc.fixturenames:
 		variants = _parse_shared_core_variants(str(metafunc.config.getoption('core_variants')))
+		variants = variants_with_capabilities(variants, required_capabilities)
 		metafunc.parametrize('shared_core_variant', variants, ids=variants)
 	elif 'pipelined_core_variant' in metafunc.fixturenames:
 		variants = _parse_pipelined_core_variants(str(metafunc.config.getoption('core_variants')))
+		variants = variants_with_capabilities(variants, required_capabilities)
 		metafunc.parametrize('pipelined_core_variant', variants, ids=variants)
 
 
@@ -70,5 +88,25 @@ def shared_core_config(shared_core_variant: str) -> Little64CoreConfig:
 
 
 @pytest.fixture
+def shared_core_adapter(shared_core_variant: str):
+	return adapter_for_variant(shared_core_variant)
+
+
+@pytest.fixture
+def shared_special_register_file_factory(shared_core_adapter):
+	return shared_core_adapter.create_special_register_file
+
+
+@pytest.fixture
+def shared_tlb_factory(shared_core_adapter):
+	return shared_core_adapter.create_tlb
+
+
+@pytest.fixture
 def pipelined_core_config(pipelined_core_variant: str) -> Little64CoreConfig:
 	return Little64CoreConfig(core_variant=pipelined_core_variant, reset_vector=0)
+
+
+@pytest.fixture
+def pipelined_core_adapter(pipelined_core_variant: str):
+	return adapter_for_variant(pipelined_core_variant)

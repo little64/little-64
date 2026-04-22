@@ -93,7 +93,7 @@ Key docs:
 ## Tooling CLI
 
 All project-specific scripting lives in a single Python package under
-[tools/little64/](tools/little64/), exposed as the `little64` console entry
+`tools/little64/`, exposed as the `little64` console entry
 point after `pip install -e tools/little64` into the project `.venv`. Run
 `little64 --help` for the full command tree; the top-level groups are:
 

@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import pytest
+
 from mmio_trace import run_program_with_mmio_trace
 
 
 UART_MMIO_BASE = 0xF0001000
+
+
+pytestmark = pytest.mark.core_capabilities('mmio-trace')
 
 
 def test_mmio_byte_store_commits_once_and_writes_once(pipelined_core_config) -> None:

@@ -3,11 +3,9 @@ from __future__ import annotations
 from amaranth.sim import Simulator
 
 from little64_cores.config import Little64CoreConfig
-from little64_cores.variants import create_core
+
+from core_test_contract import adapter_for_variant
 from shared_program import assemble_source
-
-
-FETCH_TRANSLATE_STATE = 1
 
 
 def _read_qword(memory: dict[int, int], addr: int) -> int:
@@ -22,7 +20,8 @@ def run_program_with_mmio_trace(
     initial_data_memory: dict[int, int] | None = None,
     max_cycles: int = 128,
 ) -> dict[str, object]:
-    dut = create_core(config)
+    adapter = adapter_for_variant(config.core_variant)
+    dut = adapter.create_core(config)
     sim = Simulator(dut)
     sim.add_clock(1e-6)
 
@@ -40,30 +39,30 @@ def run_program_with_mmio_trace(
     d_request = {'active': False, 'responded': False, 'addr': 0, 'data': 0, 'sel': 0, 'we': 0}
     observed: dict[str, object] = {}
 
-    def bus_process():
+    async def bus_process(ctx):
         while True:
-            i_active = ready['value'] and (yield dut.i_bus.cyc) and (yield dut.i_bus.stb)
-            i_addr = (yield dut.i_bus.adr)
+            i_active = ready['value'] and ctx.get(dut.i_bus.cyc) and ctx.get(dut.i_bus.stb)
+            i_addr = ctx.get(dut.i_bus.adr)
             if not i_active:
-                yield dut.i_bus.ack.eq(0)
+                ctx.set(dut.i_bus.ack, 0)
                 i_request.update(active=False, responded=False, addr=0)
             elif (not i_request['active']) or i_request['addr'] != i_addr:
-                yield dut.i_bus.ack.eq(0)
+                ctx.set(dut.i_bus.ack, 0)
                 i_request.update(active=True, responded=False, addr=i_addr)
             elif not i_request['responded']:
-                yield dut.i_bus.dat_r.eq(_read_qword(code_memory, i_addr))
-                yield dut.i_bus.ack.eq(1)
+                ctx.set(dut.i_bus.dat_r, _read_qword(code_memory, i_addr))
+                ctx.set(dut.i_bus.ack, 1)
                 i_request['responded'] = True
             else:
-                yield dut.i_bus.ack.eq(0)
+                ctx.set(dut.i_bus.ack, 0)
 
-            d_active = ready['value'] and (yield dut.d_bus.cyc) and (yield dut.d_bus.stb)
-            d_addr = (yield dut.d_bus.adr)
-            d_sel = (yield dut.d_bus.sel)
-            d_value = (yield dut.d_bus.dat_w)
-            d_we = (yield dut.d_bus.we)
+            d_active = ready['value'] and ctx.get(dut.d_bus.cyc) and ctx.get(dut.d_bus.stb)
+            d_addr = ctx.get(dut.d_bus.adr)
+            d_sel = ctx.get(dut.d_bus.sel)
+            d_value = ctx.get(dut.d_bus.dat_w)
+            d_we = ctx.get(dut.d_bus.we)
             if not d_active:
-                yield dut.d_bus.ack.eq(0)
+                ctx.set(dut.d_bus.ack, 0)
                 d_request.update(active=False, responded=False, addr=0, data=0, sel=0, we=0)
             elif (
                 (not d_request['active']) or
@@ -72,7 +71,7 @@ def run_program_with_mmio_trace(
                 d_request['sel'] != d_sel or
                 d_request['we'] != d_we
             ):
-                yield dut.d_bus.ack.eq(0)
+                ctx.set(dut.d_bus.ack, 0)
                 d_request.update(active=True, responded=False, addr=d_addr, data=d_value, sel=d_sel, we=d_we)
             elif not d_request['responded']:
                 if d_we:
@@ -81,48 +80,39 @@ def run_program_with_mmio_trace(
                         if d_sel & (1 << byte_index):
                             data_memory[d_addr + byte_index] = (d_value >> (8 * byte_index)) & 0xFF
                 else:
-                    yield dut.d_bus.dat_r.eq(_read_qword(data_memory, d_addr))
-                yield dut.d_bus.ack.eq(1)
+                    ctx.set(dut.d_bus.dat_r, _read_qword(data_memory, d_addr))
+                ctx.set(dut.d_bus.ack, 1)
                 d_request['responded'] = True
             else:
-                yield dut.d_bus.ack.eq(0)
-            yield
+                ctx.set(dut.d_bus.ack, 0)
+            await ctx.tick()
 
-    def observe_process():
-        yield
-        for index, value in initial_registers.items():
-            yield dut.register_file[index].eq(value)
-        # Initialize pipeline-specific signals only for pipelined cores (v2, v3)
-        if config.core_variant != 'basic':
-            yield dut.frontend.line_valid.eq(0)
-            yield dut.execute_instruction.eq(0)
-        if hasattr(dut, 'fetch_pc'):
-            yield dut.fetch_pc.eq(0)
-        if hasattr(dut, 'fetch_phys_addr'):
-            yield dut.fetch_phys_addr.eq(0)
-        if hasattr(dut, 'current_instruction'):
-            yield dut.current_instruction.eq(0)
-        if hasattr(dut, 'state'):
-            yield dut.state.eq(FETCH_TRANSLATE_STATE)
-        yield dut.locked_up.eq(0)
-        yield
+    async def observe_process(ctx):
+        await adapter.prepare_for_execution(
+            ctx,
+            dut,
+            config,
+            ready=ready,
+            initial_registers=initial_registers,
+        )
+
         ready['value'] = True
 
         for _ in range(max_cycles):
-            yield
-            if (yield dut.commit_valid):
-                commit_pcs.append((yield dut.commit_pc))
-            if (yield dut.halted) or (yield dut.locked_up):
+            await ctx.tick()
+            if ctx.get(dut.commit_valid):
+                commit_pcs.append(ctx.get(dut.commit_pc))
+            if ctx.get(dut.halted) or ctx.get(dut.locked_up):
                 break
 
         observed['commit_pcs'] = commit_pcs
         observed['mmio_writes'] = mmio_writes
-        observed['halted'] = (yield dut.halted)
-        observed['locked_up'] = (yield dut.locked_up)
-        observed['pc'] = (yield dut.register_file[15])
-        observed['r1'] = (yield dut.register_file[1])
+        observed['halted'] = ctx.get(dut.halted)
+        observed['locked_up'] = ctx.get(dut.locked_up)
+        observed['pc'] = ctx.get(dut.register_file[15])
+        observed['r1'] = ctx.get(dut.register_file[1])
 
-    sim.add_sync_process(bus_process)
-    sim.add_sync_process(observe_process)
-    sim.run_until((max_cycles + 8) * 1e-6, run_passive=True)
+    sim.add_testbench(bus_process, background=True)
+    sim.add_testbench(observe_process)
+    sim.run_until((max_cycles + 8) * 1e-6)
     return observed

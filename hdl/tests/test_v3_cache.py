@@ -34,46 +34,46 @@ def test_v3_store_reaches_updated_instruction_stream(cache_topology: str) -> Non
 
     observed: dict[str, int] = {}
 
-    def bus_process():
+    async def bus_process(ctx):
         while True:
-            if (yield dut.i_bus.cyc) and (yield dut.i_bus.stb):
-                addr = (yield dut.i_bus.adr)
+            if ctx.get(dut.i_bus.cyc) and ctx.get(dut.i_bus.stb):
+                addr = ctx.get(dut.i_bus.adr)
                 value = sum((memory.get(addr + byte_index, 0) & 0xFF) << (8 * byte_index) for byte_index in range(8))
-                yield dut.i_bus.dat_r.eq(value)
-                yield dut.i_bus.ack.eq(1)
+                ctx.set(dut.i_bus.dat_r, value)
+                ctx.set(dut.i_bus.ack, 1)
             else:
-                yield dut.i_bus.ack.eq(0)
+                ctx.set(dut.i_bus.ack, 0)
 
-            if (yield dut.d_bus.cyc) and (yield dut.d_bus.stb):
-                addr = (yield dut.d_bus.adr)
-                if (yield dut.d_bus.we):
-                    data = (yield dut.d_bus.dat_w)
-                    sel = (yield dut.d_bus.sel)
+            if ctx.get(dut.d_bus.cyc) and ctx.get(dut.d_bus.stb):
+                addr = ctx.get(dut.d_bus.adr)
+                if ctx.get(dut.d_bus.we):
+                    data = ctx.get(dut.d_bus.dat_w)
+                    sel = ctx.get(dut.d_bus.sel)
                     for byte_index in range(8):
                         if sel & (1 << byte_index):
                             memory[addr + byte_index] = (data >> (8 * byte_index)) & 0xFF
                 else:
                     value = sum((memory.get(addr + byte_index, 0) & 0xFF) << (8 * byte_index) for byte_index in range(8))
-                    yield dut.d_bus.dat_r.eq(value)
-                yield dut.d_bus.ack.eq(1)
+                    ctx.set(dut.d_bus.dat_r, value)
+                ctx.set(dut.d_bus.ack, 1)
             else:
-                yield dut.d_bus.ack.eq(0)
-            yield
+                ctx.set(dut.d_bus.ack, 0)
+            await ctx.tick()
 
-    def driver_process():
-        yield dut.register_file[1].eq(STOP_INSTRUCTION << 16)
-        yield dut.register_file[2].eq(0)
+    async def driver_process(ctx):
+        ctx.set(dut.register_file[1], STOP_INSTRUCTION << 16)
+        ctx.set(dut.register_file[2], 0)
         for _ in range(48):
-            if (yield dut.halted) or (yield dut.locked_up):
+            if ctx.get(dut.halted) or ctx.get(dut.locked_up):
                 break
-            yield
-        observed['halted'] = (yield dut.halted)
-        observed['locked_up'] = (yield dut.locked_up)
-        observed['pc'] = (yield dut.register_file[15])
+            await ctx.tick()
+        observed['halted'] = ctx.get(dut.halted)
+        observed['locked_up'] = ctx.get(dut.locked_up)
+        observed['pc'] = ctx.get(dut.register_file[15])
 
-    sim.add_sync_process(bus_process)
-    sim.add_sync_process(driver_process)
-    sim.run_until(60e-6, run_passive=True)
+    sim.add_testbench(bus_process, background=True)
+    sim.add_testbench(driver_process)
+    sim.run_until(60e-6)
 
     assert observed['halted'] == 1
     assert observed['locked_up'] == 0
@@ -115,21 +115,21 @@ def test_v3_repeated_load_reuses_cached_line(cache_topology: str, expected_read_
     data_reads = {'count': 0}
     d_request = {'active': False, 'responded': False, 'addr': 0, 'data': 0, 'sel': 0, 'we': 0}
 
-    def bus_process():
+    async def bus_process(ctx):
         while True:
-            if (yield dut.i_bus.cyc) and (yield dut.i_bus.stb):
-                addr = (yield dut.i_bus.adr)
+            if ctx.get(dut.i_bus.cyc) and ctx.get(dut.i_bus.stb):
+                addr = ctx.get(dut.i_bus.adr)
                 value = sum((code.get(addr + byte_index, 0) & 0xFF) << (8 * byte_index) for byte_index in range(8))
-                yield dut.i_bus.dat_r.eq(value)
-                yield dut.i_bus.ack.eq(1)
+                ctx.set(dut.i_bus.dat_r, value)
+                ctx.set(dut.i_bus.ack, 1)
             else:
-                yield dut.i_bus.ack.eq(0)
+                ctx.set(dut.i_bus.ack, 0)
 
-            if (yield dut.d_bus.cyc) and (yield dut.d_bus.stb):
-                addr = (yield dut.d_bus.adr)
-                sel = (yield dut.d_bus.sel)
-                write = (yield dut.d_bus.we)
-                write_data = (yield dut.d_bus.dat_w)
+            if ctx.get(dut.d_bus.cyc) and ctx.get(dut.d_bus.stb):
+                addr = ctx.get(dut.d_bus.adr)
+                sel = ctx.get(dut.d_bus.sel)
+                write = ctx.get(dut.d_bus.we)
+                write_data = ctx.get(dut.d_bus.dat_w)
                 if (
                     (not d_request['active']) or
                     d_request['addr'] != addr or
@@ -138,46 +138,46 @@ def test_v3_repeated_load_reuses_cached_line(cache_topology: str, expected_read_
                     d_request['we'] != write
                 ):
                     d_request.update(active=True, responded=False, addr=addr, data=write_data, sel=sel, we=write)
-                    yield dut.d_bus.ack.eq(0)
-                    yield
+                    ctx.set(dut.d_bus.ack, 0)
+                    await ctx.tick()
                     continue
 
                 if d_request['responded']:
-                    yield dut.d_bus.ack.eq(0)
-                    yield
+                    ctx.set(dut.d_bus.ack, 0)
+                    await ctx.tick()
                     continue
 
                 if write:
-                    data_value = (yield dut.d_bus.dat_w)
+                    data_value = ctx.get(dut.d_bus.dat_w)
                     for byte_index in range(8):
                         if sel & (1 << byte_index):
                             data[addr + byte_index] = (data_value >> (8 * byte_index)) & 0xFF
                 else:
                     data_reads['count'] += 1
                     value = sum((data.get(addr + byte_index, 0) & 0xFF) << (8 * byte_index) for byte_index in range(8))
-                    yield dut.d_bus.dat_r.eq(value)
-                yield dut.d_bus.ack.eq(1)
+                    ctx.set(dut.d_bus.dat_r, value)
+                ctx.set(dut.d_bus.ack, 1)
                 d_request['responded'] = True
             else:
-                yield dut.d_bus.ack.eq(0)
+                ctx.set(dut.d_bus.ack, 0)
                 d_request.update(active=False, responded=False, addr=0, data=0, sel=0, we=0)
-            yield
+            await ctx.tick()
 
-    def driver_process():
-        yield dut.register_file[2].eq(0x2000)
+    async def driver_process(ctx):
+        ctx.set(dut.register_file[2], 0x2000)
         for _ in range(64):
-            if (yield dut.halted) or (yield dut.locked_up):
+            if ctx.get(dut.halted) or ctx.get(dut.locked_up):
                 break
-            yield
-        observed['halted'] = (yield dut.halted)
-        observed['locked_up'] = (yield dut.locked_up)
-        observed['pc'] = (yield dut.register_file[15])
-        observed['r1'] = (yield dut.register_file[1])
-        observed['r3'] = (yield dut.register_file[3])
+            await ctx.tick()
+        observed['halted'] = ctx.get(dut.halted)
+        observed['locked_up'] = ctx.get(dut.locked_up)
+        observed['pc'] = ctx.get(dut.register_file[15])
+        observed['r1'] = ctx.get(dut.register_file[1])
+        observed['r3'] = ctx.get(dut.register_file[3])
 
-    sim.add_sync_process(bus_process)
-    sim.add_sync_process(driver_process)
-    sim.run_until(80e-6, run_passive=True)
+    sim.add_testbench(bus_process, background=True)
+    sim.add_testbench(driver_process)
+    sim.run_until(80e-6)
 
     assert observed['halted'] == 1
     assert observed['locked_up'] == 0

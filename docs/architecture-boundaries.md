@@ -44,8 +44,8 @@ Frontend and tooling code should prefer `IEmulatorRuntime`/`EmulatorSession` ove
 
 ## HDL Subsystem
 
-- RTL implementation root: `hdl/little64/`
-- LiteX Linux boot/image helpers: `hdl/little64/litex_linux_boot.py`
+- RTL implementation root: `hdl/little64_cores/`
+- LiteX Linux boot/image helpers: `hdl/little64_cores/litex_linux_boot.py`
 - HDL tests: `hdl/tests/`
 
 The HDL subtree is a separate implementation of the Little-64 ISA and should
@@ -53,6 +53,12 @@ depend on `docs/hardware/` for the architectural contract, not on emulator-only
 runtime details. Differential testing against the emulator is allowed and
 encouraged, but emulator implementation details are not automatically part of
 the HDL contract.
+
+Within `hdl/little64_cores/`, executable microarchitectural blocks should stay
+variant-owned under `basic/`, `v2/`, or `v3/`. Shared modules at the subtree
+root should be limited to architectural metadata, configuration, interfaces,
+and variant-selection glue rather than reusable pipeline/cache/LSU
+implementations.
 
 ## Build Boundaries (Meson)
 

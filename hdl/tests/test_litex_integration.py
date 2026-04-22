@@ -47,7 +47,7 @@ from little64_cores.variants import resolve_litex_core_variant
 
 _BUILD_SD_BOOT_ARTIFACTS_SPEC = importlib.util.spec_from_file_location(
     'little64_build_sd_boot_artifacts',
-    Path(__file__).resolve().parents[2] / 'tools' / 'little64' / 'little64' / 'sd.py',
+    Path(__file__).resolve().parents[2] / 'tools' / 'little64' / 'little64' / 'commands' / 'sd' / 'artifacts.py',
 )
 assert _BUILD_SD_BOOT_ARTIFACTS_SPEC is not None and _BUILD_SD_BOOT_ARTIFACTS_SPEC.loader is not None
 _BUILD_SD_BOOT_ARTIFACTS = importlib.util.module_from_spec(_BUILD_SD_BOOT_ARTIFACTS_SPEC)
@@ -387,52 +387,52 @@ def test_litex_top_v3_reaches_redirect_target_with_delayed_instruction_ack() -> 
     }
     pending_i_response: dict[str, int] = {}
 
-    def bus_process():
+    async def bus_process(ctx):
         request_active_last = False
         while True:
-            yield top.i_bus_ack.eq(0)
-            yield top.i_bus_err.eq(0)
-            yield top.i_bus_dat_r.eq(0)
-            yield top.d_bus_ack.eq(0)
-            yield top.d_bus_err.eq(0)
-            yield top.d_bus_dat_r.eq(0)
+            ctx.set(top.i_bus_ack, 0)
+            ctx.set(top.i_bus_err, 0)
+            ctx.set(top.i_bus_dat_r, 0)
+            ctx.set(top.d_bus_ack, 0)
+            ctx.set(top.d_bus_err, 0)
+            ctx.set(top.d_bus_dat_r, 0)
 
             if pending_i_response:
                 pending_i_response['delay'] -= 1
                 if pending_i_response['delay'] < 0:
                     address = pending_i_response['address']
-                    yield top.i_bus_dat_r.eq(instruction_lines.get(address, 0))
-                    yield top.i_bus_ack.eq(1)
+                    ctx.set(top.i_bus_dat_r, instruction_lines.get(address, 0))
+                    ctx.set(top.i_bus_ack, 1)
                     pending_i_response.clear()
 
-            request_active = (yield top.i_bus_cyc) and (yield top.i_bus_stb)
+            request_active = ctx.get(top.i_bus_cyc) and ctx.get(top.i_bus_stb)
             if request_active and not request_active_last and not pending_i_response:
-                address = (yield top.i_bus_adr)
+                address = ctx.get(top.i_bus_adr)
                 pending_i_response.update(address=address, delay=1)
                 observed['seen_i_addresses'].append(address)
 
-            if (yield top.d_bus_cyc) and (yield top.d_bus_stb):
-                address = (yield top.d_bus_adr)
+            if ctx.get(top.d_bus_cyc) and ctx.get(top.d_bus_stb):
+                address = ctx.get(top.d_bus_adr)
                 if not observed['seen_d_addresses'] or observed['seen_d_addresses'][-1] != address:
                     observed['seen_d_addresses'].append(address)
-                yield top.d_bus_dat_r.eq(data_lines.get(address, 0))
-                yield top.d_bus_ack.eq(1)
+                ctx.set(top.d_bus_dat_r, data_lines.get(address, 0))
+                ctx.set(top.d_bus_ack, 1)
 
             request_active_last = request_active
-            yield
+            await ctx.tick()
 
-    def checker_process():
-        yield top.irq_lines.eq(0)
+    async def checker_process(ctx):
+        ctx.set(top.irq_lines, 0)
         for _ in range(64):
-            if (yield top.halted) or (yield top.locked_up):
+            if ctx.get(top.halted) or ctx.get(top.locked_up):
                 break
-            yield
-        observed['halted'] = (yield top.halted)
-        observed['locked_up'] = (yield top.locked_up)
+            await ctx.tick()
+        observed['halted'] = ctx.get(top.halted)
+        observed['locked_up'] = ctx.get(top.locked_up)
 
-    sim.add_sync_process(bus_process)
-    sim.add_sync_process(checker_process)
-    sim.run_until(80e-6, run_passive=True)
+    sim.add_testbench(bus_process, background=True)
+    sim.add_testbench(checker_process)
+    sim.run_until(80e-6)
 
     assert observed['halted'] == 1
     assert observed['locked_up'] == 0
@@ -466,60 +466,60 @@ def test_litex_top_v3_stage0_bootrom_handoff_survives_delayed_data_ack() -> None
     pending_i_response: dict[str, int] = {}
     pending_d_response: dict[str, int] = {}
 
-    def bus_process():
+    async def bus_process(ctx):
         request_active_last = False
         while True:
-            yield top.i_bus_ack.eq(0)
-            yield top.i_bus_err.eq(0)
-            yield top.i_bus_dat_r.eq(0)
-            yield top.d_bus_ack.eq(0)
-            yield top.d_bus_err.eq(0)
-            yield top.d_bus_dat_r.eq(0)
+            ctx.set(top.i_bus_ack, 0)
+            ctx.set(top.i_bus_err, 0)
+            ctx.set(top.i_bus_dat_r, 0)
+            ctx.set(top.d_bus_ack, 0)
+            ctx.set(top.d_bus_err, 0)
+            ctx.set(top.d_bus_dat_r, 0)
 
-            observed['seen_fetch_pcs'].append((yield top.shim.core.fetch_pc))
+            observed['seen_fetch_pcs'].append(ctx.get(top.shim.core.fetch_pc))
 
             if pending_i_response:
                 pending_i_response['delay'] -= 1
                 if pending_i_response['delay'] < 0:
                     address = pending_i_response['address']
-                    yield top.i_bus_dat_r.eq(instruction_lines.get(address, 0))
-                    yield top.i_bus_ack.eq(1)
+                    ctx.set(top.i_bus_dat_r, instruction_lines.get(address, 0))
+                    ctx.set(top.i_bus_ack, 1)
                     pending_i_response.clear()
 
             if pending_d_response:
                 pending_d_response['delay'] -= 1
                 if pending_d_response['delay'] < 0:
                     address = pending_d_response['address']
-                    yield top.d_bus_dat_r.eq(data_lines.get(address, 0))
-                    yield top.d_bus_ack.eq(1)
+                    ctx.set(top.d_bus_dat_r, data_lines.get(address, 0))
+                    ctx.set(top.d_bus_ack, 1)
                     pending_d_response.clear()
 
-            request_active = (yield top.i_bus_cyc) and (yield top.i_bus_stb)
+            request_active = ctx.get(top.i_bus_cyc) and ctx.get(top.i_bus_stb)
             if request_active and not request_active_last and not pending_i_response:
-                address = (yield top.i_bus_adr)
+                address = ctx.get(top.i_bus_adr)
                 observed['seen_i_addresses'].append(address)
                 pending_i_response.update(address=address, delay=1)
 
-            if (yield top.d_bus_cyc) and (yield top.d_bus_stb) and not pending_d_response:
-                address = (yield top.d_bus_adr)
+            if ctx.get(top.d_bus_cyc) and ctx.get(top.d_bus_stb) and not pending_d_response:
+                address = ctx.get(top.d_bus_adr)
                 observed['seen_d_addresses'].append(address)
                 pending_d_response.update(address=address, delay=4)
 
             request_active_last = request_active
-            yield
+            await ctx.tick()
 
-    def checker_process():
-        yield top.irq_lines.eq(0)
+    async def checker_process(ctx):
+        ctx.set(top.irq_lines, 0)
         for _ in range(96):
-            if (yield top.halted) or (yield top.locked_up):
+            if ctx.get(top.halted) or ctx.get(top.locked_up):
                 break
-            yield
-        observed['halted'] = (yield top.halted)
-        observed['locked_up'] = (yield top.locked_up)
+            await ctx.tick()
+        observed['halted'] = ctx.get(top.halted)
+        observed['locked_up'] = ctx.get(top.locked_up)
 
-    sim.add_sync_process(bus_process)
-    sim.add_sync_process(checker_process)
-    sim.run_until(120e-6, run_passive=True)
+    sim.add_testbench(bus_process, background=True)
+    sim.add_testbench(checker_process)
+    sim.run_until(120e-6)
 
     assert observed['halted'] == 1
     assert observed['locked_up'] == 0

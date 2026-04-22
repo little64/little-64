@@ -29,56 +29,62 @@ The stable V2 HDL core now performs exception and maskable IRQ vector delivery t
 
 - ISA contract: `docs/hardware/`
 - Golden behavioral reference: `host/emulator/cpu.*`, `host/emulator/address_translator.*`
-- HDL implementation: `hdl/little64/`
+- HDL implementation: `hdl/little64_cores/`
 - HDL tests: `hdl/tests/`
 
 If the HDL conflicts with the ISA docs or proving tests, the HDL should be corrected unless the docs are stale.
 
-The current multi-cycle core now lives under `hdl/little64/basic/`.
-The new pipelined implementation path lives under `hdl/little64/v2/`.
-The experimental next-generation pipeline bring-up now also lives under `hdl/little64/v3/`.
-The top-level `hdl/little64/core.py` module remains as a compatibility export for the current default core variant, which is now V2.
+The current multi-cycle core now lives under `hdl/little64_cores/basic/`.
+The new pipelined implementation path lives under `hdl/little64_cores/v2/`.
+The experimental next-generation pipeline bring-up now also lives under `hdl/little64_cores/v3/`.
+The top-level `hdl/little64_cores/core.py` module remains as a compatibility export for the current default core variant, which is now V2.
 
 ## Current Layout
 
-- `hdl/little64/config.py` — core configuration, core-variant selection, and architectural build-time choices
-- `hdl/little64/decode.py` — shared decode field metadata definitions only (no executable decode logic)
-- `hdl/little64/alu.py` — shared ALU/flags metadata definitions only (no executable ALU logic)
-- `hdl/little64/mmu.py` — shared MMU bit and subtype definitions only (no executable translation logic)
-- `hdl/little64/wishbone.py` — 64-bit LiteX-compatible bus signal bundle
-- `hdl/little64/tlb.py` — shared TLB interface definitions only (no executable TLB logic)
-- `hdl/little64/special_registers.py` — shared special-register interface definitions only (no executable register-bank logic)
-- `hdl/little64/core.py` — compatibility export for the current default core variant
-- `hdl/little64/basic/core.py` — current single-issue multi-cycle core FSM with fetch, GP ALU, jumps, and basic LSU execution
-- `hdl/little64/basic/helpers.py` — Basic-core-local decode and ALU helper logic
-- `hdl/little64/basic/tlb.py` — Basic-core-local TLB implementation
-- `hdl/little64/basic/special_registers.py` — Basic-core-local special-register implementation
-- `hdl/little64/v2/core.py` — V2 core with fetch, execute, privilege/MMU, and cache-topology support behind the shared external interface
-- `hdl/little64/v2/helpers.py` — V2-core-local decode, ALU, and MMU helper logic
-- `hdl/little64/v2/tlb.py` — V2-core-local TLB implementation
-- `hdl/little64/v2/special_registers.py` — V2-core-local special-register implementation
-- `hdl/little64/v3/core.py` — experimental single-issue pipelined V3 bring-up path, currently covering fetch/decode/execute, fetch/data MMU/TLB translation, LSU-backed load/store/push/pop and `LLR`/`SCR` sequencing, V2-style `none` / `unified` / `split` cache-topology handling, paged interrupt-vector lookup, maskable IRQ delivery, precise synchronous trap entry, `IRET`, and memory-result control-flow redirects behind the shared external interface
-- `hdl/little64/v3/helpers.py` — V3-core-local decode, ALU, and MMU helper logic
-- `hdl/little64/v3/tlb.py` — V3-core-local TLB implementation
-- `hdl/little64/v3/special_registers.py` — V3-core-local special-register implementation
-- `hdl/little64/v2/cache.py` — small direct-mapped cache-line store used by the V2 data-side cache path
-- `hdl/little64/v2/frontend.py` — 64-bit fetch-line frontend that extracts 16-bit instructions for the V2 pipeline
-- `hdl/little64/v2/lsu.py` — V2 load/store unit handling aligned and split 64-bit Wishbone accesses
-- `hdl/little64/v2/decode.py` — V2 decode helpers used by the pipeline bring-up path
-- `hdl/little64/v3/` — experimental V3 subtree for the next fully pipelined core; it now participates in the default shared ISA/program/core-smoke/trap/MMIO regression matrix, and also exposes LiteX-facing `standard-v3*` CPU variants plus the shared `none` / `unified` / `split` cache-topology surface
-- `hdl/little64/v3/state.py` — V3-visible pipeline state enum used for debug/status reporting
-- `hdl/little64/v3/bundles.py` — V3 stage-local signal bundle classes for decode, execute, memory, and retire organization
-- `hdl/little64/v3/decode_stage.py` — decode-stage register read, bypass, and conservative hazard detection
-- `hdl/little64/v3/execute_stage.py` — execute-stage instruction semantics and memory-operation generation
-- `hdl/little64/v3/memory_stage.py` — LSU-backed memory-stage completion and chained push/pop sequencing
-- `hdl/little64/v3/retire_stage.py` — retire-stage decode of writeback, commit, halt, trap, and CPU-control actions
-- `hdl/little64/variants.py` — shared core-variant and cache-topology selection helpers used by the LiteX-facing path
-- `hdl/little64/litex.py` — LiteX-facing profile, named target and boot-source descriptors, wrapper shim, and generic CPU export top
-- `hdl/little64/litex_cpu.py` — real LiteX CPU plugin and raw Little64 data-bus alignment bridge
-- `hdl/little64/litex_linux_boot.py` — Linux ELF flattening and SPI-flash image packing helpers for the LiteX path
-- `hdl/little64/litex_soc.py` — minimal LiteX simulation SoC wrapper and Linux DTS generator
+- `hdl/little64_cores/config.py` — core configuration, core-variant selection, and architectural build-time choices
+- `hdl/little64_cores/decode.py` — shared decode field metadata definitions only (no executable decode logic)
+- `hdl/little64_cores/alu.py` — shared ALU/flags metadata definitions only (no executable ALU logic)
+- `hdl/little64_cores/mmu.py` — shared MMU bit and subtype definitions only (no executable translation logic)
+- `hdl/little64_cores/wishbone.py` — 64-bit LiteX-compatible bus signal bundle
+- `hdl/little64_cores/tlb.py` — shared TLB interface definitions only (no executable TLB logic)
+- `hdl/little64_cores/special_registers.py` — shared special-register interface definitions only (no executable register-bank logic)
+- `hdl/little64_cores/core.py` — compatibility export for the current default core variant
+- `hdl/little64_cores/basic/core.py` — current single-issue multi-cycle core FSM with fetch, GP ALU, jumps, and basic LSU execution
+- `hdl/little64_cores/basic/helpers.py` — Basic-core-local decode and ALU helper logic
+- `hdl/little64_cores/basic/tlb.py` — Basic-core-local TLB implementation
+- `hdl/little64_cores/basic/special_registers.py` — Basic-core-local special-register implementation
+- `hdl/little64_cores/v2/core.py` — V2 core with fetch, execute, privilege/MMU, and cache-topology support behind the shared external interface
+- `hdl/little64_cores/v2/helpers.py` — V2-core-local decode, ALU, and MMU helper logic
+- `hdl/little64_cores/v2/tlb.py` — V2-core-local TLB implementation
+- `hdl/little64_cores/v2/special_registers.py` — V2-core-local special-register implementation
+- `hdl/little64_cores/v2/cache.py` — small direct-mapped cache-line store used by the V2 data-side cache path
+- `hdl/little64_cores/v2/frontend.py` — 64-bit fetch-line frontend that extracts 16-bit instructions for the V2 pipeline
+- `hdl/little64_cores/v2/lsu.py` — V2 load/store unit handling aligned and split 64-bit Wishbone accesses
+- `hdl/little64_cores/v2/decode.py` — V2 decode helpers used by the pipeline bring-up path
+- `hdl/little64_cores/v2/__init__.py` — V2-local package export surface for the core, pipeline state, and V2-owned helper blocks
+- `hdl/little64_cores/v3/core.py` — experimental single-issue pipelined V3 bring-up path, currently covering fetch/decode/execute, fetch/data MMU/TLB translation, LSU-backed load/store/push/pop and `LLR`/`SCR` sequencing, the shared `none` / `unified` / `split` cache-topology contract, paged interrupt-vector lookup, maskable IRQ delivery, precise synchronous trap entry, `IRET`, and memory-result control-flow redirects behind the shared external interface
+- `hdl/little64_cores/v3/helpers.py` — V3-core-local decode, ALU, and MMU helper logic
+- `hdl/little64_cores/v3/tlb.py` — V3-core-local TLB implementation
+- `hdl/little64_cores/v3/special_registers.py` — V3-core-local special-register implementation
+- `hdl/little64_cores/v3/cache.py` — V3-local data cache implementation owned by the V3 subtree
+- `hdl/little64_cores/v3/frontend.py` — V3-local fetch frontend implementation owned by the V3 subtree
+- `hdl/little64_cores/v3/lsu.py` — V3-local load/store unit implementation owned by the V3 subtree
+- `hdl/little64_cores/v3/__init__.py` — V3-local package export surface for the core, pipeline state, and V3-owned helper blocks
+- `hdl/little64_cores/v3/` — experimental V3 subtree for the next fully pipelined core; it now participates in the default shared ISA/program/core-smoke/trap/MMIO regression matrix, and also exposes LiteX-facing `standard-v3*` CPU variants plus the shared `none` / `unified` / `split` cache-topology surface
+- `hdl/little64_cores/v3/state.py` — V3-visible pipeline state enum used for debug/status reporting
+- `hdl/little64_cores/v3/bundles.py` — V3 stage-local signal bundle classes for decode, execute, memory, and retire organization
+- `hdl/little64_cores/v3/decode_stage.py` — decode-stage register read, bypass, and conservative hazard detection
+- `hdl/little64_cores/v3/execute_stage.py` — execute-stage instruction semantics and memory-operation generation
+- `hdl/little64_cores/v3/memory_stage.py` — LSU-backed memory-stage completion and chained push/pop sequencing
+- `hdl/little64_cores/v3/retire_stage.py` — retire-stage decode of writeback, commit, halt, trap, and CPU-control actions
+- `hdl/little64_cores/variants.py` — shared core-variant and cache-topology selection helpers used by the LiteX-facing path
+- `hdl/little64_cores/litex.py` — LiteX-facing profile, named target and boot-source descriptors, wrapper shim, and generic CPU export top
+- `hdl/little64_cores/litex_cpu.py` — real LiteX CPU plugin and raw Little64 data-bus alignment bridge
+- `hdl/little64_cores/litex_linux_boot.py` — Linux ELF flattening and SPI-flash image packing helpers for the LiteX path
+- `hdl/little64_cores/litex_soc.py` — minimal LiteX simulation SoC wrapper and Linux DTS generator
 - `hdl/tests/` — Python simulation and unit tests for unit and ISA coverage
 	- shared HDL suites default to the current `v2,v3` matrix and can be run against `basic`, `v2`, experimental `v3`, or `all` with `./.venv/bin/python -m pytest hdl/tests --core-variants default|basic|v2|v3|all`
+	- shared architectural suites now use capability markers and a test-only core adapter layer so variant-specific startup details and component factories stay out of the shared test bodies
 	- includes shared generated ISA/program/MMIO coverage, shared unaligned-access coverage, shared trap/atomic/core-smoke coverage, explicit V3 MMU/trap regression coverage, and V2/V3 cache-topology regression tests
 - `little64 hdl flash-image` — build a bootable SPI-flash image containing stage-0, Linux, and a DTB
 - `little64 hdl export-cpu` — export the generic LiteX CPU wrapper to Verilog
@@ -195,7 +201,7 @@ This wrapper:
 5. runs the resulting `Vsim` binary and watches the serial stream for the required boot markers.
 
 The DTS generator now keeps a small sidecar cache next to each output DTS and
-skips rebuilding when the requested arguments and relevant `hdl/little64/*.py`
+skips rebuilding when the requested arguments and relevant `hdl/little64_cores/*.py`
 inputs are unchanged. Current callers also skip `dtc` when the cached DTS file
 mtime has not advanced.
 

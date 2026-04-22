@@ -5,6 +5,9 @@ import pytest
 from shared_program import load_jump_program_cases, load_memory_program_cases, run_program_source
 
 
+pytestmark = pytest.mark.core_capabilities('shared-architecture')
+
+
 def _u64_bytes(value: int) -> dict[int, int]:
     return {byte_index: (value >> (8 * byte_index)) & 0xFF for byte_index in range(8)}
 

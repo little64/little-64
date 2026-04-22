@@ -19,6 +19,9 @@ from shared_program import (
 )
 
 
+pytestmark = pytest.mark.core_capabilities('unaligned')
+
+
 # ──── helpers ────────────────────────────────────────────────────────────
 
 def _bytes_of(value: int, width: int) -> dict[int, int]:

@@ -9,11 +9,8 @@ from typing import Any
 from amaranth.sim import Simulator
 
 from little64_cores.config import Little64CoreConfig
-from little64_cores.core import CoreState
-from little64_cores.mmu import ACCESS_EXECUTE
-from little64_cores.v2 import V2PipelineState
-from little64_cores.v3 import V3PipelineState
-from little64_cores.variants import create_core
+
+from core_test_contract import adapter_for_variant
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -284,7 +281,8 @@ def run_program_words(words: list[int],
                       irq_schedule: dict[int, int] | None = None,
                       max_cycles: int = 256) -> dict[str, object]:
     resolved_config = config or Little64CoreConfig(reset_vector=0)
-    dut = create_core(resolved_config)
+    adapter = adapter_for_variant(resolved_config.core_variant)
+    dut = adapter.create_core(resolved_config)
     sim = Simulator(dut)
     sim.add_clock(1e-6)
 
@@ -340,66 +338,15 @@ def run_program_words(words: list[int],
                 ctx.set(dut.d_bus.ack, 0)
 
     async def observe_process(ctx):
-        seeded_special_registers = initial_special_registers or {}
-
-        def seed_core_state() -> None:
-            initial_pc = (initial_registers or {}).get(15, resolved_config.reset_vector)
-            if initial_registers:
-                for index, value in initial_registers.items():
-                    ctx.set(dut.register_file[index], value)
-            ctx.set(dut.flags, initial_flags)
-            if initial_special_registers:
-                for name, value in initial_special_registers.items():
-                    ctx.set(getattr(dut.special_regs, name), value)
-            ctx.set(dut.locked_up, 0)
-            if 'trap_cause' not in seeded_special_registers:
-                ctx.set(dut.special_regs.trap_cause, 0)
-            if 'trap_fault_addr' not in seeded_special_registers:
-                ctx.set(dut.special_regs.trap_fault_addr, 0)
-            if 'trap_access' not in seeded_special_registers:
-                ctx.set(dut.special_regs.trap_access, 0)
-            if 'trap_pc' not in seeded_special_registers:
-                ctx.set(dut.special_regs.trap_pc, 0)
-            if 'trap_aux' not in seeded_special_registers:
-                ctx.set(dut.special_regs.trap_aux, 0)
-            ctx.set(dut.irq_lines, 0)
-            if resolved_config.core_variant == 'basic':
-                ctx.set(dut.halted, 0)
-                ctx.set(dut.state, CoreState.FETCH_TRANSLATE)
-            elif resolved_config.core_variant == 'v2':
-                ctx.set(dut.frontend.line_valid, 0)
-                ctx.set(dut.fetch_pc, initial_pc)
-                ctx.set(dut.fetch_phys_addr, initial_pc)
-                ctx.set(dut.register_file[15], initial_pc)
-                ctx.set(dut.current_instruction, 0)
-                ctx.set(dut.execute_instruction, 0)
-                ctx.set(dut.translate_virtual_addr, initial_pc)
-                ctx.set(dut.translate_access, ACCESS_EXECUTE)
-                ctx.set(dut.state, V2PipelineState.FETCH_TRANSLATE)
-            elif resolved_config.core_variant == 'v3':
-                ctx.set(dut.halted, 0)
-                ctx.set(dut.frontend.line_valid, 0)
-                ctx.set(dut.fetch_pc, initial_pc)
-                ctx.set(dut.fetch_phys_addr, initial_pc)
-                ctx.set(dut.register_file[15], initial_pc)
-                ctx.set(dut.current_instruction, 0)
-                ctx.set(dut.execute_instruction, 0)
-                ctx.set(dut.execute_operand_a, 0)
-                ctx.set(dut.execute_operand_b, 0)
-                ctx.set(dut.execute_flags, 0)
-                ctx.set(dut.translate_virtual_addr, initial_pc)
-                ctx.set(dut.translate_access, ACCESS_EXECUTE)
-                ctx.set(dut.state, V3PipelineState.FETCH)
-
-        await ctx.tick()
-        seed_core_state()
-        if resolved_config.core_variant == 'v3':
-            await ctx.tick()
-            ready['value'] = True
-        else:
-            await ctx.tick()
-            seed_core_state()
-            ready['value'] = True
+        await adapter.prepare_for_execution(
+            ctx,
+            dut,
+            resolved_config,
+            ready=ready,
+            initial_registers=initial_registers,
+            initial_flags=initial_flags,
+            initial_special_registers=initial_special_registers,
+        )
 
         for cycle in range(max_cycles):
             if irq_schedule and cycle in irq_schedule:

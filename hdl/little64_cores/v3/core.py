@@ -30,9 +30,9 @@ from ..mmu import (
     PTE_X,
 )
 from ..isa import SpecialRegister
-from ..v2.cache import Little64V2LineCache
-from ..v2.frontend import Little64V2FetchFrontend
-from ..v2.lsu import Little64V2LSU
+from .cache import Little64V3LineCache
+from .frontend import Little64V3FetchFrontend
+from .lsu import Little64V3LSU
 from .bundles import V3FaultBundle, V3MemoryStageState, V3RetireStageState
 from .decode_stage import Little64V3DecodeStage
 from .execute_stage import Little64V3ExecuteStage
@@ -57,19 +57,19 @@ class Little64V3Core(Elaboratable):
         if self.config.core_variant != 'v3':
             raise ValueError('Little64V3Core requires Little64CoreConfig(core_variant="v3")')
 
-        self.frontend = Little64V2FetchFrontend(
+        self.frontend = Little64V3FetchFrontend(
             data_width=self.config.instruction_bus_width,
             address_width=self.config.address_width,
             bus_timeout_cycles=self.config.bus_timeout_cycles,
         )
-        self.lsu = Little64V2LSU(
+        self.lsu = Little64V3LSU(
             data_width=self.config.data_bus_width,
             address_width=self.config.address_width,
             bus_timeout_cycles=self.config.bus_timeout_cycles,
         )
         self.dcache = None
         if self.config.cache_topology != 'none':
-            self.dcache = Little64V2LineCache(
+            self.dcache = Little64V3LineCache(
                 entries=4,
                 data_width=self.config.data_bus_width,
                 address_width=self.config.address_width,

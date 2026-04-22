@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from little64_cores.isa import (
     CPU_CONTROL_CUR_INT_SHIFT,
     CPU_CONTROL_IN_INTERRUPT,
@@ -9,6 +11,9 @@ from little64_cores.isa import (
     TrapVector,
 )
 from shared_program import assemble_source, encode_gp_imm, encode_ls_reg, run_program_source, run_program_words
+
+
+pytestmark = pytest.mark.core_capabilities('interrupts', 'mmu')
 
 
 PTE_V = 1 << 0
