@@ -5,7 +5,7 @@ from amaranth.sim import Simulator
 
 from little64_cores.config import Little64CoreConfig
 from little64_cores.v3 import Little64V3Core
-from shared_program import assemble_source, encode_gp_imm, encode_ls_reg
+from shared_program import assemble_source, encode_gp_imm, encode_ls_reg, run_program_source
 
 
 STOP_INSTRUCTION = encode_gp_imm('STOP', 0, 0)
@@ -185,3 +185,37 @@ def test_v3_repeated_load_reuses_cached_line(cache_topology: str, expected_read_
     assert observed['r1'] == 0x1122334455667788
     assert observed['r3'] == 0x1122334455667788
     assert data_reads['count'] == expected_read_transactions
+
+
+@pytest.mark.parametrize('cache_topology', ('unified', 'split'))
+def test_v3_cached_pc_relative_pop_still_performs_chained_store(cache_topology: str) -> None:
+    observed = run_program_source(
+        'LOAD [R1], R2\nPOP @1, R13\nSTOP',
+        config=Little64CoreConfig(core_variant='v3', cache_topology=cache_topology, reset_vector=0),
+        initial_registers={1: 0x2000, 13: 0x2000},
+        initial_data_memory={
+            0x2000 + 0: 0x88,
+            0x2000 + 1: 0x99,
+            0x2000 + 2: 0xAA,
+            0x2000 + 3: 0xBB,
+            0x2000 + 4: 0xCC,
+            0x2000 + 5: 0xDD,
+            0x2000 + 6: 0xEE,
+            0x2000 + 7: 0xFF,
+        },
+        max_cycles=256,
+    )
+
+    assert observed['locked_up'] == 0
+    assert observed['halted'] == 1
+    assert observed['registers'][13] == 0x2008
+    assert [observed['data_memory'].get(6 + index) for index in range(8)] == [
+        0x88,
+        0x99,
+        0xAA,
+        0xBB,
+        0xCC,
+        0xDD,
+        0xEE,
+        0xFF,
+    ]

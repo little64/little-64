@@ -39,7 +39,7 @@ from little64_cores.litex_linux_boot import (
     flatten_little64_linux_elf_image,
     write_litex_sd_card_image,
 )
-from little64_cores.litex_soc import Little64LiteXSimSoC, _load_spi_flash_init, generate_linux_dts
+from little64_cores.litex_soc import Little64LinuxTimer, Little64LiteXSimSoC, _load_spi_flash_init, generate_linux_dts
 from little64_cores.variants import config_for_litex_variant, resolve_litex_cache_topology
 from little64_cores.v2 import Little64V2Core, Little64V2FetchFrontend
 from little64_cores.variants import resolve_litex_core_variant
@@ -1067,6 +1067,50 @@ def test_data_bridge_splits_unaligned_qword_reads() -> None:
     assert bus_ack_cycles
     assert cpu_ack_cycles
     assert cpu_ack_cycles[0] > bus_ack_cycles[-1]
+
+
+def test_litex_timer_ignores_partial_interval_writes() -> None:
+    timer = Little64LinuxTimer(sys_clk_freq=1_000_000)
+    observed: dict[str, int] = {}
+    word_base = 0x08001000 >> 3
+
+    def process():
+        yield timer.bus.adr.eq(word_base + 2)
+        yield timer.bus.dat_w.eq(0xAA)
+        yield timer.bus.sel.eq(0x01)
+        yield timer.bus.we.eq(1)
+        yield timer.bus.cyc.eq(1)
+        yield timer.bus.stb.eq(1)
+        for _ in range(4):
+            if (yield timer.bus.ack):
+                break
+            yield
+        yield timer.bus.cyc.eq(0)
+        yield timer.bus.stb.eq(0)
+        yield timer.bus.we.eq(0)
+        yield
+
+        yield timer.bus.adr.eq(word_base + 2)
+        yield timer.bus.sel.eq(0xFF)
+        yield timer.bus.cyc.eq(1)
+        yield timer.bus.stb.eq(1)
+        for _ in range(4):
+            if (yield timer.bus.ack):
+                observed['cycle_interval'] = (yield timer.bus.dat_r)
+                break
+            yield
+        yield timer.bus.cyc.eq(0)
+        yield timer.bus.stb.eq(0)
+        for _ in range(32):
+            yield
+        observed['irq'] = (yield timer.irq)
+
+    from migen.sim import run_simulation
+
+    run_simulation(timer, process())
+
+    assert observed['cycle_interval'] == 0
+    assert observed['irq'] == 0
 
 
 def test_litex_sim_soc_generates_linux_dts(tmp_path) -> None:

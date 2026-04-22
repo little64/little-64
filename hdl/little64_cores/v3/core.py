@@ -334,6 +334,7 @@ class Little64V3Core(Elaboratable):
         memory_result_aux_reg_index = Signal(4)
         memory_result_aux_reg_value = Signal(64)
         memory_result_next_pc = Signal(64)
+        chain_continue_store_value = Signal(64)
         memory_final_valid = Signal()
         memory_final_next_pc = Signal(64)
         memory_final_commit_next_pc = Signal(64)
@@ -633,9 +634,15 @@ class Little64V3Core(Elaboratable):
             ),
             fetch_error.eq(self.frontend.fetch_error & ~execute_flush_younger),
             memory_error.eq(memory.valid & ~cached_memory_response & memory_stage.complete & self.lsu.response_error),
-            memory_to_retire.eq(memory.valid & (cached_memory_response | (memory_stage.final_response & ~self.lsu.response_error))),
+            memory_to_retire.eq(
+                memory.valid &
+                ((cached_memory_response & ~memory.chain_store) | (memory_stage.final_response & ~self.lsu.response_error))
+            ),
             memory_redirect.eq(memory_final_valid & (memory_final_next_pc != memory_final_commit_next_pc)),
-            memory_chain_continue.eq(memory.valid & ~cached_memory_response & memory_stage.chain_continue),
+            memory_chain_continue.eq(
+                memory.valid &
+                ((cached_memory_response & memory.chain_store) | (~cached_memory_response & memory_stage.chain_continue))
+            ),
             execute_to_memory.eq(execute_valid & execute_stage.outputs.memory_start & ~memory.valid & ~memory_redirect),
             execute_to_retire.eq(execute_valid & ~execute_stage.outputs.memory_start & ~memory.valid & ~memory_final_valid & ~memory_redirect),
             execute_slot_available.eq(~execute_valid | execute_to_memory | execute_to_retire),
@@ -914,6 +921,13 @@ class Little64V3Core(Elaboratable):
             frontend_line_update_valid.eq(0),
             cached_memory_response.eq(dcache_cacheable_load & dcache_lookup_hit),
             cached_memory_post_value.eq(Mux(memory.post_reg_use_load_result, dcache_load_result + memory.post_reg_delta, memory.post_reg_value)),
+            chain_continue_store_value.eq(
+                Mux(
+                    cached_memory_response,
+                    Mux(memory.chain_store_use_load_result, dcache_load_result, memory.chain_store_value),
+                    memory_stage.next_chain_store_value,
+                )
+            ),
             cached_memory_next_pc.eq(
                 Mux(
                     memory.post_reg_write & (memory.post_reg_index == 15),
@@ -1350,12 +1364,12 @@ class Little64V3Core(Elaboratable):
                 with m.If(memory_chain_continue):
                     m.d.sync += [
                         memory.request_started.eq(0),
-                        memory.virtual_addr.eq(memory_stage.next_chain_addr),
-                        memory.addr.eq(memory_stage.next_chain_addr),
+                        memory.virtual_addr.eq(memory.chain_store_addr),
+                        memory.addr.eq(memory.chain_store_addr),
                         memory.phys_valid.eq(~paging_enabled),
                         memory.width_bytes.eq(8),
                         memory.write.eq(1),
-                        memory.store_value.eq(memory_stage.next_chain_store_value),
+                        memory.store_value.eq(chain_continue_store_value),
                         memory.reg_write.eq(0),
                         memory.reg_index.eq(0),
                         memory.chain_store.eq(0),
@@ -1366,7 +1380,7 @@ class Little64V3Core(Elaboratable):
                         memory.flags_value.eq(self.flags),
                         memory.set_reservation.eq(0),
                         memory.reservation_addr.eq(0),
-                        self.translate_virtual_addr.eq(memory_stage.next_chain_addr),
+                        self.translate_virtual_addr.eq(memory.chain_store_addr),
                         self.translate_access.eq(ACCESS_WRITE),
                     ]
                 with m.Elif(memory_to_retire | memory_error):

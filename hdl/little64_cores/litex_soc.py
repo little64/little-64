@@ -229,7 +229,7 @@ class Little64LinuxTimer(Module):
             ),
             If(self.bus.cyc & self.bus.stb & ~self.bus.ack,
                 self.bus.ack.eq(1),
-                If(self.bus.we,
+                If(self.bus.we & (self.bus.sel == 0xFF),
                     Case(offset_words, {
                         2: [
                             cycle_interval.eq(self.bus.dat_w),
