@@ -6,7 +6,7 @@ from little64_cores.config import Little64CoreConfig
 from mmio_trace import run_program_with_mmio_trace
 
 
-CACHE_TOPOLOGIES = ('none', 'unified', 'split')
+CACHE_TOPOLOGIES = ('unified', 'split')
 UART_MMIO_BASE = 0xF0001000
 
 

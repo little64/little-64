@@ -19,6 +19,19 @@ def _repo_root() -> Path:
     return _repo_root_cli()
 
 
+def _build_stage0(stage0_source: Path, stage0_linker: Path, work_dir: Path) -> bytes:
+    repo_root = _repo_root()
+    return build_stage0_binary(
+        compile_units=[
+            Stage0CompileUnit((repo_root / stage0_source).resolve(), 'litex_spi_boot.o'),
+        ],
+        linker_script=(repo_root / stage0_linker).resolve(),
+        work_dir=work_dir,
+        output_stem='litex_spi_boot',
+        optimization='-O3',
+    )
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Build a Little64 LiteX SPI flash image containing stage-0, Linux, and a DTB.')
     parser.add_argument('--kernel-elf', type=Path, required=True, help='Little64 Linux kernel ELF to flatten into SDRAM payload bytes.')
@@ -43,15 +56,7 @@ def main(argv: list[str] | None = None) -> int:
     work_dir = output_path.parent / f'{output_path.stem}.work'
     work_dir.mkdir(parents=True, exist_ok=True)
 
-    stage0_bytes = build_stage0_binary(
-        compile_units=[
-            Stage0CompileUnit((repo_root / args.stage0_source).resolve(), 'litex_spi_boot.o'),
-        ],
-        linker_script=(repo_root / args.stage0_linker).resolve(),
-        work_dir=work_dir,
-        output_stem='litex_spi_boot',
-        optimization='-O3',
-    )
+    stage0_bytes = _build_stage0(args.stage0_source, args.stage0_linker, work_dir)
     layout = build_litex_flash_image(
         stage0_bytes=stage0_bytes,
         kernel_elf_bytes=args.kernel_elf.resolve().read_bytes(),

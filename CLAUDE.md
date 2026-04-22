@@ -107,6 +107,8 @@ This file documents practical update paths and maintenance rules for common proj
   - The Arty hardware path now preloads the SPI-mode build of that stage-0 into the integrated boot ROM. Linux DT/rootfs support for SPI-mode SD remains separate follow-up work.
 - Little64 SD boot artifact helper: `little64 sd build`
   - Builds the bootrom stage-0 image plus the SD card image used by the emulator's `--machine=litex` path and by the bootrom-first LiteX smoke flows.
+  - `little64 sd build --machine litex --output-dir <path>` auto-resolves the default LiteX kernel from `target/linux_port/build-litex/`, generates DTS/DTB internally, and emits the generated stage-0 plus SD image under `<path>`.
+  - Explicit `--kernel-elf <path> --dtb <path>` inputs remain supported for low-level artifact builds.
   - Pass `--with-sdram` when a simulation target should emit generated LiteDRAM init support instead of the integrated-RAM-only contract.
   - Unless `--no-rootfs` or `--rootfs-image PATH` is passed, it regenerates the default ext4 rootfs from `target/linux_port/rootfs/init.S` and installs it into SD partition 2.
 - LiteX-native Linux smoke helper: `little64 hdl sim-litex`

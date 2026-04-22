@@ -153,6 +153,7 @@ The LiteX-oriented Linux boot helpers are exposed as `little64` CLI subcommands;
 The current flow is:
 
 ```bash
+./.venv/bin/little64 sd build --machine litex --output-dir builddir/boot-direct-litex
 ./.venv/bin/little64 hdl wrappers-llvm --output-dir builddir/litex-toolchain
 ./.venv/bin/little64 hdl dts-linux --output builddir/little64-litex.dts --with-spi-flash
 ./.venv/bin/little64 hdl flash-image --kernel-elf target/linux_port/build-litex/vmlinux --dtb builddir/hdl-verilator-linux-boot/little64-litex-sim.dtb --output builddir/little64-linux-spiflash.bin
@@ -174,12 +175,13 @@ The generated flash image contains a dedicated stage-0 entry at
 clears its own `.bss`, copies kernel plus DTB into RAM, and then jumps into the
 normal Little64 Linux physical-entry contract.
 
-The SD boot helper at `little64 sd build` builds the
-paired SPI-flash stage-0 image plus SD card image used by both the LiteX-native
-smoke path and the emulator's `little64 boot run --machine=litex`
-flow. By default it also regenerates the minimal ext4 rootfs from
-`target/linux_port/rootfs/init.S` and installs that filesystem into the second
-SD partition; `--rootfs-image PATH` remains available as an explicit override.
+The SD boot helper at `little64 sd build` now supports two modes.
+Machine-aware mode:
+`./.venv/bin/little64 sd build --machine litex --output-dir builddir/boot-direct-litex`
+This resolves the default LiteX kernel from `target/linux_port/build-litex/`, generates matching DTS and DTB artifacts internally, chooses the stage-0 image shape from the selected boot source, and writes the stage-0 plus SD image into the output directory.
+Explicit mode:
+pass `--kernel-elf`, `--dtb`, and explicit output paths when you need full control over the inputs or want to build a non-default target shape.
+Both modes regenerate the minimal ext4 rootfs from `target/linux_port/rootfs/init.S` unless `--no-rootfs` or `--rootfs-image PATH` is used.
 
 The Linux tree still carries two separate built-in machine profiles:
 

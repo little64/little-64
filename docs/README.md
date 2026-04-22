@@ -69,6 +69,8 @@ Alternative entry points:
 	- The Arty helper now preloads the SPI-mode build into the integrated boot ROM; Linux-side SPI-SD rootfs integration is still separate work.
 - LiteX Linux flash-image builder: `./.venv/bin/little64 hdl flash-image`
 - SD boot artifact builder used by LiteX smoke and emulator LiteX boots: `./.venv/bin/little64 sd build`
+	- `--machine litex --output-dir PATH` resolves the default LiteX kernel, generates DTS/DTB internally, and writes machine-matched stage-0 plus SD artifacts into `PATH`.
+	- Explicit `--kernel-elf` + `--dtb` inputs remain supported for low-level artifact builds.
 	- When `--rootfs-image` is omitted, it regenerates the default ext4 rootfs from `target/linux_port/rootfs/init.S` and installs it into the second SD partition.
 - LiteX LLVM wrapper generator: `./.venv/bin/little64 hdl wrappers-llvm`
 - LiteX DTS generator: `./.venv/bin/little64 hdl dts-linux`

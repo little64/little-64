@@ -15,25 +15,14 @@ from test_traps import (
 )
 
 
+NON_DEFAULT_CACHE_TOPOLOGIES = ('unified', 'split')
+
+
 def _v2_config(cache_topology: str = 'none') -> Little64CoreConfig:
     return Little64CoreConfig(core_variant='v2', cache_topology=cache_topology)
 
 
-def test_v2_invalid_gp_opcode_raises_invalid_instruction_trap() -> None:
-    reserved_gp_opcode = (0b110 << 13) | (5 << 8)
-
-    observed = run_program_words([reserved_gp_opcode], config=_v2_config(), max_cycles=64)
-
-    assert observed['halted'] == 0
-    assert observed['locked_up'] == 1
-    assert observed['trap_cause'] == TrapVector.INVALID_INSTRUCTION
-    assert observed['trap_pc'] == 0
-    assert observed['trap_fault_addr'] == 0
-    assert observed['trap_access'] == 0
-    assert observed['trap_aux'] == 0
-
-
-@pytest.mark.parametrize('cache_topology', ['none', 'unified', 'split'])
+@pytest.mark.parametrize('cache_topology', NON_DEFAULT_CACHE_TOPOLOGIES)
 def test_v2_noncanonical_fetch_raises_canonical_page_fault(cache_topology: str) -> None:
     noncanonical_pc = 0x0000_0080_0000_0000
 
@@ -57,75 +46,7 @@ def test_v2_noncanonical_fetch_raises_canonical_page_fault(cache_topology: str) 
     assert observed['trap_aux'] == _aux_code(AUX_CANONICAL, 2)
 
 
-def test_v2_missing_l2_pte_raises_not_present_page_fault() -> None:
-    root = 0x4000
-    program_va = 0xFFFF_FFC0_0000_0000
-
-    observed = run_program_words(
-        [],
-        config=_v2_config(),
-        initial_registers={15: program_va},
-        initial_special_registers={
-            'cpu_control': CPU_CONTROL_PAGING_ENABLE,
-            'page_table_root_physical': root,
-        },
-        max_cycles=64,
-    )
-
-    assert observed['halted'] == 0
-    assert observed['locked_up'] == 1
-    assert observed['trap_cause'] == TrapVector.PAGE_FAULT_NOT_PRESENT
-    assert observed['trap_fault_addr'] == program_va
-    assert observed['trap_access'] == 2
-    assert observed['trap_pc'] == program_va
-    assert observed['trap_aux'] == _aux_code(AUX_NO_VALID_PTE, 2)
-
-
-def test_v2_user_stop_without_handler_raises_privileged_trap() -> None:
-    observed = run_program_source(
-        'STOP',
-        config=_v2_config(),
-        initial_special_registers={'cpu_control': CPU_CONTROL_USER_MODE},
-        max_cycles=64,
-    )
-
-    assert observed['halted'] == 0
-    assert observed['locked_up'] == 1
-    assert observed['trap_cause'] == TrapVector.PRIVILEGED_INSTRUCTION
-    assert observed['trap_pc'] == 0
-
-
-def test_v2_execute_without_x_permission_raises_permission_page_fault() -> None:
-    root = 0x4000
-    l1 = 0x5000
-    l0 = 0x6000
-    program_va = 0xFFFF_FFC0_0000_0000
-
-    memory: dict[int, int] = {}
-    _build_mapping(memory, root=root, l1=l1, l0=l0, va=program_va, pa=0x0, r=True, w=False, x=False, user=False)
-
-    observed = run_program_words(
-        [],
-        config=_v2_config(),
-        initial_registers={15: program_va},
-        initial_special_registers={
-            'cpu_control': CPU_CONTROL_PAGING_ENABLE,
-            'page_table_root_physical': root,
-        },
-        initial_data_memory=memory,
-        max_cycles=64,
-    )
-
-    assert observed['halted'] == 0
-    assert observed['locked_up'] == 1
-    assert observed['trap_cause'] == TrapVector.PAGE_FAULT_PERMISSION
-    assert observed['trap_fault_addr'] == program_va
-    assert observed['trap_access'] == 2
-    assert observed['trap_pc'] == program_va
-    assert observed['trap_aux'] == _aux_code(AUX_PERMISSION, 0)
-
-
-@pytest.mark.parametrize('cache_topology', ['none', 'unified', 'split'])
+@pytest.mark.parametrize('cache_topology', NON_DEFAULT_CACHE_TOPOLOGIES)
 def test_v2_user_syscall_fetches_paged_interrupt_vector_in_supervisor_mode(cache_topology: str) -> None:
     root = 0x4000
     l1 = 0x5000

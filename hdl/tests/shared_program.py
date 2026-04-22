@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from amaranth import Elaboratable, Module, ResetInserter, Signal
 from amaranth.sim import Simulator
 
 from little64_cores.config import Little64CoreConfig
@@ -104,6 +105,32 @@ class LdiCase:
     initial_flags: int
     expected_flags: int
     description: str
+
+
+@dataclass(slots=True)
+class ProgramExecution:
+    words: list[int]
+    initial_registers: dict[int, int] | None = None
+    initial_flags: int = 0
+    initial_special_registers: dict[str, int] | None = None
+    extra_code_words: dict[int, int] | None = None
+    initial_data_memory: dict[int, int] | None = None
+    irq_schedule: dict[int, int] | None = None
+    max_cycles: int = 256
+
+
+class _ResettableCore(Elaboratable):
+    def __init__(self, core) -> None:
+        self._core = core
+        self.test_reset = Signal()
+
+    def __getattr__(self, name: str):
+        return getattr(self._core, name)
+
+    def elaborate(self, platform):
+        m = Module()
+        m.submodules.core = ResetInserter(self.test_reset)(self._core)
+        return m
 
 
 def _load_macro_args(path: Path, macro_name: str) -> list[tuple[Any, ...]]:
@@ -270,16 +297,162 @@ def assemble_source(source: str) -> list[int]:
     return words
 
 
-def run_program_words(words: list[int],
-                      *,
-                      config: Little64CoreConfig | None = None,
-                      initial_registers: dict[int, int] | None = None,
-                      initial_flags: int = 0,
-                      initial_special_registers: dict[str, int] | None = None,
-                      extra_code_words: dict[int, int] | None = None,
-                      initial_data_memory: dict[int, int] | None = None,
-                      irq_schedule: dict[int, int] | None = None,
-                      max_cycles: int = 256) -> dict[str, object]:
+def _load_program_execution(code_memory: dict[int, int], data_memory: dict[int, int], execution: ProgramExecution) -> None:
+    code_memory.clear()
+    data_memory.clear()
+
+    for word_index, word in enumerate(execution.words):
+        base = word_index * 2
+        code_memory[base] = word & 0xFF
+        code_memory[base + 1] = (word >> 8) & 0xFF
+
+    if execution.extra_code_words:
+        for base, word in execution.extra_code_words.items():
+            code_memory[base] = word & 0xFF
+            code_memory[base + 1] = (word >> 8) & 0xFF
+
+    if execution.initial_data_memory:
+        for address, value in execution.initial_data_memory.items():
+            data_memory[address] = value & 0xFF
+
+
+def _snapshot_execution(ctx, dut, data_memory: dict[int, int], commit_count: int) -> dict[str, object]:
+    registers = [ctx.get(dut.register_file[index]) for index in range(16)]
+    return {
+        'registers': registers,
+        'flags': ctx.get(dut.flags),
+        'halted': ctx.get(dut.halted),
+        'locked_up': ctx.get(dut.locked_up),
+        'trap_cause': ctx.get(dut.special_regs.trap_cause),
+        'trap_fault_addr': ctx.get(dut.special_regs.trap_fault_addr),
+        'trap_access': ctx.get(dut.special_regs.trap_access),
+        'trap_pc': ctx.get(dut.special_regs.trap_pc),
+        'trap_aux': ctx.get(dut.special_regs.trap_aux),
+        'special_registers': {
+            'cpu_control': ctx.get(dut.special_regs.cpu_control),
+            'interrupt_table_base': ctx.get(dut.special_regs.interrupt_table_base),
+            'interrupt_mask': ctx.get(dut.special_regs.interrupt_mask),
+            'interrupt_mask_high': ctx.get(dut.special_regs.interrupt_mask_high),
+            'interrupt_states': ctx.get(dut.special_regs.interrupt_states),
+            'interrupt_states_high': ctx.get(dut.special_regs.interrupt_states_high),
+            'interrupt_epc': ctx.get(dut.special_regs.interrupt_epc),
+            'interrupt_eflags': ctx.get(dut.special_regs.interrupt_eflags),
+            'interrupt_cpu_control': ctx.get(dut.special_regs.interrupt_cpu_control),
+        },
+        'data_memory': dict(data_memory),
+        'commit_count': commit_count,
+    }
+
+
+async def _pulse_reset(ctx, dut) -> None:
+    ctx.set(dut.test_reset, 1)
+    await ctx.tick()
+    await ctx.tick()
+    ctx.set(dut.test_reset, 0)
+    await ctx.tick()
+    await ctx.tick()
+
+
+def run_batched_program_words(executions: list[ProgramExecution], *, config: Little64CoreConfig | None = None) -> list[dict[str, object]]:
+    resolved_config = config or Little64CoreConfig(reset_vector=0)
+    adapter = adapter_for_variant(resolved_config.core_variant)
+    dut = _ResettableCore(adapter.create_core(resolved_config))
+    sim = Simulator(dut)
+    sim.add_clock(1e-6)
+
+    code_memory: dict[int, int] = {}
+    data_memory: dict[int, int] = {}
+    ready = {'value': False}
+    current_irq_lines = {'value': 0}
+    results: list[dict[str, object]] = []
+
+    def read_code_qword(addr: int) -> int:
+        return sum((code_memory.get(addr + byte_index, 0) & 0xFF) << (8 * byte_index) for byte_index in range(8))
+
+    def read_data_qword(addr: int) -> int:
+        return sum((data_memory.get(addr + byte_index, 0) & 0xFF) << (8 * byte_index) for byte_index in range(8))
+
+    async def bus_process(ctx):
+        ctx.set(dut.i_bus.ack, 0)
+        ctx.set(dut.d_bus.ack, 0)
+        while True:
+            await ctx.tick()
+
+            if ready['value'] and ctx.get(dut.i_bus.cyc) and ctx.get(dut.i_bus.stb):
+                ctx.set(dut.i_bus.dat_r, read_code_qword(ctx.get(dut.i_bus.adr)))
+                ctx.set(dut.i_bus.ack, 1)
+            else:
+                ctx.set(dut.i_bus.ack, 0)
+
+            if ready['value'] and ctx.get(dut.d_bus.cyc) and ctx.get(dut.d_bus.stb):
+                d_addr = ctx.get(dut.d_bus.adr)
+                if ctx.get(dut.d_bus.we):
+                    d_value = ctx.get(dut.d_bus.dat_w)
+                    d_sel = ctx.get(dut.d_bus.sel)
+                    for byte_index in range(8):
+                        if d_sel & (1 << byte_index):
+                            data_memory[d_addr + byte_index] = (d_value >> (8 * byte_index)) & 0xFF
+                else:
+                    ctx.set(dut.d_bus.dat_r, read_data_qword(d_addr))
+                ctx.set(dut.d_bus.ack, 1)
+            else:
+                ctx.set(dut.d_bus.ack, 0)
+
+    async def observe_process(ctx):
+        ctx.set(dut.test_reset, 0)
+        ctx.set(dut.irq_lines, 0)
+
+        for execution in executions:
+            ready['value'] = False
+            current_irq_lines['value'] = 0
+            _load_program_execution(code_memory, data_memory, execution)
+
+            await _pulse_reset(ctx, dut)
+            ctx.set(dut.irq_lines, 0)
+
+            await adapter.prepare_for_execution(
+                ctx,
+                dut,
+                resolved_config,
+                ready=ready,
+                initial_registers=execution.initial_registers,
+                initial_flags=execution.initial_flags,
+                initial_special_registers=execution.initial_special_registers,
+            )
+
+            commit_count = 0
+            for cycle in range(execution.max_cycles):
+                if execution.irq_schedule and cycle in execution.irq_schedule:
+                    current_irq_lines['value'] = execution.irq_schedule[cycle]
+                    ctx.set(dut.irq_lines, current_irq_lines['value'])
+                await ctx.tick()
+                if ctx.get(dut.commit_valid):
+                    commit_count += 1
+                if ctx.get(dut.halted) or ctx.get(dut.locked_up):
+                    break
+
+            results.append(_snapshot_execution(ctx, dut, data_memory, commit_count))
+
+        ready['value'] = False
+        ctx.set(dut.irq_lines, 0)
+
+    sim.add_testbench(bus_process, background=True)
+    sim.add_testbench(observe_process)
+    total_cycles = sum(execution.max_cycles for execution in executions) + (12 * len(executions)) + 8
+    sim.run_until(total_cycles * 1e-6)
+    return results
+
+
+def _run_program_words_fresh(words: list[int],
+                             *,
+                             config: Little64CoreConfig | None = None,
+                             initial_registers: dict[int, int] | None = None,
+                             initial_flags: int = 0,
+                             initial_special_registers: dict[str, int] | None = None,
+                             extra_code_words: dict[int, int] | None = None,
+                             initial_data_memory: dict[int, int] | None = None,
+                             irq_schedule: dict[int, int] | None = None,
+                             max_cycles: int = 256) -> dict[str, object]:
     resolved_config = config or Little64CoreConfig(reset_vector=0)
     adapter = adapter_for_variant(resolved_config.core_variant)
     dut = adapter.create_core(resolved_config)
@@ -288,17 +461,15 @@ def run_program_words(words: list[int],
 
     code_memory: dict[int, int] = {}
     data_memory: dict[int, int] = {}
-    for word_index, word in enumerate(words):
-        base = word_index * 2
-        code_memory[base] = word & 0xFF
-        code_memory[base + 1] = (word >> 8) & 0xFF
-    if extra_code_words:
-        for base, word in extra_code_words.items():
-            code_memory[base] = word & 0xFF
-            code_memory[base + 1] = (word >> 8) & 0xFF
-    if initial_data_memory:
-        for address, value in initial_data_memory.items():
-            data_memory[address] = value & 0xFF
+    _load_program_execution(
+        code_memory,
+        data_memory,
+        ProgramExecution(
+            words=list(words),
+            extra_code_words=extra_code_words,
+            initial_data_memory=initial_data_memory,
+        ),
+    )
 
     observed: dict[str, object] = {}
     ready = {'value': False}
@@ -358,36 +529,35 @@ def run_program_words(words: list[int],
             if ctx.get(dut.halted) or ctx.get(dut.locked_up):
                 break
 
-        registers = []
-        for index in range(16):
-            registers.append(ctx.get(dut.register_file[index]))
-        observed['registers'] = registers
-        observed['flags'] = ctx.get(dut.flags)
-        observed['halted'] = ctx.get(dut.halted)
-        observed['locked_up'] = ctx.get(dut.locked_up)
-        observed['trap_cause'] = ctx.get(dut.special_regs.trap_cause)
-        observed['trap_fault_addr'] = ctx.get(dut.special_regs.trap_fault_addr)
-        observed['trap_access'] = ctx.get(dut.special_regs.trap_access)
-        observed['trap_pc'] = ctx.get(dut.special_regs.trap_pc)
-        observed['trap_aux'] = ctx.get(dut.special_regs.trap_aux)
-        observed['special_registers'] = {
-            'cpu_control': ctx.get(dut.special_regs.cpu_control),
-            'interrupt_table_base': ctx.get(dut.special_regs.interrupt_table_base),
-            'interrupt_mask': ctx.get(dut.special_regs.interrupt_mask),
-            'interrupt_mask_high': ctx.get(dut.special_regs.interrupt_mask_high),
-            'interrupt_states': ctx.get(dut.special_regs.interrupt_states),
-            'interrupt_states_high': ctx.get(dut.special_regs.interrupt_states_high),
-            'interrupt_epc': ctx.get(dut.special_regs.interrupt_epc),
-            'interrupt_eflags': ctx.get(dut.special_regs.interrupt_eflags),
-            'interrupt_cpu_control': ctx.get(dut.special_regs.interrupt_cpu_control),
-        }
-        observed['data_memory'] = dict(data_memory)
-        observed['commit_count'] = commit_count['value']
+        observed.update(_snapshot_execution(ctx, dut, data_memory, commit_count['value']))
 
     sim.add_testbench(bus_process, background=True)
     sim.add_testbench(observe_process)
     sim.run_until((max_cycles + 8) * 1e-6)
     return observed
+
+
+def run_program_words(words: list[int],
+                      *,
+                      config: Little64CoreConfig | None = None,
+                      initial_registers: dict[int, int] | None = None,
+                      initial_flags: int = 0,
+                      initial_special_registers: dict[str, int] | None = None,
+                      extra_code_words: dict[int, int] | None = None,
+                      initial_data_memory: dict[int, int] | None = None,
+                      irq_schedule: dict[int, int] | None = None,
+                      max_cycles: int = 256) -> dict[str, object]:
+    return _run_program_words_fresh(
+        words,
+        config=config,
+        initial_registers=initial_registers,
+        initial_flags=initial_flags,
+        initial_special_registers=initial_special_registers,
+        extra_code_words=extra_code_words,
+        initial_data_memory=initial_data_memory,
+        irq_schedule=irq_schedule,
+        max_cycles=max_cycles,
+    )
 
 
 def run_single_instruction(word: int,

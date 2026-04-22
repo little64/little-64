@@ -9,101 +9,36 @@ from __future__ import annotations
 
 import argparse
 import os
-import shutil
 import subprocess
 import sys
 from pathlib import Path
 from typing import List, Optional
 
 from little64.build_support import run_checked
+from little64.litex_boot_support import (
+    default_kernel_for_machine,
+    ensure_default_machine_kernel_matches_defconfig,
+    ensure_litex_kernel_support,
+    ensure_litex_python_env,
+    resolve_litex_machine_profile,
+)
 from little64.paths import (
     builddir,
-    existing_kernel_path,
     repo_root,
 )
-from little64.tooling_support import compile_dts_to_dtb, little64_command, python_has_module, resolve_python_bin
+from little64.tooling_support import little64_command, resolve_python_bin
 
 
 DEFAULT_MODE = "smoke"
 DEFAULT_MACHINE = "litex"
-DEFAULT_LITEX_DEFCONFIG_NAME = "little64_litex_sim_defconfig"
-
-REQUIRED_LITEX_KERNEL_OPTIONS: tuple[tuple[str, str], ...] = (
-    ("CONFIG_MMC", "y"),
-    ("CONFIG_MMC_BLOCK", "y"),
-    ("CONFIG_MMC_LITEX", "y"),
-    ("CONFIG_FAT_FS", "y"),
-    ("CONFIG_MSDOS_FS", "y"),
-    ("CONFIG_VFAT_FS", "y"),
-    ("CONFIG_MSDOS_PARTITION", "y"),
-    ("CONFIG_EXT4_FS", "y"),
-    ("CONFIG_LITTLE64_KERNEL_PHYS_BASE", "0x40000000"),
-)
-
-
-def _ensure_litex_python_env(python_bin: str) -> None:
-    if not python_bin or not shutil.which(python_bin) and not os.path.isfile(python_bin):
-        print("error: Python interpreter not found for LiteX artifact generation", file=sys.stderr)
-        print("hint: set LITTLE64_PYTHON or create <repo>/.venv", file=sys.stderr)
-        sys.exit(1)
-    if not python_has_module(python_bin, 'litex'):
-        print("error: selected Python environment does not provide the LiteX package", file=sys.stderr)
-        print("hint: activate the repo virtualenv or set LITTLE64_PYTHON to an environment with LiteX installed", file=sys.stderr)
-        sys.exit(1)
-
-
-def _default_defconfig_for_machine(machine: str) -> str:
-    if machine == "litex":
-        return DEFAULT_LITEX_DEFCONFIG_NAME
-    raise SystemExit(f"error: unknown machine: {machine}")
 
 
 def _default_kernel_for_machine(machine: str) -> Path:
-    defconfig = _default_defconfig_for_machine(machine)
-    existing = existing_kernel_path(defconfig)
-    if existing is not None:
-        return existing
-    from little64.paths import kernel_path as _kp
-
-    path = _kp(defconfig)
-    print(f"error: kernel ELF not found at {path}", file=sys.stderr)
-    print(f"hint: build it first with: little64 kernel build --machine {machine} vmlinux -j1", file=sys.stderr)
-    sys.exit(1)
-
-
-def _recorded_defconfig_for_machine(machine: str) -> Optional[str]:
-    from little64.paths import built_defconfig_name
-
-    defconfig = _default_defconfig_for_machine(machine)
-    try:
-        return built_defconfig_name(defconfig)
-    except Exception:
-        return None
-
-
-def _kernel_config_path(kernel_path: Path) -> Optional[Path]:
-    candidate = kernel_path.resolve().parent / ".config"
-    return candidate if candidate.is_file() else None
+    return default_kernel_for_machine(machine)
 
 
 def _ensure_litex_kernel_support(kernel_path: Path) -> None:
-    if os.environ.get("LITTLE64_SKIP_LITEX_KERNEL_CONFIG_CHECK") == "1":
-        return
-    config_path = _kernel_config_path(kernel_path)
-    if config_path is None:
-        print(f"error: unable to verify LiteX kernel support for {kernel_path}", file=sys.stderr)
-        print("hint: provide a kernel built in a Little64 Linux build directory so the adjacent .config is available", file=sys.stderr)
-        print("hint: or set LITTLE64_SKIP_LITEX_KERNEL_CONFIG_CHECK=1 to bypass this verification explicitly", file=sys.stderr)
-        sys.exit(1)
-    lines = config_path.read_text().splitlines()
-    line_set = set(lines)
-    for option, expected in REQUIRED_LITEX_KERNEL_OPTIONS:
-        if f"{option}={expected}" not in line_set:
-            print(f"error: kernel config {config_path} is missing {option}={expected}", file=sys.stderr)
-            if option == "CONFIG_LITTLE64_KERNEL_PHYS_BASE":
-                print("hint: rebuild the LiteX kernel so the early boot code matches the SDRAM-backed bootrom layout", file=sys.stderr)
-                print("hint: run 'little64 kernel build --machine litex clean' then 'little64 kernel build --machine litex vmlinux -j1'", file=sys.stderr)
-            sys.exit(1)
+    ensure_litex_kernel_support(kernel_path)
 
 
 def _prepare_litex_artifacts(
@@ -117,36 +52,17 @@ def _prepare_litex_artifacts(
     rootfs_image: Optional[Path],
     python_bin: str,
 ) -> dict:
-    if shutil.which("dtc") is None:
-        print("error: dtc is required for the LiteX machine profile", file=sys.stderr)
-        sys.exit(1)
-
     output_dir.mkdir(parents=True, exist_ok=True)
     dts_path = output_dir / "little64-litex-sim.dts"
     dtb_path = output_dir / "little64-litex-sim.dtb"
     bootrom_path = output_dir / "little64-sd-stage0-bootrom.bin"
     sd_path = output_dir / "little64-linux-sdcard.img"
 
-    dts_cmd = [
-        *little64_command('hdl', 'dts-linux', python_bin=python_bin),
-        "--output", str(dts_path),
-        "--with-spi-flash", "--with-sdcard", "--with-sdram",
-        "--litex-target", litex_target,
-        "--boot-source", "bootrom",
-        "--cpu-variant", cpu_variant,
-    ]
-    if ram_size:
-        dts_cmd += ["--ram-size", ram_size]
-    subprocess.run(dts_cmd, check=True, stdout=subprocess.DEVNULL)
-
-    compile_dts_to_dtb(dts_path, dtb_path=dtb_path, only_if_stale=True)
-
     builder_cmd = [
         *little64_command('sd', 'build', python_bin=python_bin),
+        "--machine", "litex",
+        "--output-dir", str(output_dir),
         "--kernel-elf", str(kernel_elf),
-        "--dtb", str(dtb_path),
-        "--bootrom-output", str(bootrom_path),
-        "--sd-output", str(sd_path),
         "--cpu-variant", cpu_variant,
         "--litex-target", litex_target,
         "--boot-source", "bootrom",
@@ -238,14 +154,7 @@ def run(argv: List[str]) -> int:
         _ensure_litex_kernel_support(kernel_elf)
 
     if not user_specified_kernel:
-        active_defconfig = _recorded_defconfig_for_machine(args.machine)
-        expected = _default_defconfig_for_machine(args.machine)
-        if active_defconfig and active_defconfig != expected:
-            print(f"error: default kernel path {kernel_elf} currently points to a {active_defconfig} build", file=sys.stderr)
-            print(f"hint: rebuild the LiteX kernel with: little64 kernel build --machine {args.machine} vmlinux -j1", file=sys.stderr)
-            print("hint: LiteX kernels now live under target/linux_port/build-litex/ by default", file=sys.stderr)
-            print("hint: or pass an explicit kernel path that matches the selected machine profile", file=sys.stderr)
-            return 1
+        ensure_default_machine_kernel_matches_defconfig(args.machine, kernel_elf)
 
     # Rootfs selection.
     attach_rootfs = True
@@ -271,10 +180,11 @@ def run(argv: List[str]) -> int:
     python_bin = resolve_python_bin(root)
     _ensure_litex_python_env(python_bin)
 
-    output_dir = Path(os.environ.get("LITTLE64_LITEX_OUTPUT_DIR") or builddir(root) / "boot-direct-litex")
-    cpu_variant = os.environ.get("LITTLE64_LITEX_CPU_VARIANT", "standard")
-    litex_target = os.environ.get("LITTLE64_LITEX_TARGET", "arty-a7-35")
-    ram_size = os.environ.get("LITTLE64_LITEX_RAM_SIZE") or None
+    profile = resolve_litex_machine_profile(root=root, machine=args.machine)
+    output_dir = profile.output_dir
+    cpu_variant = profile.cpu_variant
+    litex_target = profile.litex_target
+    ram_size = profile.ram_size
 
     # Optional targeted LR / memory write-watch instrumentation (opt-in via env).
     if os.environ.get("LITTLE64_TRACE_LR") == "1":

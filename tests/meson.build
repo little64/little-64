@@ -34,6 +34,15 @@ test('linux-port-build-helper',
   timeout : 60,
 )
 
+test('sd-build-helper',
+  python3,
+  args : [
+    meson.project_source_root() / 'tests/host/test_sd_build_helper.py',
+  ],
+  suite : ['unit', 'linux', 'tooling'],
+  timeout : 60,
+)
+
 test('little64-cli-smoke',
   python3,
   args : [

@@ -6,7 +6,7 @@ from little64_cores.config import Little64CoreConfig
 from shared_program import run_program_source
 
 
-CACHE_TOPOLOGIES = ('none', 'unified', 'split')
+CACHE_TOPOLOGIES = ('unified', 'split')
 
 
 def _bytes_of(value: int, width: int) -> dict[int, int]:

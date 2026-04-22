@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -11,8 +13,18 @@ from litedram.init import get_sdram_phy_c_header
 from litex.soc.integration import export as litex_export
 
 from little64.build_support import Stage0CompileUnit, build_stage0_binary
-from little64.paths import repo_root
-from little64.tooling_support import build_default_rootfs_image
+from little64.commands.hdl import dts_linux as dts_linux_command
+from little64.commands.kernel.build import default_defconfig_for_machine
+from little64.litex_boot_support import (
+    DEFAULT_LITEX_MACHINE,
+    ensure_default_machine_kernel_matches_defconfig,
+    default_kernel_for_machine,
+    ensure_litex_kernel_support,
+    recorded_defconfig_for_machine,
+    resolve_litex_machine_profile,
+)
+from little64.paths import builddir, repo_root
+from little64.tooling_support import build_default_rootfs_image, compile_dts_to_dtb
 
 
 def _litex_software_root() -> Path:
@@ -37,6 +49,7 @@ from little64_cores.litex_soc import Little64LiteXSimSoC, Little64LiteXSoC
 
 
 LITEX_BOOTROM_SD_UART_BASE = 0xF0004000
+DEFAULT_LEGACY_LITEX_TARGET = 'sim-bootrom'
 
 
 STAGE0_SYSTEM_HEADER = """#ifndef __SYSTEM_H
@@ -497,6 +510,10 @@ def build_litex_sd_stage0(stage0_source: Path, stage0_linker: Path, generated_he
     )
 
 
+def _build_stage0(stage0_source: Path, stage0_linker: Path, generated_header_dir: Path, work_dir: Path) -> bytes:
+    return build_litex_sd_stage0(stage0_source, stage0_linker, generated_header_dir, work_dir)
+
+
 def build_litex_sd_boot_artifacts(
     *,
     soc: Little64LiteXSoC,
@@ -529,7 +546,7 @@ def build_litex_sd_boot_artifacts(
     )
     _write_stage0_generated_support(work_dir, soc=soc)
 
-    stage0_bytes = build_litex_sd_stage0(
+    stage0_bytes = _build_stage0(
         (REPO_ROOT / stage0_source).resolve(),
         (REPO_ROOT / stage0_linker).resolve(),
         work_dir,
@@ -566,13 +583,81 @@ def build_litex_sd_boot_artifacts(
     return image_bytes
 
 
+def _default_litex_target(machine: str | None) -> str:
+    if machine == DEFAULT_LITEX_MACHINE:
+        return resolve_litex_machine_profile(root=REPO_ROOT, machine=machine).litex_target
+    return DEFAULT_LEGACY_LITEX_TARGET
+
+
+def _default_output_dir(machine: str | None) -> Path:
+    if machine == DEFAULT_LITEX_MACHINE:
+        return resolve_litex_machine_profile(root=REPO_ROOT, machine=machine).output_dir
+    return builddir(REPO_ROOT)
+
+
+def _default_stage0_output_name(boot_source: str) -> str:
+    if boot_source == 'spiflash':
+        return 'little64-sd-stage0-spiflash.bin'
+    return 'little64-sd-stage0-bootrom.bin'
+
+
+def _resolve_machine_kernel(machine: str, kernel_elf: Path | None) -> tuple[Path, bool]:
+    if kernel_elf is None:
+        return default_kernel_for_machine(machine), False
+    return kernel_elf.expanduser(), True
+
+
+def _validate_kernel_path(kernel_elf: Path, *, machine: str | None, user_specified: bool) -> None:
+    if kernel_elf.is_file():
+        return
+    print(f'error: kernel ELF not found at {kernel_elf}', file=sys.stderr)
+    if machine is not None:
+        print(f'hint: build it first with: little64 kernel build --machine {machine} vmlinux -j1', file=sys.stderr)
+    elif user_specified:
+        print('hint: pass a valid Little64 Linux kernel ELF path', file=sys.stderr)
+    sys.exit(1)
+
+
+def _validate_default_machine_kernel(machine: str, kernel_elf: Path) -> None:
+    ensure_default_machine_kernel_matches_defconfig(machine, kernel_elf)
+
+
+def _write_generated_dts(*, output_path: Path, cpu_variant: str, litex_target: str, boot_source: str, ram_size: int, with_sdram: bool, with_spi_flash: bool) -> Path:
+    dts_args = argparse.Namespace(
+        with_sdram=with_sdram,
+        with_spi_flash=with_spi_flash,
+        with_sdcard=True,
+        without_timer=False,
+        spi_flash_image=None,
+        integrated_main_ram_size=0 if with_sdram else ram_size,
+        ram_size=ram_size,
+        bootargs='',
+        cpu_variant=cpu_variant,
+        litex_target=litex_target,
+        boot_source=boot_source,
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path = dts_linux_command._cache_path_for_output(output_path)
+    cache_state = dts_linux_command._build_cache_state(dts_args)
+    dts_text = dts_linux_command._generate_dts_text(dts_args, output_path)
+    dts_linux_command._write_text_if_changed(output_path, dts_text)
+    dts_linux_command._write_cache_state(cache_path, cache_state)
+    return output_path
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Build Little64 SD boot artifacts for LiteX-compatible boot flows.')
-    parser.add_argument('--kernel-elf', type=Path, required=True, help='Little64 Linux kernel ELF to store as VMLINUX in the FAT32 boot partition.')
-    parser.add_argument('--dtb', type=Path, required=True, help='Compiled DTB to store as BOOT.DTB in the FAT32 boot partition.')
-    parser.add_argument('--bootrom-output', type=Path, help='Boot ROM image path to write.')
+    parser.add_argument('--machine', choices=(DEFAULT_LITEX_MACHINE,), default=None,
+        help='Build SD artifacts for a named machine profile. When set, the command can auto-resolve the default kernel and generate DTS/DTB internally.')
+    parser.add_argument('--output-dir', type=Path, default=None,
+        help='Directory for auto-generated DTS/DTB and default stage-0/SD outputs in machine-aware mode.')
+    parser.add_argument('--kernel-elf', type=Path, default=None,
+        help='Little64 Linux kernel ELF to store as VMLINUX in the FAT32 boot partition. Optional in machine-aware mode.')
+    parser.add_argument('--dtb', type=Path, default=None,
+        help='Compiled DTB to store as BOOT.DTB in the FAT32 boot partition. Optional in machine-aware mode.')
+    parser.add_argument('--bootrom-output', type=Path, default=None, help='Boot ROM image path to write.')
     parser.add_argument('--flash-output', type=Path, default=None, help=argparse.SUPPRESS)
-    parser.add_argument('--sd-output', type=Path, required=True, help='Raw SD card image path to write.')
+    parser.add_argument('--sd-output', type=Path, default=None, help='Raw SD card image path to write.')
     rootfs_group = parser.add_mutually_exclusive_group()
     rootfs_group.add_argument('--rootfs-image', type=Path,
         help='Explicit ext4 rootfs image to place in the second partition. When omitted, the builder regenerates the default init.S-based rootfs.')
@@ -587,7 +672,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default='standard',
         help='LiteX CPU variant used to derive the SoC CSR layout for stage-0. `standard` selects the V2 core; use `standard-basic` for the legacy core.',
     )
-    parser.add_argument('--litex-target', choices=LITTLE64_LITEX_TARGET_NAMES, default='sim-bootrom',
+    parser.add_argument('--litex-target', choices=LITTLE64_LITEX_TARGET_NAMES, default=None,
         help='Named LiteX target descriptor used for SoC metadata and the default boot source.')
     parser.add_argument('--boot-source', choices=LITTLE64_LITEX_BOOT_SOURCES, default=None,
         help='Override the LiteX target default boot source while deriving the SoC CSR layout.')
@@ -606,12 +691,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    machine_mode = args.machine is not None
     legacy_flash_output = args.flash_output is not None and args.bootrom_output is None
-    output_arg = args.bootrom_output or args.flash_output
-    if output_arg is None:
-        raise ValueError('missing required output path: pass --bootrom-output')
-
-    target = resolve_litex_target(args.litex_target)
+    resolved_litex_target = args.litex_target or _default_litex_target(args.machine)
+    target = resolve_litex_target(resolved_litex_target)
     default_boot_source = 'spiflash' if legacy_flash_output else target.boot_source
     boot_source = normalize_litex_boot_source(args.boot_source or default_boot_source)
     resolved_with_sdram = args.with_sdram or target.with_sdram
@@ -622,8 +705,64 @@ def main(argv: list[str] | None = None) -> int:
     ram_size = default_ram_size if args.ram_size is None else args.ram_size
     kernel_physical_base = max(ram_base, LITTLE64_LINUX_RAM_BASE) if args.kernel_physical_base is None else args.kernel_physical_base
 
+    output_dir = None
+    if machine_mode or args.output_dir is not None:
+        output_dir = (args.output_dir or _default_output_dir(args.machine)).expanduser().resolve()
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+    kernel_elf: Path | None = None
+    user_specified_kernel = args.kernel_elf is not None
+    if machine_mode:
+        kernel_elf, user_specified_kernel = _resolve_machine_kernel(args.machine, args.kernel_elf)
+        _validate_kernel_path(kernel_elf, machine=args.machine, user_specified=user_specified_kernel)
+        if args.machine == DEFAULT_LITEX_MACHINE:
+            ensure_litex_kernel_support(kernel_elf)
+            if not user_specified_kernel:
+                _validate_default_machine_kernel(args.machine, kernel_elf)
+    elif args.kernel_elf is not None:
+        kernel_elf = args.kernel_elf.expanduser()
+        _validate_kernel_path(kernel_elf, machine=None, user_specified=True)
+
+    dtb_path = None if args.dtb is None else args.dtb.expanduser()
+    if dtb_path is not None and not dtb_path.is_file():
+        print(f'error: DTB not found at {dtb_path}', file=sys.stderr)
+        sys.exit(1)
+
+    if machine_mode and dtb_path is None:
+        if shutil.which('dtc') is None:
+            print('error: dtc is required for machine-aware SD artifact generation', file=sys.stderr)
+            sys.exit(1)
+        assert output_dir is not None
+        dts_path = _write_generated_dts(
+            output_path=output_dir / 'little64-litex-sim.dts',
+            cpu_variant=args.cpu_variant,
+            litex_target=resolved_litex_target,
+            boot_source=boot_source,
+            ram_size=ram_size,
+            with_sdram=resolved_with_sdram,
+            with_spi_flash=(target.with_spi_flash or boot_source == 'spiflash'),
+        )
+        dtb_path = compile_dts_to_dtb(dts_path, dtb_path=output_dir / 'little64-litex-sim.dtb', only_if_stale=True)
+
+    output_arg = args.bootrom_output or args.flash_output
+    if output_arg is None and output_dir is not None:
+        output_arg = output_dir / _default_stage0_output_name(boot_source)
+    if output_arg is None:
+        raise ValueError('missing required output path: pass --bootrom-output or use --machine/--output-dir')
+
+    sd_output = args.sd_output
+    if sd_output is None and output_dir is not None:
+        sd_output = output_dir / 'little64-linux-sdcard.img'
+    if sd_output is None:
+        raise ValueError('missing required output path: pass --sd-output or use --machine/--output-dir')
+
+    if kernel_elf is None:
+        raise ValueError('missing required input path: pass --kernel-elf or use --machine')
+    if dtb_path is None:
+        raise ValueError('missing required input path: pass --dtb or use --machine')
+
     stage0_linker = args.stage0_linker
-    if legacy_flash_output and stage0_linker == Path('target/c_boot/linker_litex_bootrom.ld'):
+    if boot_source == 'spiflash' and stage0_linker == Path('target/c_boot/linker_litex_bootrom.ld'):
         stage0_linker = Path('target/c_boot/linker_litex_spi_boot.ld')
 
     soc = Little64LiteXSimSoC(
@@ -635,16 +774,16 @@ def main(argv: list[str] | None = None) -> int:
         with_sdcard=True,
         sdcard_mode=args.sdcard_mode,
         with_timer=True,
-        litex_target=args.litex_target,
+        litex_target=resolved_litex_target,
         boot_source=boot_source,
         sdram_module=target.sdram_module,
     )
     build_litex_sd_boot_artifacts(
         soc=soc,
-        kernel_elf=args.kernel_elf,
-        dtb=args.dtb,
+        kernel_elf=kernel_elf,
+        dtb=dtb_path,
         bootrom_output=output_arg,
-        sd_output=args.sd_output,
+        sd_output=sd_output,
         ram_base=ram_base,
         ram_size=ram_size,
         kernel_physical_base=kernel_physical_base,

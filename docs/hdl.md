@@ -328,11 +328,21 @@ Build SD-oriented LiteX boot artifacts with:
 
 ```bash
 ./.venv/bin/little64 sd build \
+	--machine litex \
+	--output-dir builddir/boot-direct-litex
+```
+
+Or, for an explicit low-level artifact build:
+
+```bash
+./.venv/bin/little64 sd build \
 	--kernel-elf target/linux_port/build-litex/vmlinux \
 	--dtb builddir/hdl-litex-linux-boot/little64-litex-sim.dtb \
 	--flash-output builddir/little64-sd-stage0-spiflash.bin \
 	--sd-output builddir/little64-linux-sdcard.img
 ```
+
+The machine-aware form resolves the default LiteX kernel from `target/linux_port/build-litex/`, generates a matching DTS and DTB internally, chooses the default LiteX target contract, and emits the generated DTS, DTB, stage-0 image, and SD image together under the selected output directory.
 
 ### LiteX Stage-0 Entry
 

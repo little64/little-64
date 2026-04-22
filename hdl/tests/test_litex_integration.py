@@ -756,6 +756,133 @@ def test_build_sd_boot_artifacts_pads_bootrom_image(tmp_path, monkeypatch) -> No
     assert captured['path'] == sd_output
 
 
+def test_sd_build_machine_mode_resolves_default_kernel_and_generates_dtb(tmp_path, monkeypatch) -> None:
+    kernel_elf = tmp_path / 'vmlinux'
+    kernel_elf.write_bytes(b'kernel')
+    output_dir = tmp_path / 'artifacts'
+    captured: dict[str, object] = {}
+
+    def fake_write_generated_dts(**kwargs):
+        captured['dts_kwargs'] = kwargs
+        output_path = kwargs['output_path']
+        output_path.write_text('/dts-v1/;\n', encoding='utf-8')
+        return output_path
+
+    def fake_compile_dts_to_dtb(dts_path, *, dtb_path=None, only_if_stale=False):
+        assert only_if_stale is True
+        assert dts_path == output_dir / 'little64-litex-sim.dts'
+        resolved = dtb_path or dts_path.with_suffix('.dtb')
+        resolved.write_bytes(b'dtb')
+        return resolved
+
+    def fake_build_artifacts(**kwargs):
+        captured['build_kwargs'] = kwargs
+
+    class FakeSoC:
+        def __init__(self, **kwargs) -> None:
+            captured['soc_kwargs'] = kwargs
+
+    monkeypatch.setattr(_BUILD_SD_BOOT_ARTIFACTS, 'default_kernel_for_machine', lambda machine: kernel_elf)
+    monkeypatch.setattr(_BUILD_SD_BOOT_ARTIFACTS, 'ensure_litex_kernel_support', lambda path: None)
+    monkeypatch.setattr(_BUILD_SD_BOOT_ARTIFACTS, 'recorded_defconfig_for_machine', lambda machine: 'little64_litex_sim_defconfig')
+    monkeypatch.setattr(_BUILD_SD_BOOT_ARTIFACTS, '_write_generated_dts', fake_write_generated_dts)
+    monkeypatch.setattr(_BUILD_SD_BOOT_ARTIFACTS, 'compile_dts_to_dtb', fake_compile_dts_to_dtb)
+    monkeypatch.setattr(_BUILD_SD_BOOT_ARTIFACTS, 'build_litex_sd_boot_artifacts', fake_build_artifacts)
+    monkeypatch.setattr(_BUILD_SD_BOOT_ARTIFACTS, 'Little64LiteXSimSoC', FakeSoC)
+
+    assert _BUILD_SD_BOOT_ARTIFACTS.main(['--machine', 'litex', '--output-dir', str(output_dir)]) == 0
+
+    assert captured['dts_kwargs'] == {
+        'output_path': output_dir / 'little64-litex-sim.dts',
+        'cpu_variant': 'standard',
+        'litex_target': 'arty-a7-35',
+        'boot_source': 'bootrom',
+        'ram_size': 0x1000_0000,
+        'with_sdram': True,
+        'with_spi_flash': False,
+    }
+    assert captured['soc_kwargs']['litex_target'] == 'arty-a7-35'
+    assert captured['soc_kwargs']['boot_source'] == 'bootrom'
+    assert captured['build_kwargs']['kernel_elf'] == kernel_elf
+    assert captured['build_kwargs']['dtb'] == output_dir / 'little64-litex-sim.dtb'
+    assert captured['build_kwargs']['bootrom_output'] == output_dir / 'little64-sd-stage0-bootrom.bin'
+    assert captured['build_kwargs']['sd_output'] == output_dir / 'little64-linux-sdcard.img'
+
+
+def test_sd_build_machine_mode_uses_spiflash_stage0_defaults(tmp_path, monkeypatch) -> None:
+    kernel_elf = tmp_path / 'vmlinux'
+    kernel_elf.write_bytes(b'kernel')
+    output_dir = tmp_path / 'artifacts'
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(_BUILD_SD_BOOT_ARTIFACTS, 'default_kernel_for_machine', lambda machine: kernel_elf)
+    monkeypatch.setattr(_BUILD_SD_BOOT_ARTIFACTS, 'ensure_litex_kernel_support', lambda path: None)
+    monkeypatch.setattr(_BUILD_SD_BOOT_ARTIFACTS, 'recorded_defconfig_for_machine', lambda machine: 'little64_litex_sim_defconfig')
+    monkeypatch.setattr(
+        _BUILD_SD_BOOT_ARTIFACTS,
+        '_write_generated_dts',
+        lambda **kwargs: (kwargs['output_path'].parent.mkdir(parents=True, exist_ok=True), kwargs['output_path'].write_text('/dts-v1/;\n', encoding='utf-8'), kwargs['output_path'])[-1],
+    )
+    monkeypatch.setattr(
+        _BUILD_SD_BOOT_ARTIFACTS,
+        'compile_dts_to_dtb',
+        lambda dts_path, *, dtb_path=None, only_if_stale=False: (dtb_path.write_bytes(b'dtb'), dtb_path)[1],
+    )
+    monkeypatch.setattr(_BUILD_SD_BOOT_ARTIFACTS, 'Little64LiteXSimSoC', lambda **kwargs: object())
+    monkeypatch.setattr(_BUILD_SD_BOOT_ARTIFACTS, 'build_litex_sd_boot_artifacts', lambda **kwargs: captured.setdefault('build_kwargs', kwargs))
+
+    assert _BUILD_SD_BOOT_ARTIFACTS.main([
+        '--machine', 'litex',
+        '--output-dir', str(output_dir),
+        '--boot-source', 'spiflash',
+    ]) == 0
+
+    assert captured['build_kwargs']['bootrom_output'] == output_dir / 'little64-sd-stage0-spiflash.bin'
+    assert captured['build_kwargs']['stage0_linker'] == Path('target/c_boot/linker_litex_spi_boot.ld')
+
+
+def test_sd_build_explicit_mode_keeps_legacy_inputs(tmp_path, monkeypatch) -> None:
+    kernel_elf = tmp_path / 'vmlinux'
+    dtb = tmp_path / 'system.dtb'
+    bootrom_output = tmp_path / 'bootrom.bin'
+    sd_output = tmp_path / 'sdcard.img'
+    kernel_elf.write_bytes(b'kernel')
+    dtb.write_bytes(b'dtb')
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        _BUILD_SD_BOOT_ARTIFACTS,
+        '_write_generated_dts',
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError('machine-mode DTS generation should not run in explicit mode')),
+    )
+    monkeypatch.setattr(
+        _BUILD_SD_BOOT_ARTIFACTS,
+        'default_kernel_for_machine',
+        lambda machine: (_ for _ in ()).throw(AssertionError('default kernel lookup should not run in explicit mode')),
+    )
+
+    class FakeSoC:
+        def __init__(self, **kwargs) -> None:
+            captured['soc_kwargs'] = kwargs
+
+    monkeypatch.setattr(_BUILD_SD_BOOT_ARTIFACTS, 'Little64LiteXSimSoC', FakeSoC)
+    monkeypatch.setattr(_BUILD_SD_BOOT_ARTIFACTS, 'build_litex_sd_boot_artifacts', lambda **kwargs: captured.setdefault('build_kwargs', kwargs))
+
+    assert _BUILD_SD_BOOT_ARTIFACTS.main([
+        '--kernel-elf', str(kernel_elf),
+        '--dtb', str(dtb),
+        '--bootrom-output', str(bootrom_output),
+        '--sd-output', str(sd_output),
+    ]) == 0
+
+    assert captured['soc_kwargs']['litex_target'] == 'sim-bootrom'
+    assert captured['soc_kwargs']['boot_source'] == 'bootrom'
+    assert captured['build_kwargs']['kernel_elf'] == kernel_elf
+    assert captured['build_kwargs']['dtb'] == dtb
+    assert captured['build_kwargs']['bootrom_output'] == bootrom_output
+    assert captured['build_kwargs']['sd_output'] == sd_output
+
+
 def test_pack_litex_memory_words_matches_litex_big_endian_word_order() -> None:
     words = _BUILD_SD_BOOT_ARTIFACTS.pack_litex_memory_words(
         b'\x11\x22\x33\x44\x55\x66\x77\x88\x99',
