@@ -159,6 +159,8 @@ Current limitation:
 - Kernel-side SPI-SD integration is still separate from stage-0. The bootrom can now load the kernel and DTB from SPI-mode SD on Arty builds, but the generated Linux DT path does not yet describe the SPI-SD storage path as a kernel rootfs device.
 - The simulation/emulator bootrom-first flow still uses the native LiteSDCard backend from the same source file.
 
+For repeated hardware testing against an already partitioned SD card, use `little64 sd update --device /dev/sdX` after regenerating the staged Arty SD image under `builddir/hdl-litex-arty/boot/`. That rewrites only the boot partition by default, and rewrites the rootfs partition only when `--update-rootfs` or `--rootfs-image PATH` is requested.
+
 Typical usage:
 
 ```bash

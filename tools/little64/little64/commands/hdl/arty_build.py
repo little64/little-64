@@ -91,9 +91,7 @@ def _boot_artifact_paths(output_dir: Path, build_name: str) -> dict[str, Path]:
 def _compose_arty_bootargs(*, uart_origin: int | None, include_rootfs: bool) -> str | None:
     bootargs: list[str] = []
     if uart_origin is not None:
-        bootargs.append(f'console=liteuart earlycon=liteuart,0x{uart_origin:x} ignore_loglevel loglevel=8')
-    if include_rootfs:
-        bootargs.append('root=/dev/mmcblk0p2 rootwait init=/init')
+        bootargs.append(f'console=liteuart0 earlycon=liteuart,0x{uart_origin:x} ignore_loglevel loglevel=8')
     return ' '.join(bootargs) if bootargs else None
 
 
@@ -393,6 +391,7 @@ def _rebuild_sd_boot_artifacts(
         with_sdram=args.with_sdram,
         with_spi_flash=args.with_spi_flash,
         with_sdcard=True,
+        with_timer=True,
         spisdcard_mapping=_resolve_sdcard_mapping(args),
         toolchain=args.toolchain,
     )
@@ -672,6 +671,7 @@ def main(argv: list[str] | None = None) -> int:
             with_sdram=args.with_sdram,
             with_spi_flash=args.with_spi_flash,
             with_sdcard=args.with_sdcard,
+            with_timer=True,
             cpu_variant=args.cpu_variant,
             spisdcard_mapping=sdcard_mapping,
             toolchain=args.toolchain,

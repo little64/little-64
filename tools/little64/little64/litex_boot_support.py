@@ -58,7 +58,7 @@ def default_kernel_for_machine(machine: str) -> Path:
 
     path = paths.boot_kernel_path(defconfig)
     print(f"error: kernel ELF not found at {path}", file=sys.stderr)
-    print(f"hint: build it first with: little64 kernel build --machine {machine} vmlinuz -j1", file=sys.stderr)
+    print(f"hint: build it first with: little64 kernel build --machine {machine} vmlinux -j1", file=sys.stderr)
     sys.exit(1)
 
 
@@ -107,7 +107,7 @@ def ensure_default_machine_kernel_matches_defconfig(machine: str, kernel_elf: Pa
     expected = default_defconfig_for_machine(machine)
     if active_defconfig and active_defconfig != expected:
         print(f'error: default kernel path {kernel_elf} currently points to a {active_defconfig} build', file=sys.stderr)
-        print(f'hint: rebuild the LiteX kernel with: little64 kernel build --machine {machine} vmlinuz -j1', file=sys.stderr)
+        print(f'hint: rebuild the LiteX kernel with: little64 kernel build --machine {machine} vmlinux -j1', file=sys.stderr)
         print('hint: LiteX kernels now live under target/linux_port/build-litex/ by default', file=sys.stderr)
         print('hint: or pass an explicit kernel path that matches the selected machine profile', file=sys.stderr)
         sys.exit(1)

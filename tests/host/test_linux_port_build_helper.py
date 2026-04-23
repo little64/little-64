@@ -55,6 +55,11 @@ def main() -> int:
     request = helper.resolve_build_request(args, extra, env={})
     assert request.debug_cflag_args == ()
     assert request.debug_kconfig_args == ()
+    assert helper.build_targets_for_request(request) == ("vmlinux", "vmlinuz")
+
+    args, extra = helper.parse_args(["clean"])
+    request = helper.resolve_build_request(args, extra, env={})
+    assert helper.build_targets_for_request(request) == ("clean",)
 
     return 0
 

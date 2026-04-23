@@ -105,7 +105,7 @@ point after `pip install -e tools/little64` into the project `.venv`. Run
 | `little64 lldb` | Launch an LLDB TUI against a Little64 RSP server |
 | `little64 kernel` | Build the Linux kernel, resolve PCs to source, analyze boot-lockup traces |
 | `little64 boot` | Direct-boot a Little64 kernel ELF; sample and cluster fast-boot outcomes |
-| `little64 sd` | Build the bootrom stage-0 and SD card image used by the LiteX flows |
+| `little64 sd` | Build the bootrom stage-0 and SD card image used by the LiteX flows, or update only the partitions of an existing SD card |
 | `little64 rootfs` | Build minimal init-based or mlibc-based ext4 rootfs images |
 | `little64 bios` | Build and run the C-BIOS ELF under the emulator |
 | `little64 dev` | Developer scaffolding (e.g. new MMIO device skeletons) |
@@ -185,6 +185,16 @@ Explicit mode:
 pass `--kernel-elf`, `--dtb`, and explicit output paths when you need full control over the inputs or want to build a non-default target shape.
 Both modes regenerate the minimal ext4 rootfs from `target/linux_port/rootfs/init.S` unless `--no-rootfs` or `--rootfs-image PATH` is used.
 
+To push a staged SD image onto an already partitioned test card without rewriting the whole raw device, use:
+
+```bash
+./.venv/bin/little64 sd update --device /dev/sdX
+./.venv/bin/little64 sd update --device /dev/sdX --update-rootfs
+./.venv/bin/little64 sd update --device /dev/sdX --sd-image builddir/hdl-litex-arty/boot/little64_arty_a7_35_sdcard.img
+```
+
+`little64 sd update` rewrites partition 1 from the staged SD image and leaves partition 2 alone unless `--update-rootfs` or `--rootfs-image PATH` is supplied.
+
 For the canonical Little64 LiteX helper flows (`little64 boot run`, `little64 sd build --machine litex`, and `little64 hdl sim-litex --with-sdcard`), the CSR window layout is now intentionally fixed rather than add-order-dependent:
 
 - LiteSDCard reader `0xF0000800`
@@ -244,6 +254,10 @@ under `builddir/hdl-litex-arty/boot/`, including the SD bootrom built from
 LiteSDCard stage-0 used by the simulator/emulator flows and the SPI-mode SD
 stage-0 used by the current Arty hardware path, and the Arty helper preloads
 the SPI-mode build into the integrated boot ROM.
+
+The staged Arty DTS now also includes the Little64 Linux timer block, and the
+current hardware helper no longer advertises an unsupported MMC rootfs device
+in its default bootargs.
 
 The remaining gap is kernel-side SPI-SD/rootfs integration: the bootrom can
 now load the kernel and DTB from SPI-mode SD on Arty builds, but the Linux DT

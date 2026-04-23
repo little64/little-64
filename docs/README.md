@@ -76,6 +76,10 @@ Alternative entry points:
 	- The only intentionally different UART base is the legacy explicit emulator compatibility path `--boot-mode=litex-flash --disk`, which still uses `0xF0003800`; the canonical helper contract above remains the source of truth for the native LiteX and `--machine=litex` flows.
 	- The FAT32 boot partition now also carries a small `BOOT.CRC` manifest that the shared SD stage-0 uses to verify both the loaded payload bytes and the final SDRAM image before handoff.
 	- When `--rootfs-image` is omitted, it regenerates the default ext4 rootfs from `target/linux_port/rootfs/init.S` and installs it into the second SD partition.
+- Partition-only SD update helper: `./.venv/bin/little64 sd update`
+	- Rewrites partition 1 from a staged SD image onto an already partitioned SD card or raw disk image without rewriting the full raw device.
+	- Defaults to the staged Arty SD image when present, or accepts an explicit source image via `--sd-image PATH`.
+	- Leaves partition 2 unchanged unless `--update-rootfs` or `--rootfs-image PATH` is supplied.
 - LiteX LLVM wrapper generator: `./.venv/bin/little64 hdl wrappers-llvm`
 - LiteX DTS generator: `./.venv/bin/little64 hdl dts-linux`
 	- The Linux tree now also carries a separate built-in LiteX simulation profile via `target/linux_port/linux/arch/little64/boot/dts/little64-litex-sim.dts` and `target/linux_port/linux/arch/little64/configs/little64_litex_sim_defconfig`.

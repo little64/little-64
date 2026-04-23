@@ -82,7 +82,7 @@ def _build_default_bootargs(args: argparse.Namespace, uart_region: Any) -> str |
     bootargs: list[str] = []
     if uart_region is not None:
         bootargs.append(
-            f'console=liteuart earlycon=liteuart,0x{uart_region.origin:x} ignore_loglevel loglevel=8'
+            f'console=liteuart0 earlycon=liteuart,0x{uart_region.origin:x} ignore_loglevel loglevel=8'
         )
     for flag, extra_arguments in FLAG_BOOTARGS.items():
         if getattr(args, flag, False):

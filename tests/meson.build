@@ -43,6 +43,15 @@ test('sd-build-helper',
   timeout : 60,
 )
 
+test('sd-update-helper',
+  python3,
+  args : [
+    meson.project_source_root() / 'tests/host/test_sd_update_helper.py',
+  ],
+  suite : ['unit', 'linux', 'tooling'],
+  timeout : 60,
+)
+
 test('little64-cli-smoke',
   python3,
   args : [

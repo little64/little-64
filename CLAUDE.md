@@ -114,6 +114,10 @@ This file documents practical update paths and maintenance rules for common proj
   - Explicit `--kernel-elf <path> --dtb <path>` inputs remain supported for low-level artifact builds.
   - Pass `--with-sdram` when a simulation target should emit generated LiteDRAM init support instead of the integrated-RAM-only contract.
   - Unless `--no-rootfs` or `--rootfs-image PATH` is passed, it regenerates the default ext4 rootfs from `target/linux_port/rootfs/init.S` and installs it into SD partition 2.
+- Partition-only SD update helper: `little64 sd update`
+  - Rewrites partition 1 from a staged SD image onto an already partitioned SD card or raw disk image without rewriting the full raw device.
+  - Defaults to the staged Arty SD image when present, or accepts an explicit source image via `--sd-image PATH`.
+  - Leaves partition 2 unchanged unless `--update-rootfs` or `--rootfs-image PATH` is supplied.
 - LiteX-native Linux smoke helper: `little64 hdl sim-litex`
   - Uses LiteX's own simulation builder / `SimPlatform` flow instead of the repo-local custom Verilator harness.
   - Default output directory: `builddir/hdl-litex-linux-boot/`.

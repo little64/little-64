@@ -41,6 +41,12 @@ class BuildRequest:
     debug_cflag_args: tuple[str, ...]
 
 
+def build_targets_for_request(request: BuildRequest) -> tuple[str, ...]:
+    if request.target == "vmlinux":
+        return ("vmlinux", "vmlinuz")
+    return (request.target,)
+
+
 def default_defconfig_for_machine(machine: str) -> str:
     try:
         return MACHINE_DEFCONFIGS[machine]
@@ -215,6 +221,8 @@ def _print_summary(request: BuildRequest, cc_cmd: Path | str) -> None:
     else:
         print(f"Using compiler: {cc_cmd}")
     print(f"Target: {request.target}")
+    if request.target == "vmlinux":
+        print("Companion target: vmlinuz")
     print(f"Build directory: {request.build_dir}")
     if request.debug_cflag_args:
         print(f"Kernel C flags: {request.debug_cflag_args[0].split('=', 1)[1]}")
@@ -247,17 +255,18 @@ def run_build(request: BuildRequest, env: Mapping[str, str] | None = None) -> in
         )
         defconfig_name_stamp.write_text(request.defconfig_name + "\n", encoding="utf-8")
 
-    subprocess.run(
-        [
-            *_make_base_command(request.build_dir, cc_cmd),
-            *request.make_args,
-            *request.debug_cflag_args,
-            *request.debug_kconfig_args,
-            request.target,
-        ],
-        check=True,
-        env=effective_env,
-    )
+    for target in build_targets_for_request(request):
+        subprocess.run(
+            [
+                *_make_base_command(request.build_dir, cc_cmd),
+                *request.make_args,
+                *request.debug_cflag_args,
+                *request.debug_kconfig_args,
+                target,
+            ],
+            check=True,
+            env=effective_env,
+        )
     return 0
 
 

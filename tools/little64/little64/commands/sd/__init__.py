@@ -9,6 +9,7 @@ from little64.commands._group import SubcommandSpec, dispatch
 
 _SUBCOMMANDS: tuple[SubcommandSpec, ...] = (
     ("build", "build", "Build the Little64 bootrom stage-0 image plus SD card image."),
+    ("update", "update", "Update a correctly partitioned SD card without rewriting the full raw image."),
 )
 
 

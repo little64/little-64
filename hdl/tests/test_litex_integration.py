@@ -564,7 +564,7 @@ def test_arty_build_script_composes_sd_bootargs() -> None:
     assert _BUILD_ARTY_BITSTREAM._compose_arty_bootargs(
         uart_origin=0xF0001000,
         include_rootfs=True,
-    ) == 'console=liteuart earlycon=liteuart,0xf0001000 ignore_loglevel loglevel=8 root=/dev/mmcblk0p2 rootwait init=/init'
+    ) == 'console=liteuart0 earlycon=liteuart,0xf0001000 ignore_loglevel loglevel=8'
 
 
 def test_arty_build_script_cleans_builder_outputs_only(tmp_path) -> None:
@@ -1124,7 +1124,7 @@ def test_litex_sim_soc_generates_linux_dts(tmp_path) -> None:
     )
     soc.platform.output_dir = str(tmp_path / 'litex-sim')
 
-    dts_text = generate_linux_dts(soc, bootargs='console=liteuart earlycon=liteuart,0xf0001000')
+    dts_text = generate_linux_dts(soc, bootargs='console=liteuart0 earlycon=liteuart,0xf0001000')
 
     assert 'compatible = "little64,litex-sim";' in dts_text
     assert 'compatible = "litex,liteuart";' in dts_text
@@ -1201,6 +1201,26 @@ def test_arty_hardware_soc_exposes_uart_phy_tuning_word_by_default(tmp_path) -> 
     assert expected_tuning_word == (115200 << 32) // soc.sys_clk_freq
     assert soc.cpu.variant == 'standard'
     assert soc.cpu.core_config.core_variant == 'v2'
+
+
+def test_arty_build_helper_generates_timer_enabled_hardware_dts(tmp_path) -> None:
+    mapping = resolve_arty_spi_sdcard_mapping(connector='arduino', adapter='digilent')
+    soc = Little64LiteXArtySoC(spisdcard_mapping=mapping, with_timer=True)
+    soc.platform.output_dir = str(tmp_path / 'litex-arty-hw-dts')
+
+    dts_text = generate_linux_dts(
+        soc,
+        bootargs=_BUILD_ARTY_BITSTREAM._compose_arty_bootargs(
+            uart_origin=0xF0004000,
+            include_rootfs=True,
+        ),
+    )
+
+    assert 'bootargs = "console=liteuart0 earlycon=liteuart,0xf0004000 ignore_loglevel loglevel=8";' in dts_text
+    assert 'root=/dev/mmcblk0p2' not in dts_text
+    assert 'compatible = "little64,timer";' in dts_text
+    assert 'timer@8001000' in dts_text
+    assert 'interrupts = <66>;' in dts_text
 
 
 def test_arty_hardware_soc_can_select_basic_variant_explicitly(tmp_path) -> None:
@@ -1447,7 +1467,7 @@ def test_litex_sim_soc_generates_linux_dts_with_sdcard(tmp_path) -> None:
 
     dts_text = generate_linux_dts(
         soc,
-        bootargs='console=liteuart earlycon=liteuart,0xf0004000 ignore_loglevel loglevel=8',
+        bootargs='console=liteuart0 earlycon=liteuart,0xf0004000 ignore_loglevel loglevel=8',
     )
 
     assert 'sdcard0 = &mmc0;' in dts_text
