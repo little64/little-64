@@ -122,10 +122,37 @@ native LiteSDCard bootrom-first flow and the Arty SPI-mode SD path from the
 same C file. The generated register header selects the backend at build time,
 so the Arty helper now compiles that same source against the hardware
 `spisdcard` CSR layout and preloads the result into the integrated boot ROM.
+That shared stage-0 now also consumes a small `BOOT.CRC` manifest from the
+FAT32 boot partition, verifies the loaded kernel image and DTB CRCs while it
+copies them from SD, and then rechecks the resulting SDRAM contents before
+handoff so SD-transfer corruption and post-write RAM corruption fail before the
+kernel jump.
 
 The Arty helper also post-processes the generated top-level Verilog to tie off
 known optional 7-series primitive ports that LiteX/LiteDRAM leave omitted,
 which cuts down Vivado synthesis noise without changing the emitted logic.
+
+The Arty hardware SoC now also uses some of the board LEDs for direct CPU
+bring-up status without requiring any software support:
+
+- mono LED 0 = `halted` (used as the current stopped indicator)
+- mono LED 1 = `locked_up`
+- mono LED 2 = pulse-stretched instruction-bus request activity
+- mono LED 3 = pulse-stretched data-bus request activity
+- RGB LED 0 red = pulse-stretched store activity
+- RGB LED 0 green = running heartbeat (off when halted or locked up)
+- RGB LED 0 blue = pulse-stretched interrupt-pending indication
+- remaining RGB LEDs are held off for deterministic behavior
+
+The current Arty wiring drives the RGB channels as active-high. If the mono
+LEDs behave correctly but the RGB LEDs all come up bright or the "off" LEDs
+show white, the RGB polarity assumption in `hdl/little64_cores/litex_arty.py`
+is the first place to check.
+
+This is intentionally Arty-local debug wiring in `hdl/little64_cores/litex_arty.py`.
+The first pass reuses the existing LiteX CPU `halted` and `locked_up` outputs
+instead of introducing a separate STOP-only status signal through the shared
+LiteX wrapper hierarchy.
 
 Current limitation:
 
@@ -188,7 +215,7 @@ migration is wired through stage-0 and artifact generation.
 Run it with:
 
 ```bash
-./.venv/bin/little64 kernel build --machine litex vmlinux -j1
+./.venv/bin/little64 kernel build --machine litex vmlinuz -j1
 ./.venv/bin/little64 hdl sim-litex
 ```
 
@@ -199,6 +226,14 @@ This wrapper:
 3. instantiates the existing `Little64LiteXSimSoC` with the matching flash image and either the native LiteSDCard path or an Arty-like SPI SD controller path,
 4. asks LiteX's native simulation builder to generate and compile the simulator,
 5. runs the resulting `Vsim` binary and watches the serial stream for the required boot markers.
+
+The Little64 LiteX SoC now reserves the canonical CSR pages for the SD, SDRAM,
+SPI-flash, and UART blocks instead of relying on LiteX's incidental module-add
+order. That keeps the generated DTS, stage-0 headers, and emulator-facing
+LiteX-compatible map stable across optional-feature toggles; for example, the
+SD-capable layouts keep the documented `sdcard_*`, `sdram`, `spiflash_core`,
+and `uart` CSR windows at `0xF0000800`, `0xF0003000`, `0xF0003800`, and
+`0xF0004000` respectively whenever those blocks are present.
 
 The DTS generator now keeps a small sidecar cache next to each output DTS and
 skips rebuilding when the requested arguments and relevant `hdl/little64_cores/*.py`
@@ -256,7 +291,7 @@ the repo-local copy when the installed package does not provide those RTL files.
 Before running the smoke:
 
 ```bash
-./.venv/bin/little64 kernel build vmlinux -j1
+./.venv/bin/little64 kernel build vmlinuz -j1
 ./.venv/bin/pip install -r requirements-hdl.txt
 ```
 
@@ -278,7 +313,7 @@ Typical package names are:
 - openSUSE / Fedora: `json-c-devel` and `libevent-devel`
 - Debian / Ubuntu: `libjson-c-dev` and `libevent-dev`
 
-If `vmlinux`, `verilator`, `dtc`, or the required host headers are missing, the
+If neither `vmlinuz` nor `vmlinux`, `verilator`, `dtc`, or the required host headers are missing, the
 wrapper exits early with an explicit prerequisite error.
 
 ## LiteX Integration Status
@@ -336,13 +371,14 @@ Or, for an explicit low-level artifact build:
 
 ```bash
 ./.venv/bin/little64 sd build \
-	--kernel-elf target/linux_port/build-litex/vmlinux \
+	--kernel-elf target/linux_port/build-litex/arch/little64/boot/vmlinuz \
 	--dtb builddir/hdl-litex-linux-boot/little64-litex-sim.dtb \
 	--flash-output builddir/little64-sd-stage0-spiflash.bin \
 	--sd-output builddir/little64-linux-sdcard.img
 ```
 
-The machine-aware form resolves the default LiteX kernel from `target/linux_port/build-litex/`, generates a matching DTS and DTB internally, chooses the default LiteX target contract, and emits the generated DTS, DTB, stage-0 image, and SD image together under the selected output directory.
+The machine-aware form resolves the default LiteX boot kernel from `target/linux_port/build-litex/arch/little64/boot/vmlinuz` when available and falls back to `target/linux_port/build-litex/vmlinux`, generates a matching DTS and DTB internally, chooses the default LiteX target contract, and emits the generated DTS, DTB, stage-0 image, and SD image together under the selected output directory.
+Native LiteX-targeted SD builds now keep the stage-0 UART base aligned with the generated LiteX CSR layout by default. Use `--emulator-bootrom-uart-layout` only when you are generating artifacts for the emulator's shifted bootrom UART contract rather than for a raw LiteX simulation or hardware SoC.
 
 ### LiteX Stage-0 Entry
 

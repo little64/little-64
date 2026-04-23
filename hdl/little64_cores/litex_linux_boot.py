@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import struct
+import zlib
 
 from .litex import (
     LITTLE64_LINUX_RAM_BASE,
@@ -20,6 +21,9 @@ FLASH_BOOT_HEADER = struct.Struct('<16Q')
 SECTOR_SIZE = 512
 DEFAULT_SD_CARD_SIZE_BYTES = 4 * 1024 * 1024 * 1024
 DEFAULT_SD_BOOT_PARTITION_SIZE_MB = 256
+BOOT_CHECKSUM_MAGIC = 0x4C36434B
+BOOT_CHECKSUM_VERSION = 1
+BOOT_CHECKSUM_STRUCT = struct.Struct('<8I')
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +53,14 @@ class Little64SDCardFileLayout:
 
 
 @dataclass(frozen=True, slots=True)
+class Little64SDCardBootChecksums:
+    kernel_image_crc32: int
+    kernel_image_size: int
+    dtb_crc32: int
+    dtb_size: int
+
+
+@dataclass(frozen=True, slots=True)
 class Little64SDCardImageLayout:
     disk_image: bytes | None
     disk_size_bytes: int
@@ -58,6 +70,8 @@ class Little64SDCardImageLayout:
     root_partition_sector_count: int
     kernel_file: Little64SDCardFileLayout
     dtb_file: Little64SDCardFileLayout
+    checksums_file: Little64SDCardFileLayout
+    checksums: Little64SDCardBootChecksums
 
 
 def _align_up(value: int, alignment: int) -> int:
@@ -101,6 +115,50 @@ def _partition_entry(start_lba: int, sector_count: int, partition_type: int) -> 
     return bytes(entry)
 
 
+def _crc32_zeros(initial_crc: int, size: int, *, chunk_size: int = 4096) -> int:
+    crc = initial_crc
+    zero_chunk = b'\x00' * chunk_size
+    remaining = size
+    while remaining > 0:
+        current = chunk_size if remaining > chunk_size else remaining
+        crc = zlib.crc32(zero_chunk[:current], crc)
+        remaining -= current
+    return crc & 0xFFFFFFFF
+
+
+def _compute_kernel_image_checksums(kernel_elf_bytes: bytes) -> Little64SDCardBootChecksums:
+    kernel_image = flatten_little64_linux_elf_image(kernel_elf_bytes)
+    return Little64SDCardBootChecksums(
+        kernel_image_crc32=zlib.crc32(kernel_image.image) & 0xFFFFFFFF,
+        kernel_image_size=len(kernel_image.image),
+        dtb_crc32=0,
+        dtb_size=0,
+    )
+
+
+def _build_sd_boot_checksums(*, kernel_elf_bytes: bytes, dtb_bytes: bytes) -> Little64SDCardBootChecksums:
+    kernel_checksums = _compute_kernel_image_checksums(kernel_elf_bytes)
+    return Little64SDCardBootChecksums(
+        kernel_image_crc32=kernel_checksums.kernel_image_crc32,
+        kernel_image_size=kernel_checksums.kernel_image_size,
+        dtb_crc32=zlib.crc32(dtb_bytes) & 0xFFFFFFFF,
+        dtb_size=len(dtb_bytes),
+    )
+
+
+def _serialize_sd_boot_checksums(checksums: Little64SDCardBootChecksums) -> bytes:
+    return BOOT_CHECKSUM_STRUCT.pack(
+        BOOT_CHECKSUM_MAGIC,
+        BOOT_CHECKSUM_VERSION,
+        checksums.kernel_image_crc32,
+        checksums.kernel_image_size,
+        checksums.dtb_crc32,
+        checksums.dtb_size,
+        0,
+        0,
+    )
+
+
 def _root_partition_sectors_for_disk(*, total_disk_size_bytes: int, boot_partition_lba: int, boot_partition_sector_count: int) -> int:
     if total_disk_size_bytes % SECTOR_SIZE != 0:
         raise ValueError('total_disk_size_bytes must be sector-aligned')
@@ -131,7 +189,13 @@ def _build_fat32_boot_partition(
     boot_partition_sector_count: int,
     sectors_per_cluster: int,
     volume_label: bytes,
-) -> tuple[bytearray, Little64SDCardFileLayout, Little64SDCardFileLayout]:
+) -> tuple[
+    bytearray,
+    Little64SDCardFileLayout,
+    Little64SDCardFileLayout,
+    Little64SDCardFileLayout,
+    Little64SDCardBootChecksums,
+]:
     if sectors_per_cluster < 1:
         raise ValueError('sectors_per_cluster must be positive')
     if len(volume_label) != 11:
@@ -139,6 +203,9 @@ def _build_fat32_boot_partition(
 
     kernel_name = _fat32_short_name('VMLINUX')
     dtb_name = _fat32_short_name('BOOT.DTB')
+    checksums_name = _fat32_short_name('BOOT.CRC')
+    checksums = _build_sd_boot_checksums(kernel_elf_bytes=kernel_elf_bytes, dtb_bytes=dtb_bytes)
+    checksums_bytes = _serialize_sd_boot_checksums(checksums)
 
     reserved_sectors = 32
     num_fats = 2
@@ -155,7 +222,8 @@ def _build_fat32_boot_partition(
     root_dir_cluster = 2
     kernel_clusters = max(1, _ceil_div(len(kernel_elf_bytes), cluster_size))
     dtb_clusters = max(1, _ceil_div(len(dtb_bytes), cluster_size))
-    used_cluster_count = 1 + kernel_clusters + dtb_clusters
+    checksums_clusters = max(1, _ceil_div(len(checksums_bytes), cluster_size))
+    used_cluster_count = 1 + kernel_clusters + dtb_clusters + checksums_clusters
     if used_cluster_count + 2 > cluster_count:
         raise ValueError('kernel and DTB do not fit in the FAT32 boot partition')
 
@@ -164,6 +232,7 @@ def _build_fat32_boot_partition(
 
     kernel_first_cluster = root_dir_cluster + 1
     dtb_first_cluster = kernel_first_cluster + kernel_clusters
+    checksums_first_cluster = dtb_first_cluster + dtb_clusters
 
     fat_entries = [0 for _ in range(cluster_count + 2)]
     fat_entries[0] = 0x0FFFFFF8
@@ -176,6 +245,9 @@ def _build_fat32_boot_partition(
     for index in range(dtb_clusters):
         cluster = dtb_first_cluster + index
         fat_entries[cluster] = 0x0FFFFFFF if index == dtb_clusters - 1 else cluster + 1
+    for index in range(checksums_clusters):
+        cluster = checksums_first_cluster + index
+        fat_entries[cluster] = 0x0FFFFFFF if index == checksums_clusters - 1 else cluster + 1
 
     fat_bytes = bytearray(fat_sectors * SECTOR_SIZE)
     for index, value in enumerate(fat_entries):
@@ -249,10 +321,16 @@ def _build_fat32_boot_partition(
         first_cluster=dtb_first_cluster,
         size=len(dtb_bytes),
     )
+    checksums_file = Little64SDCardFileLayout(
+        short_name=checksums_name,
+        first_cluster=checksums_first_cluster,
+        size=len(checksums_bytes),
+    )
 
     write_dir_entry(0, kernel_file.short_name, kernel_file.first_cluster, kernel_file.size)
     write_dir_entry(1, dtb_file.short_name, dtb_file.first_cluster, dtb_file.size)
-    root_dir[64] = 0x00
+    write_dir_entry(2, checksums_file.short_name, checksums_file.first_cluster, checksums_file.size)
+    root_dir[96] = 0x00
 
     def write_file(first_cluster: int, payload: bytes) -> None:
         payload_view = memoryview(payload)
@@ -273,8 +351,9 @@ def _build_fat32_boot_partition(
 
     write_file(kernel_file.first_cluster, kernel_elf_bytes)
     write_file(dtb_file.first_cluster, dtb_bytes)
+    write_file(checksums_file.first_cluster, checksums_bytes)
 
-    return partition, kernel_file, dtb_file
+    return partition, kernel_file, dtb_file, checksums_file, checksums
 
 
 def _compose_sd_card_image(
@@ -286,6 +365,8 @@ def _compose_sd_card_image(
     root_partition_sector_count: int,
     kernel_file: Little64SDCardFileLayout,
     dtb_file: Little64SDCardFileLayout,
+    checksums_file: Little64SDCardFileLayout,
+    checksums: Little64SDCardBootChecksums,
     include_disk_image: bool,
 ) -> tuple[Little64SDCardImageLayout, bytes, int]:
     root_partition_lba = boot_partition_lba + boot_partition_sector_count
@@ -317,6 +398,8 @@ def _compose_sd_card_image(
             root_partition_sector_count=root_partition_sector_count,
             kernel_file=kernel_file,
             dtb_file=dtb_file,
+            checksums_file=checksums_file,
+            checksums=checksums,
         ),
         bytes(mbr),
         root_partition_lba * SECTOR_SIZE,
@@ -347,7 +430,7 @@ def build_litex_sd_card_image(
     if _ceil_div(len(rootfs_payload), SECTOR_SIZE) > root_partition_sector_count:
         raise ValueError('rootfs payload does not fit in the configured root partition')
 
-    boot_partition, kernel_file, dtb_file = _build_fat32_boot_partition(
+    boot_partition, kernel_file, dtb_file, checksums_file, checksums = _build_fat32_boot_partition(
         kernel_elf_bytes=kernel_elf_bytes,
         dtb_bytes=dtb_bytes,
         boot_partition_lba=boot_partition_lba,
@@ -363,6 +446,8 @@ def build_litex_sd_card_image(
         root_partition_sector_count=root_partition_sector_count,
         kernel_file=kernel_file,
         dtb_file=dtb_file,
+        checksums_file=checksums_file,
+        checksums=checksums,
         include_disk_image=True,
     )
     return layout
@@ -393,7 +478,7 @@ def write_litex_sd_card_image(
     if _ceil_div(len(rootfs_payload), SECTOR_SIZE) > root_partition_sector_count:
         raise ValueError('rootfs payload does not fit in the configured root partition')
 
-    boot_partition, kernel_file, dtb_file = _build_fat32_boot_partition(
+    boot_partition, kernel_file, dtb_file, checksums_file, checksums = _build_fat32_boot_partition(
         kernel_elf_bytes=kernel_elf_bytes,
         dtb_bytes=dtb_bytes,
         boot_partition_lba=boot_partition_lba,
@@ -409,6 +494,8 @@ def write_litex_sd_card_image(
         root_partition_sector_count=root_partition_sector_count,
         kernel_file=kernel_file,
         dtb_file=dtb_file,
+        checksums_file=checksums_file,
+        checksums=checksums,
         include_disk_image=False,
     )
 

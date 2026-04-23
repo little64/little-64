@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 
-from migen import ClockDomain, Signal
+from migen import ClockDomain, If, Signal
 
 from litex.build.generic_platform import IOStandard, Misc, Pins, Subsignal
 from litex.gen import LiteXModule
@@ -21,6 +21,12 @@ from .litex_soc import Little64LiteXSoC
 ARTY_PMOD_HEADERS = ('pmoda', 'pmodb', 'pmodc', 'pmodd')
 ARTY_SPI_SDCARD_PRESET_ARDUINO_IO30_33 = 'arduino-io30-33'
 ARTY_SPI_SDCARD_PRESETS = (ARTY_SPI_SDCARD_PRESET_ARDUINO_IO30_33,)
+ARTY_USER_LED_COUNT = 4
+ARTY_RGB_LED_COUNT = 4
+# Hardware validation on the Arty board shows the RGB channels behave as
+# active-high in this integration path, so keep the board-local debug LED
+# mapping non-inverted.
+ARTY_RGB_LED_ACTIVE_LOW = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -218,6 +224,89 @@ class Little64LiteXArtySoC(Little64LiteXSoC):
             boot_stack_address=boot_stack_address,
             **kwargs,
         )
+        self._configure_debug_leds()
+
+    def _configure_debug_leds(self) -> None:
+        pulse_cycles = max(1, int(self.sys_clk_freq // 8))
+        pulse_counter_max = pulse_cycles + 1
+        heartbeat_half_period = max(1, int(self.sys_clk_freq // 2))
+
+        self.arty_user_led_pads = [
+            self.platform.request('user_led', index)
+            for index in range(ARTY_USER_LED_COUNT)
+        ]
+        self.arty_rgb_led_pads = [
+            self.platform.request('rgb_led', index)
+            for index in range(ARTY_RGB_LED_COUNT)
+        ]
+
+        self.arty_led_halted = Signal(name='arty_led_halted')
+        self.arty_led_locked_up = Signal(name='arty_led_locked_up')
+        self.arty_led_i_bus_activity = Signal(name='arty_led_i_bus_activity')
+        self.arty_led_d_bus_activity = Signal(name='arty_led_d_bus_activity')
+        self.arty_led_store_activity = Signal(name='arty_led_store_activity')
+        self.arty_led_running_heartbeat = Signal(name='arty_led_running_heartbeat')
+        self.arty_led_irq_pending = Signal(name='arty_led_irq_pending')
+
+        def _make_stretched_level(source: Signal, *, name: str) -> Signal:
+            counter = Signal(max=pulse_counter_max, name=f'{name}_stretch_counter')
+            level = Signal(name=f'{name}_stretch_level')
+            self.sync += If(source,
+                counter.eq(pulse_cycles),
+            ).Elif(counter != 0,
+                counter.eq(counter - 1),
+            )
+            self.comb += level.eq(source | (counter != 0))
+            return level
+
+        i_bus_request = Signal(name='arty_i_bus_request')
+        d_bus_request = Signal(name='arty_d_bus_request')
+        store_request = Signal(name='arty_store_request')
+        irq_pending = Signal(name='arty_irq_pending')
+        heartbeat_counter = Signal(max=max(2, heartbeat_half_period), name='arty_heartbeat_counter')
+        heartbeat_toggle = Signal(name='arty_heartbeat_toggle')
+
+        self.comb += [
+            i_bus_request.eq(self.cpu.ibus.cyc & self.cpu.ibus.stb),
+            d_bus_request.eq(self.cpu.dbus.cyc & self.cpu.dbus.stb),
+            store_request.eq(self.cpu.dbus.cyc & self.cpu.dbus.stb & self.cpu.dbus.we),
+            irq_pending.eq(self.cpu.interrupt != 0),
+            self.arty_led_halted.eq(self.cpu.halted),
+            self.arty_led_locked_up.eq(self.cpu.locked_up),
+            self.arty_led_i_bus_activity.eq(_make_stretched_level(i_bus_request, name='arty_i_bus_activity')),
+            self.arty_led_d_bus_activity.eq(_make_stretched_level(d_bus_request, name='arty_d_bus_activity')),
+            self.arty_led_store_activity.eq(_make_stretched_level(store_request, name='arty_store_activity')),
+            self.arty_led_irq_pending.eq(_make_stretched_level(irq_pending, name='arty_irq_pending')),
+            self.arty_led_running_heartbeat.eq(heartbeat_toggle & ~self.cpu.halted & ~self.cpu.locked_up),
+        ]
+
+        self.sync += If(heartbeat_counter == (heartbeat_half_period - 1),
+            heartbeat_counter.eq(0),
+            heartbeat_toggle.eq(~heartbeat_toggle),
+        ).Else(
+            heartbeat_counter.eq(heartbeat_counter + 1),
+        )
+
+        self.comb += [
+            self.arty_user_led_pads[0].eq(self.arty_led_halted),
+            self.arty_user_led_pads[1].eq(self.arty_led_locked_up),
+            self.arty_user_led_pads[2].eq(self.arty_led_i_bus_activity),
+            self.arty_user_led_pads[3].eq(self.arty_led_d_bus_activity),
+        ]
+
+        rgb_led0 = self.arty_rgb_led_pads[0]
+        self.comb += [
+            rgb_led0.r.eq(~self.arty_led_store_activity if ARTY_RGB_LED_ACTIVE_LOW else self.arty_led_store_activity),
+            rgb_led0.g.eq(~self.arty_led_running_heartbeat if ARTY_RGB_LED_ACTIVE_LOW else self.arty_led_running_heartbeat),
+            rgb_led0.b.eq(~self.arty_led_irq_pending if ARTY_RGB_LED_ACTIVE_LOW else self.arty_led_irq_pending),
+        ]
+
+        for rgb_led in self.arty_rgb_led_pads[1:]:
+            self.comb += [
+                rgb_led.r.eq(1 if ARTY_RGB_LED_ACTIVE_LOW else 0),
+                rgb_led.g.eq(1 if ARTY_RGB_LED_ACTIVE_LOW else 0),
+                rgb_led.b.eq(1 if ARTY_RGB_LED_ACTIVE_LOW else 0),
+            ]
 
     def _configure_main_ram(
         self,

@@ -13,12 +13,15 @@
 #define STAGE0_SDRAM_TEST_WORDS 8U
 #define STAGE0_LOAD_PROGRESS_MIN_STEP 0x00001000U
 #define STAGE0_LOAD_PROGRESS_MAX_STEP 0x00040000U
+#define STAGE0_TRANSFER_BUFFER_SIZE 4096U
 #define SD_BLOCK_SIZE 512U
 #define FAT32_EOC_MIN 0x0FFFFFF8UL
 #define FAT32_ATTR_LONG_NAME 0x0FUL
 #define FAT32_ATTR_DIRECTORY 0x10U
 #define FAT32_ATTR_VOLUME 0x08U
 #define FAT32_INVALID_CACHE_LBA 0xFFFFFFFFU
+#define STAGE0_BOOT_CHECKSUM_MAGIC 0x4C36434BU
+#define STAGE0_BOOT_CHECKSUM_VERSION 1U
 #define EM_LITTLE64 0x4C36U
 #define PT_LOAD 1U
 
@@ -38,7 +41,7 @@
 #define SDCARD_SPI_R1_ILLEGAL_COMMAND 0x04U
 #define SDCARD_SPI_DATA_TOKEN_START_BLOCK 0xFEU
 #define SDCARD_SPI_INIT_CLK_HZ 400000U
-#define SDCARD_SPI_POST_INIT_CLK_HZ 10000000U
+#define SDCARD_SPI_POST_INIT_CLK_HZ 15000000U
 #define SDCARD_SPI_DEBUG_TRANSFER_BUDGET 4U
 #define SDCARD_SPI_DEBUG_TIMEOUT_PROGRESS 25000U
 #define SDCARD_SPI_CONTROL_START 0x00000001U
@@ -88,6 +91,17 @@ typedef struct Stage0Progress {
     u32 report_step;
 } Stage0Progress;
 
+typedef struct Stage0BootChecksums {
+    u32 magic;
+    u32 version;
+    u32 kernel_image_crc32;
+    u32 kernel_image_size;
+    u32 dtb_crc32;
+    u32 dtb_size;
+    u32 reserved0;
+    u32 reserved1;
+} Stage0BootChecksums;
+
 static volatile u8* const liteuart_rxtx = (volatile u8*)L64_UART_RXTX_ADDR;
 static volatile u32* const liteuart_txfull = (volatile u32*)L64_UART_TXFULL_ADDR;
 #if defined(L64_UART_EV_PENDING_ADDR)
@@ -132,7 +146,15 @@ static Stage0Fat32Volume fat32_volume;
 static u32 fat32_cached_fat_sector_lba = FAT32_INVALID_CACHE_LBA;
 static u8 fat32_cached_fat_sector[SD_BLOCK_SIZE];
 static u8 sector_buffer[SD_BLOCK_SIZE];
+static u8 transfer_buffer[STAGE0_TRANSFER_BUFFER_SIZE];
 static u8 elf_header_scratch[ELF_HEADER_SCRATCH_SIZE];
+
+static const u32 crc32_nibble_table[16] = {
+    0x00000000U, 0x1DB71064U, 0x3B6E20C8U, 0x26D930ACU,
+    0x76DC4190U, 0x6B6B51F4U, 0x4DB26158U, 0x5005713CU,
+    0xEDB88320U, 0xF00F9344U, 0xD6D6A3E8U, 0xCB61B38CU,
+    0x9B64C2B0U, 0x86D3D2D4U, 0xA00AE278U, 0xBDBDF21CU,
+};
 
 s64 __muldi3(s64 a, s64 b) {
     int negate = 0;
@@ -229,6 +251,11 @@ static void serial_put_labeled_hex64(const char* label, u64 value) {
 static void serial_put_labeled_hex32(const char* label, u32 value) {
     serial_puts(label);
     serial_put_hex_u32(value);
+}
+
+static int image_window_fits_ram(u64 physical_base, u64 image_span) {
+    return physical_base >= L64_RAM_BASE &&
+           physical_base + image_span <= L64_RAM_BASE + L64_RAM_SIZE;
 }
 
 __attribute__((noreturn))
@@ -352,6 +379,47 @@ static u64 align_up_u64(u64 value, u64 alignment) {
     return (value + alignment - 1ULL) & ~(alignment - 1ULL);
 }
 
+static u32 crc32_initialize(void) {
+    return 0xFFFFFFFFU;
+}
+
+static u32 crc32_finalize(u32 crc) {
+    return crc ^ 0xFFFFFFFFU;
+}
+
+static u32 crc32_update_bytes(u32 crc, const u8* data, u32 size) {
+    while (size != 0U) {
+        crc ^= *data;
+        crc = crc32_nibble_table[crc & 0x0FU] ^ (crc >> 4U);
+        crc = crc32_nibble_table[crc & 0x0FU] ^ (crc >> 4U);
+        ++data;
+        --size;
+    }
+    return crc;
+}
+
+static u32 crc32_update_zeros(u32 crc, u32 size) {
+    while (size != 0U) {
+        crc = crc32_nibble_table[crc & 0x0FU] ^ (crc >> 4U);
+        crc = crc32_nibble_table[crc & 0x0FU] ^ (crc >> 4U);
+        --size;
+    }
+    return crc;
+}
+
+static u32 crc32_update_physical(u32 crc, u64 source, u32 size) {
+    const volatile u8* data = (const volatile u8*)source;
+    while (size != 0U) {
+        u8 value = *data;
+        crc ^= value;
+        crc = crc32_nibble_table[crc & 0x0FU] ^ (crc >> 4U);
+        crc = crc32_nibble_table[crc & 0x0FU] ^ (crc >> 4U);
+        ++data;
+        --size;
+    }
+    return crc;
+}
+
 static void copy_to_physical(u64 destination, const u8* source, u32 size) {
     volatile u8* dst = (volatile u8*)destination;
     u32 index = 0U;
@@ -459,6 +527,14 @@ static void stage0_progress_advance(Stage0Progress* progress, u32 amount) {
 }
 
 #if defined(L64_SDCARD_INTERFACE_NATIVE)
+static void sdcard_ack_cmd_event(u32 event) {
+    *sdcard_core_cmd_event = event;
+}
+
+static void sdcard_ack_data_event(u32 event) {
+    *sdcard_core_data_event = event;
+}
+
 static void sdcard_set_clk_freq(u32 clk_freq) {
     u32 divider = clk_freq != 0U ? ((u32)L64_SYS_CLK_FREQ / clk_freq) : 256U;
     divider = pow2_round_up(divider);
@@ -480,6 +556,7 @@ static u32 sdcard_wait_cmd_done(void) {
     while (timeout != 0U) {
         u32 event = *sdcard_core_cmd_event;
         if ((event & 0x1U) != 0U) {
+            sdcard_ack_cmd_event(event);
             if ((event & 0x4U) != 0U) {
                 return SD_TIMEOUT;
             }
@@ -499,6 +576,7 @@ static u32 sdcard_wait_data_done(void) {
     while (timeout != 0U) {
         u32 event = *sdcard_core_data_event;
         if ((event & 0x1U) != 0U) {
+            sdcard_ack_data_event(event);
             if ((event & 0x4U) != 0U) {
                 return SD_TIMEOUT;
             }
@@ -514,6 +592,8 @@ static u32 sdcard_wait_data_done(void) {
 }
 
 static u32 sdcard_send_command(u32 argument, u32 cmd, u32 response_type, u32 data_type) {
+    sdcard_ack_cmd_event(0xFU);
+    sdcard_ack_data_event(0xFU);
     *sdcard_core_cmd_argument = argument;
     *sdcard_core_cmd_command = (data_type << 5U) | (1U << 2U) | response_type | (cmd << 8U);
     *sdcard_core_cmd_send = 1U;
@@ -1157,6 +1237,8 @@ static int directory_name_matches(const u8* entry, const char* short_name_11) {
     return 1;
 }
 
+static void read_file_range_to_buffer(const Stage0FileInfo* file, u32 file_offset, u8* destination, u32 size);
+
 static void locate_root_file_or_fail(const char* short_name_11, Stage0FileInfo* out_file) {
     u32 cluster = fat32_volume.root_cluster;
 
@@ -1192,6 +1274,29 @@ static void locate_root_file_or_fail(const char* short_name_11, Stage0FileInfo* 
     }
 
     fail_hard("FAT32 root directory chain terminated unexpectedly");
+}
+
+static void load_boot_checksums_or_fail(const Stage0FileInfo* file, Stage0BootChecksums* out_checksums) {
+    if (file->size < 32U) {
+        fail_hard("BOOT.CRC is too small");
+    }
+
+    read_file_range_to_buffer(file, 0U, elf_header_scratch, 32U);
+    out_checksums->magic = read_le32(&elf_header_scratch[0]);
+    out_checksums->version = read_le32(&elf_header_scratch[4]);
+    out_checksums->kernel_image_crc32 = read_le32(&elf_header_scratch[8]);
+    out_checksums->kernel_image_size = read_le32(&elf_header_scratch[12]);
+    out_checksums->dtb_crc32 = read_le32(&elf_header_scratch[16]);
+    out_checksums->dtb_size = read_le32(&elf_header_scratch[20]);
+    out_checksums->reserved0 = read_le32(&elf_header_scratch[24]);
+    out_checksums->reserved1 = read_le32(&elf_header_scratch[28]);
+
+    if (out_checksums->magic != STAGE0_BOOT_CHECKSUM_MAGIC) {
+        fail_hard_hex64("BOOT.CRC magic mismatch", out_checksums->magic);
+    }
+    if (out_checksums->version != STAGE0_BOOT_CHECKSUM_VERSION) {
+        fail_hard_hex64("BOOT.CRC version mismatch", out_checksums->version);
+    }
 }
 
 static void read_file_range_to_buffer(const Stage0FileInfo* file, u32 file_offset, u8* destination, u32 size) {
@@ -1256,7 +1361,7 @@ static void read_file_range_to_buffer(const Stage0FileInfo* file, u32 file_offse
     }
 }
 
-static void read_file_range_to_physical(const Stage0FileInfo* file, u32 file_offset, u64 destination, u32 size, Stage0Progress* progress) {
+static void read_file_range_to_physical(const Stage0FileInfo* file, u32 file_offset, u64 destination, u32 size, Stage0Progress* progress, u32* crc32) {
     u32 cluster_skip = file_offset >> 9U;
     u32 cluster_offset = file_offset & (SD_BLOCK_SIZE - 1U);
     u32 cluster = file->first_cluster;
@@ -1274,18 +1379,37 @@ static void read_file_range_to_physical(const Stage0FileInfo* file, u32 file_off
             u32 next_cluster = FAT32_EOC_MIN;
             u32 full_sector_count = size >> 9U;
             u32 run_sectors = fat32_count_contiguous_sectors(cluster, full_sector_count, &next_cluster);
-            u32 run_bytes = run_sectors * SD_BLOCK_SIZE;
+            u32 max_batch_sectors = STAGE0_TRANSFER_BUFFER_SIZE / SD_BLOCK_SIZE;
 
-            sdcard_read_blocks_contiguous(cluster_to_lba(cluster), (u8*)(unsigned long long)destination, run_sectors);
-            stage0_progress_advance(progress, run_bytes);
-            destination += run_bytes;
-            size -= run_bytes;
-            if (size == 0U) {
-                return;
-            }
-            cluster = next_cluster;
-            if (cluster >= FAT32_EOC_MIN) {
-                fail_hard("FAT32 physical read terminated early");
+            while (run_sectors != 0U) {
+                u32 batch_sectors = run_sectors;
+                u32 batch_bytes;
+                if (batch_sectors > max_batch_sectors) {
+                    batch_sectors = max_batch_sectors;
+                }
+                batch_bytes = batch_sectors * SD_BLOCK_SIZE;
+
+                sdcard_read_blocks_contiguous(cluster_to_lba(cluster), transfer_buffer, batch_sectors);
+                if (crc32 != (u32*)0) {
+                    *crc32 = crc32_update_bytes(*crc32, transfer_buffer, batch_bytes);
+                }
+                copy_to_physical(destination, transfer_buffer, batch_bytes);
+                stage0_progress_advance(progress, batch_bytes);
+
+                destination += batch_bytes;
+                size -= batch_bytes;
+                run_sectors -= batch_sectors;
+                if (run_sectors != 0U) {
+                    cluster += batch_sectors;
+                    continue;
+                }
+                if (size == 0U) {
+                    return;
+                }
+                cluster = next_cluster;
+                if (cluster >= FAT32_EOC_MIN) {
+                    fail_hard("FAT32 physical read terminated early");
+                }
             }
             continue;
         }
@@ -1296,12 +1420,11 @@ static void read_file_range_to_physical(const Stage0FileInfo* file, u32 file_off
         if (chunk_size > size) {
             chunk_size = size;
         }
-        if (sector_offset == 0U && chunk_size == SD_BLOCK_SIZE) {
-            sdcard_read_block(sector, (u8*)(unsigned long long)destination);
-        } else {
-            sdcard_read_block(sector, sector_buffer);
-            copy_to_physical(destination, &sector_buffer[sector_offset], chunk_size);
+        sdcard_read_block(sector, sector_buffer);
+        if (crc32 != (u32*)0) {
+            *crc32 = crc32_update_bytes(*crc32, &sector_buffer[sector_offset], chunk_size);
         }
+        copy_to_physical(destination, &sector_buffer[sector_offset], chunk_size);
         stage0_progress_advance(progress, chunk_size);
         destination += (u64)chunk_size;
         size -= chunk_size;
@@ -1329,9 +1452,13 @@ static void handoff_to_kernel(u64 dtb_physical, u64 stack_top, u64 entry_physica
     __builtin_unreachable();
 }
 
-static void load_kernel_and_handoff(const Stage0FileInfo* kernel_file, const Stage0FileInfo* dtb_file) {
+static void load_kernel_and_handoff(const Stage0FileInfo* kernel_file, const Stage0FileInfo* dtb_file, const Stage0BootChecksums* checksums) {
     u32 phoff;
     u32 kernel_copy_size = 0U;
+    u32 kernel_load_crc = crc32_initialize();
+    u32 kernel_readback_crc;
+    u32 dtb_load_crc = crc32_initialize();
+    u32 dtb_readback_crc;
     u16 phentsize;
     u16 phnum;
     u16 machine;
@@ -1341,10 +1468,12 @@ static void load_kernel_and_handoff(const Stage0FileInfo* kernel_file, const Sta
     u64 virtual_base;
     u64 image_span;
     u64 entry_physical;
+    u64 load_physical_base;
     u64 kernel_end;
     u64 dtb_physical;
     u64 dtb_end;
     u64 boot_stack_top = L64_RAM_BASE + L64_RAM_SIZE - 8ULL;
+    u32 current_kernel_offset = 0U;
     Stage0Progress kernel_progress;
     Stage0Progress dtb_progress;
     u16 ph_index = 0U;
@@ -1404,7 +1533,17 @@ static void load_kernel_and_handoff(const Stage0FileInfo* kernel_file, const Sta
 
     virtual_base = min_vaddr & ~(PAGE_SIZE - 1ULL);
     image_span = align_up_u64(max_vaddr - virtual_base, PAGE_SIZE);
-    if (virtual_base <= entry && entry < virtual_base + image_span) {
+    load_physical_base = L64_KERNEL_PHYSICAL_BASE;
+    serial_puts("stage0: elf image window");
+    serial_put_labeled_hex64(" vbase=", virtual_base);
+    serial_put_labeled_hex64(" entry=", entry);
+    serial_put_labeled_hex64(" span=", image_span);
+    serial_putc('\n');
+    if (image_window_fits_ram(virtual_base, image_span) &&
+        virtual_base <= entry && entry < virtual_base + image_span) {
+        load_physical_base = virtual_base;
+        entry_physical = entry;
+    } else if (virtual_base <= entry && entry < virtual_base + image_span) {
         entry_physical = L64_KERNEL_PHYSICAL_BASE + (entry - virtual_base);
     } else if (L64_KERNEL_PHYSICAL_BASE <= entry && entry < L64_KERNEL_PHYSICAL_BASE + image_span) {
         entry_physical = entry;
@@ -1412,24 +1551,31 @@ static void load_kernel_and_handoff(const Stage0FileInfo* kernel_file, const Sta
         fail_hard("VMLINUX entry lies outside the loadable image window");
     }
 
-    kernel_end = L64_KERNEL_PHYSICAL_BASE + image_span;
-    dtb_physical = L64_KERNEL_PHYSICAL_BASE + align_up_u64(image_span + EARLY_PT_SCRATCH_PAGES * PAGE_SIZE, PAGE_SIZE);
+    kernel_end = load_physical_base + image_span;
+    dtb_physical = load_physical_base + align_up_u64(image_span + EARLY_PT_SCRATCH_PAGES * PAGE_SIZE, PAGE_SIZE);
     dtb_end = dtb_physical + dtb_file->size;
-    if (L64_KERNEL_PHYSICAL_BASE < L64_RAM_BASE || kernel_end > L64_RAM_BASE + L64_RAM_SIZE || dtb_end > L64_RAM_BASE + L64_RAM_SIZE) {
+    if (!image_window_fits_ram(load_physical_base, image_span) || dtb_end > L64_RAM_BASE + L64_RAM_SIZE) {
         fail_hard("kernel image or DTB does not fit in RAM");
     }
     if (boot_stack_top <= dtb_end) {
         fail_hard("kernel boot stack overlaps DTB");
     }
+    if (checksums->kernel_image_size != image_span) {
+        fail_hard_hex64("BOOT.CRC kernel image size mismatch", checksums->kernel_image_size);
+    }
+    if (checksums->dtb_size != dtb_file->size) {
+        fail_hard_hex64("BOOT.CRC DTB size mismatch", checksums->dtb_size);
+    }
 
     serial_puts("stage0: loading VMLINUX");
-    serial_put_labeled_hex64(" phys=", L64_KERNEL_PHYSICAL_BASE);
+    serial_put_labeled_hex64(" phys=", load_physical_base);
     serial_put_labeled_hex64(" entry=", entry_physical);
     serial_put_labeled_hex64(" span=", image_span);
     serial_put_labeled_hex32(" copy_bytes=", kernel_copy_size);
     serial_putc('\n');
 
     stage0_progress_initialize(&kernel_progress, "VMLINUX", kernel_copy_size);
+    zero_to_physical(load_physical_base, image_span);
 
     ph_index = 0U;
     while (ph_index < phnum) {
@@ -1440,13 +1586,31 @@ static void load_kernel_and_handoff(const Stage0FileInfo* kernel_file, const Sta
         u64 p_filesz = read_le64(&ph[32]);
         u64 p_memsz = read_le64(&ph[40]);
         if (p_type == PT_LOAD) {
-            u64 destination = L64_KERNEL_PHYSICAL_BASE + (p_vaddr - virtual_base);
-            read_file_range_to_physical(kernel_file, (u32)p_offset, destination, (u32)p_filesz, &kernel_progress);
+            u64 destination = load_physical_base + (p_vaddr - virtual_base);
+            u32 segment_offset = (u32)(destination - load_physical_base);
+            if (segment_offset > current_kernel_offset) {
+                kernel_load_crc = crc32_update_zeros(kernel_load_crc, segment_offset - current_kernel_offset);
+                current_kernel_offset = segment_offset;
+            }
+            read_file_range_to_physical(kernel_file, (u32)p_offset, destination, (u32)p_filesz, &kernel_progress, &kernel_load_crc);
+            current_kernel_offset += (u32)p_filesz;
             if (p_memsz > p_filesz) {
-                zero_to_physical(destination + p_filesz, p_memsz - p_filesz);
+                kernel_load_crc = crc32_update_zeros(kernel_load_crc, (u32)(p_memsz - p_filesz));
+                current_kernel_offset += (u32)(p_memsz - p_filesz);
             }
         }
         ++ph_index;
+    }
+    if (current_kernel_offset < image_span) {
+        kernel_load_crc = crc32_update_zeros(kernel_load_crc, (u32)(image_span - current_kernel_offset));
+    }
+    kernel_load_crc = crc32_finalize(kernel_load_crc);
+    if (kernel_load_crc != checksums->kernel_image_crc32) {
+        serial_puts("stage0: kernel load crc mismatch");
+        serial_put_labeled_hex32(" expected=", checksums->kernel_image_crc32);
+        serial_put_labeled_hex32(" observed=", kernel_load_crc);
+        serial_putc('\n');
+        fail_hard("kernel load verification failed");
     }
 
     serial_puts("stage0: loading BOOT.DTB");
@@ -1455,7 +1619,39 @@ static void load_kernel_and_handoff(const Stage0FileInfo* kernel_file, const Sta
     serial_putc('\n');
 
     stage0_progress_initialize(&dtb_progress, "BOOT.DTB", dtb_file->size);
-    read_file_range_to_physical(dtb_file, 0U, dtb_physical, dtb_file->size, &dtb_progress);
+    read_file_range_to_physical(dtb_file, 0U, dtb_physical, dtb_file->size, &dtb_progress, &dtb_load_crc);
+    dtb_load_crc = crc32_finalize(dtb_load_crc);
+    if (dtb_load_crc != checksums->dtb_crc32) {
+        serial_puts("stage0: dtb load crc mismatch");
+        serial_put_labeled_hex32(" expected=", checksums->dtb_crc32);
+        serial_put_labeled_hex32(" observed=", dtb_load_crc);
+        serial_putc('\n');
+        fail_hard("dtb load verification failed");
+    }
+
+    serial_puts("stage0: verifying kernel image in ram");
+    serial_put_labeled_hex32(" bytes=", (u32)image_span);
+    serial_putc('\n');
+    kernel_readback_crc = crc32_finalize(crc32_update_physical(crc32_initialize(), load_physical_base, (u32)image_span));
+    if (kernel_readback_crc != checksums->kernel_image_crc32) {
+        serial_puts("stage0: kernel ram crc mismatch");
+        serial_put_labeled_hex32(" expected=", checksums->kernel_image_crc32);
+        serial_put_labeled_hex32(" observed=", kernel_readback_crc);
+        serial_putc('\n');
+        fail_hard("kernel ram verification failed");
+    }
+
+    serial_puts("stage0: verifying dtb in ram");
+    serial_put_labeled_hex32(" bytes=", dtb_file->size);
+    serial_putc('\n');
+    dtb_readback_crc = crc32_finalize(crc32_update_physical(crc32_initialize(), dtb_physical, dtb_file->size));
+    if (dtb_readback_crc != checksums->dtb_crc32) {
+        serial_puts("stage0: dtb ram crc mismatch");
+        serial_put_labeled_hex32(" expected=", checksums->dtb_crc32);
+        serial_put_labeled_hex32(" observed=", dtb_readback_crc);
+        serial_putc('\n');
+        fail_hard("dtb ram verification failed");
+    }
 
     serial_puts("stage0: handing off to kernel");
     serial_put_labeled_hex64(" entry=", entry_physical);
@@ -1469,6 +1665,8 @@ __attribute__((used, noinline))
 static void litex_soc_boot_entry(void) {
     Stage0FileInfo kernel_file;
     Stage0FileInfo dtb_file;
+    Stage0FileInfo checksums_file;
+    Stage0BootChecksums checksums;
 
     liteuart_initialize();
     serial_puts("stage0: entered from internal bootrom\n");
@@ -1481,12 +1679,14 @@ static void litex_soc_boot_entry(void) {
 
     locate_root_file_or_fail("VMLINUX    ", &kernel_file);
     locate_root_file_or_fail("BOOT    DTB", &dtb_file);
+    locate_root_file_or_fail("BOOT    CRC", &checksums_file);
+    load_boot_checksums_or_fail(&checksums_file, &checksums);
     serial_puts("stage0: located boot files");
     serial_put_labeled_hex32(" kernel_size=", kernel_file.size);
     serial_put_labeled_hex32(" dtb_size=", dtb_file.size);
     serial_putc('\n');
 
-    load_kernel_and_handoff(&kernel_file, &dtb_file);
+    load_kernel_and_handoff(&kernel_file, &dtb_file, &checksums);
 }
 
 __attribute__((naked, section(".text.boot")))

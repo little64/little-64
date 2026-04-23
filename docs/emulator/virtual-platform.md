@@ -9,6 +9,12 @@ for explicit manual emulator modes.
 The canonical `little64 boot run` and direct-loader Linux path
 use the LiteX SD-capable layout below.
 
+These CSR locations are intentionally fixed for the canonical Little64 LiteX
+helper contract. The native LiteX SoC reserves the matching CSR slots in
+`hdl/little64_cores/litex_soc.py`, and the generated DTS/stage-0 artifacts plus
+the emulator's `--machine=litex` bootrom-first path are expected to stay in
+sync with this table unless the project intentionally changes the contract.
+
 | Region | Base | Size | Meaning |
 |---|---|---|---|
 | Boot ROM | `0x00000000` | `0x00008000` | integrated boot ROM window |
@@ -51,9 +57,14 @@ is attached.
 | LiteUART | `0xF0001000` | `0x100` | LiteX LiteUART-compatible CSR subset |
 | Timer | `0x08001000` | `0x20` | dual-mode timer |
 
-Attaching an SD image to either manual LiteX mode enables the LiteSDCard CSR
-windows and moves the LiteUART base to the SD-capable addresses used by the
-default machine map above.
+Attaching an SD image to the explicit manual `litex-bootrom` mode enables the
+LiteSDCard CSR windows and moves the LiteUART base to the canonical SD-capable
+address used by the default machine map above.
+
+Attaching an SD image to the explicit manual `litex-flash` mode is a separate
+legacy compatibility path. It still exposes LiteUART at `0xF0003800` rather
+than the canonical `0xF0004000`, so it should not be treated as the source of
+truth for the current bootrom-first Little64 LiteX helper contract.
 
 ## Device Tree Description
 

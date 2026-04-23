@@ -88,6 +88,14 @@ def kernel_path(
     return linux_build_dir(defconfig_name, repo=repo) / filename
 
 
+def boot_kernel_path(
+    defconfig_name: Optional[str] = None,
+    *,
+    repo: Optional[pathlib.Path] = None,
+) -> pathlib.Path:
+    return linux_build_dir(defconfig_name, repo=repo) / "arch" / "little64" / "boot" / "vmlinuz"
+
+
 def existing_kernel_path(
     defconfig_name: Optional[str] = None,
     *,
@@ -95,6 +103,21 @@ def existing_kernel_path(
 ) -> Optional[pathlib.Path]:
     candidates = [
         kernel_path(defconfig_name, unstripped=True, repo=repo),
+        kernel_path(defconfig_name, repo=repo),
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def existing_boot_kernel_path(
+    defconfig_name: Optional[str] = None,
+    *,
+    repo: Optional[pathlib.Path] = None,
+) -> Optional[pathlib.Path]:
+    candidates = [
+        boot_kernel_path(defconfig_name, repo=repo),
         kernel_path(defconfig_name, repo=repo),
     ]
     for candidate in candidates:

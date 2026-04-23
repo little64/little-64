@@ -11,7 +11,8 @@ from pathlib import Path
 from typing import Any, cast
 
 from little64.build_support import run_checked
-from little64.paths import repo_root
+from little64.commands.kernel.build import default_defconfig_for_machine
+from little64.paths import existing_boot_kernel_path, kernel_path, repo_root
 from little64.tooling_support import compile_dts_to_dtb
 from little64.vivado_support import run_vivado_batch, vivado_settings_script_from_env
 
@@ -36,7 +37,9 @@ from little64_cores.litex_soc import generate_linux_dts
 
 DEFAULT_OUTPUT_DIR = REPO_ROOT / 'builddir' / 'hdl-litex-arty'
 DEFAULT_BUILD_NAME = 'little64_arty_a7_35'
-DEFAULT_KERNEL_ELF = REPO_ROOT / 'target' / 'linux_port' / 'build-litex' / 'vmlinux'
+DEFAULT_KERNEL_ELF = existing_boot_kernel_path(default_defconfig_for_machine('litex'), repo=REPO_ROOT)
+if DEFAULT_KERNEL_ELF is None:
+    DEFAULT_KERNEL_ELF = kernel_path(default_defconfig_for_machine('litex'), repo=REPO_ROOT)
 DEFAULT_VIVADO_FLASH_PART = 's25fl128l-spi-x1_x2_x4'
 DEFAULT_SD_BOOTROM_SOURCE = Path('target/c_boot/litex_sd_boot.c')
 DEFAULT_SD_BOOTROM_LINKER = Path('target/c_boot/linker_litex_bootrom.ld')

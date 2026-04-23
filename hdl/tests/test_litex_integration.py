@@ -33,6 +33,9 @@ from little64_cores.litex_cpu import Little64, Little64WishboneDataBridge, ensur
 from little64_cores.litex_arty import Little64ArtySPISDCardMapping, arty_spi_sdcard_extension, resolve_arty_spi_sdcard_mapping
 from little64_cores.litex_arty import Little64LiteXArtySoC
 from little64_cores.litex_linux_boot import (
+    BOOT_CHECKSUM_MAGIC,
+    BOOT_CHECKSUM_STRUCT,
+    BOOT_CHECKSUM_VERSION,
     FLASH_BOOT_HEADER,
     build_litex_flash_image,
     build_litex_sd_card_image,
@@ -1212,6 +1215,27 @@ def test_arty_hardware_soc_can_select_basic_variant_explicitly(tmp_path) -> None
     assert soc.cpu.core_config.cache_topology == 'none'
 
 
+def test_arty_hardware_soc_wires_debug_leds(tmp_path) -> None:
+    mapping = resolve_arty_spi_sdcard_mapping(connector='arduino', adapter='digilent')
+    soc = Little64LiteXArtySoC(spisdcard_mapping=mapping)
+    soc.platform.output_dir = str(tmp_path / 'litex-arty-hw-leds')
+
+    soc.finalize()
+
+    assert len(soc.arty_user_led_pads) == 4
+    assert len(soc.arty_rgb_led_pads) == 4
+    assert hasattr(soc.arty_rgb_led_pads[0], 'r')
+    assert hasattr(soc.arty_rgb_led_pads[0], 'g')
+    assert hasattr(soc.arty_rgb_led_pads[0], 'b')
+    assert soc.arty_led_halted is not None
+    assert soc.arty_led_locked_up is not None
+    assert soc.arty_led_i_bus_activity is not None
+    assert soc.arty_led_d_bus_activity is not None
+    assert soc.arty_led_store_activity is not None
+    assert soc.arty_led_running_heartbeat is not None
+    assert soc.arty_led_irq_pending is not None
+
+
 def test_stage0_artifact_builder_emits_spi_sd_header_for_arty_hardware(tmp_path) -> None:
     mapping = resolve_arty_spi_sdcard_mapping(connector='arduino', adapter='digilent')
     soc = Little64LiteXArtySoC(spisdcard_mapping=mapping)
@@ -1278,12 +1302,13 @@ def test_stage0_artifact_builder_matches_emulator_bootrom_uart_layout_without_sp
         ram_base=target.main_ram_base,
         ram_size=target.default_ram_size,
         kernel_physical_base=target.main_ram_base,
+        emulator_bootrom_uart_layout=True,
     )
 
     regs_text = regs_header.read_text(encoding='utf-8')
 
     assert 'spiflash_core' not in soc.csr.regions
-    assert soc.csr.regions['uart'].origin == 0xF0003000
+    assert soc.csr.regions['uart'].origin == 0xF0004000
     assert '#define L64_UART_BASE 0x00000000f0004000ULL' in regs_text
 
 
@@ -1313,8 +1338,70 @@ def test_stage0_artifact_builder_keeps_spiflash_layout_when_boot_source_is_spifl
     regs_text = regs_header.read_text(encoding='utf-8')
 
     assert 'spiflash_core' in soc.csr.regions
-    assert soc.csr.regions['uart'].origin == 0xF0003800
-    assert '#define L64_UART_BASE 0x00000000f0003800ULL' in regs_text
+    assert soc.csr.regions['spiflash_core'].origin == 0xF0003800
+    assert soc.csr.regions['uart'].origin == 0xF0004000
+    assert '#define L64_UART_BASE 0x00000000f0004000ULL' in regs_text
+
+
+def test_stage0_artifact_builder_uses_raw_sim_uart_layout_by_default(tmp_path) -> None:
+    target = LITTLE64_LITEX_TARGET_CONFIGS['sim-bootrom']
+    soc = Little64LiteXSimSoC(
+        litex_target='sim-bootrom',
+        boot_source='bootrom',
+        integrated_main_ram_size=target.default_ram_size,
+        main_ram_size=target.default_ram_size,
+        with_sdcard=True,
+        with_spi_flash=target.with_spi_flash,
+        with_timer=True,
+        integrated_rom_init=[],
+    )
+    soc.platform.output_dir = str(tmp_path / 'litex-sim-bootrom-stage0-uart-raw')
+    soc.finalize()
+
+    regs_header = tmp_path / 'litex_sd_boot_regs.h'
+    _BUILD_SD_BOOT_ARTIFACTS._write_stage0_header(
+        regs_header,
+        soc=soc,
+        ram_base=target.main_ram_base,
+        ram_size=target.default_ram_size,
+        kernel_physical_base=target.main_ram_base,
+    )
+
+    regs_text = regs_header.read_text(encoding='utf-8')
+
+    assert soc.csr.regions['uart'].origin == 0xF0004000
+    assert '#define L64_UART_BASE 0x00000000f0004000ULL' in regs_text
+
+
+def test_litex_sim_soc_keeps_reserved_csr_layout_across_optional_features(tmp_path) -> None:
+    base_soc = Little64LiteXSimSoC(litex_target='sim-bootrom', with_sdcard=True)
+    base_soc.platform.output_dir = str(tmp_path / 'litex-sim-bootrom-base')
+    base_soc.finalize()
+
+    sdram_soc = Little64LiteXSimSoC(litex_target='sim-bootrom', with_sdcard=True, with_sdram=True)
+    sdram_soc.platform.output_dir = str(tmp_path / 'litex-sim-bootrom-sdram')
+    sdram_soc.finalize()
+
+    flash_soc = Little64LiteXSimSoC(litex_target='sim-bootrom', with_sdcard=True, with_spi_flash=True)
+    flash_soc.platform.output_dir = str(tmp_path / 'litex-sim-bootrom-flash')
+    flash_soc.finalize()
+
+    expected_sdcard_map = {
+        'sdcard_block2mem': 0xF0000800,
+        'sdcard_core': 0xF0001000,
+        'sdcard_irq': 0xF0001800,
+        'sdcard_mem2block': 0xF0002000,
+        'sdcard_phy': 0xF0002800,
+        'uart': 0xF0004000,
+    }
+
+    for name, origin in expected_sdcard_map.items():
+        assert base_soc.csr.regions[name].origin == origin
+        assert sdram_soc.csr.regions[name].origin == origin
+        assert flash_soc.csr.regions[name].origin == origin
+
+    assert sdram_soc.csr.regions['sdram'].origin == 0xF0003000
+    assert flash_soc.csr.regions['spiflash_core'].origin == 0xF0003800
 
 
 def test_stage0_artifact_builder_emits_sdram_init_headers_for_sim_bootrom_override(tmp_path) -> None:
@@ -1336,7 +1423,7 @@ def test_stage0_artifact_builder_emits_sdram_init_headers_for_sim_bootrom_overri
     sdram_text = (tmp_path / 'generated' / 'sdram_phy.h').read_text(encoding='utf-8')
 
     assert '#define L64_HAVE_SDRAM_INIT 1' in regs_text
-    assert '#define L64_UART_BASE 0x00000000f0004000ULL' in regs_text
+    assert f'#define L64_UART_BASE 0x{soc.csr.regions["uart"].origin:016x}ULL' in regs_text
     assert 'CSR_SDRAM_DFII_CONTROL_ADDR' in csr_text
     assert 'static inline void init_sequence(void)' in sdram_text
     assert soc.bus.regions['main_ram'].size == LITTLE64_LITEX_TARGET_CONFIGS['sim-bootrom'].default_ram_size
@@ -1360,13 +1447,13 @@ def test_litex_sim_soc_generates_linux_dts_with_sdcard(tmp_path) -> None:
 
     dts_text = generate_linux_dts(
         soc,
-        bootargs='console=liteuart earlycon=liteuart,0xf0003800 ignore_loglevel loglevel=8',
+        bootargs='console=liteuart earlycon=liteuart,0xf0004000 ignore_loglevel loglevel=8',
     )
 
     assert 'sdcard0 = &mmc0;' in dts_text
     assert 'sys_clk: clock {' in dts_text
     assert 'vreg_mmc: vreg_mmc {' in dts_text
-    assert 'uart0: serial@f0003800 {' in dts_text
+    assert 'uart0: serial@f0004000 {' in dts_text
     assert 'mmc0: mmc@f0002800 {' in dts_text
     assert 'compatible = "litex,mmc";' in dts_text
     assert 'reg-names = "phy", "core", "reader", "writer", "irq";' in dts_text
@@ -1564,7 +1651,7 @@ def test_sd_card_image_builder_matches_stage0_contract() -> None:
     sectors_per_cluster = boot_sector[13]
     first_data_sector = reserved_sectors + fat_count * fat_sectors
     root_dir_offset = boot_partition_offset + first_data_sector * 512
-    root_dir = disk[root_dir_offset:root_dir_offset + 96]
+    root_dir = disk[root_dir_offset:root_dir_offset + 128]
 
     assert disk[510:512] == b'\x55\xaa'
     assert disk[446 + 4] == 0x0C
@@ -1575,12 +1662,28 @@ def test_sd_card_image_builder_matches_stage0_contract() -> None:
     assert boot_sector[510:512] == b'\x55\xaa'
     assert root_dir[0:11] == b'VMLINUX    '
     assert root_dir[32:43] == b'BOOT    DTB'
+    assert root_dir[64:75] == b'BOOT    CRC'
     assert disk[root_partition_offset:root_partition_offset + len(rootfs)] == rootfs
     assert layout.kernel_file.short_name == b'VMLINUX    '
     assert layout.dtb_file.short_name == b'BOOT    DTB'
+    assert layout.checksums_file.short_name == b'BOOT    CRC'
     assert layout.kernel_file.size == len(kernel_payload)
     assert layout.dtb_file.size == len(dtb)
+    assert layout.checksums_file.size == BOOT_CHECKSUM_STRUCT.size
+    assert layout.checksums.dtb_size == len(dtb)
     assert layout.disk_size_bytes == len(disk)
+
+    checksums_offset = boot_partition_offset + first_data_sector * 512 + (layout.checksums_file.first_cluster - 2) * 512
+    manifest = disk[checksums_offset:checksums_offset + BOOT_CHECKSUM_STRUCT.size]
+    magic, version, kernel_image_crc32, kernel_image_size, dtb_crc32, dtb_size, _, _ = BOOT_CHECKSUM_STRUCT.unpack(manifest)
+    expected_kernel_image = flatten_little64_linux_elf_image(kernel_payload)
+
+    assert magic == BOOT_CHECKSUM_MAGIC
+    assert version == BOOT_CHECKSUM_VERSION
+    assert kernel_image_crc32 == layout.checksums.kernel_image_crc32
+    assert kernel_image_size == len(expected_kernel_image.image)
+    assert dtb_crc32 == layout.checksums.dtb_crc32
+    assert dtb_size == len(dtb)
 
 
 def test_sd_card_image_builder_does_not_slice_payload_remainders() -> None:

@@ -170,13 +170,19 @@ Without an attached `--disk`, the loader:
 5. starts execution at flash base with paging disabled.
 
 With an attached `--disk`, the same boot mode switches to the SD-capable LiteX
-layout used by the current LiteX simulation SoC:
+compatibility layout used by the legacy explicit flash path:
 
 1. the flash ROM window remains at `0x20000000`,
 2. LiteSDCard CSRs are exposed starting at `0xF0000800`,
-3. LiteUART moves to `0xF0004000`,
+3. LiteUART moves to `0xF0003800`,
 4. the timer stays at `0x08001000`,
 5. stage-0 still starts from SPI flash and then loads `VMLINUX` and `BOOT.DTB` from the SD image.
+
+This explicit `litex-flash --disk` mode is no longer the canonical Little64
+LiteX helper contract. The default `little64 boot run --machine=litex` and the
+native LiteX SoC use the bootrom-first fixed-CSR map instead, where the
+SD-capable LiteUART window lives at `0xF0004000` and the optional LiteSPI flash
+CSR bank occupies `0xF0003800` when present.
 
 ### Entry register contract
 

@@ -280,6 +280,7 @@ def _write_stage0_header(
     ram_base: int,
     ram_size: int,
     kernel_physical_base: int,
+    emulator_bootrom_uart_layout: bool = False,
 ) -> None:
     if not soc.finalized:
         soc.finalize()
@@ -301,7 +302,7 @@ def _write_stage0_header(
         raise ValueError('stage-0 header generation expects either native SDCard CSRs or SPI SDCard CSRs, not both')
 
     uart_base = uart_region.origin
-    if has_native_sd and soc.boot_source == 'bootrom':
+    if emulator_bootrom_uart_layout and has_native_sd and soc.boot_source == 'bootrom':
         uart_base = LITEX_BOOTROM_SD_UART_BASE
 
     sdcard_lines: list[str]
@@ -530,6 +531,7 @@ def build_litex_sd_boot_artifacts(
     stage0_linker: Path = Path('target/c_boot/linker_litex_bootrom.ld'),
     sd_card_size_bytes: int = DEFAULT_SD_CARD_SIZE_BYTES,
     boot_partition_size_mb: int = DEFAULT_SD_BOOT_PARTITION_SIZE_MB,
+    emulator_bootrom_uart_layout: bool = False,
 ) -> bytes:
     image_output = bootrom_output.resolve()
     sd_output = sd_output.resolve()
@@ -543,6 +545,7 @@ def build_litex_sd_boot_artifacts(
         ram_base=ram_base,
         ram_size=ram_size,
         kernel_physical_base=kernel_physical_base,
+        emulator_bootrom_uart_layout=emulator_bootrom_uart_layout,
     )
     _write_stage0_generated_support(work_dir, soc=soc)
 
@@ -686,6 +689,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help='Total raw SD card image size in bytes. Defaults to 4 GiB.')
     parser.add_argument('--boot-partition-size-mb', type=int, default=DEFAULT_SD_BOOT_PARTITION_SIZE_MB,
         help='FAT32 boot partition size in MiB. Defaults to 256.')
+    parser.add_argument('--emulator-bootrom-uart-layout', action='store_true',
+        help='Force the emulator-specific bootrom UART base override instead of the raw LiteX CSR UART base.')
     return parser.parse_args(argv)
 
 
@@ -793,6 +798,7 @@ def main(argv: list[str] | None = None) -> int:
         stage0_linker=stage0_linker,
         sd_card_size_bytes=args.sd_card_size_bytes,
         boot_partition_size_mb=args.boot_partition_size_mb,
+        emulator_bootrom_uart_layout=(args.emulator_bootrom_uart_layout or machine_mode),
     )
     return 0
 

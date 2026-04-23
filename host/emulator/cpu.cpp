@@ -128,6 +128,10 @@ constexpr uint64_t LITEX_FLASH_BASE = 0x20000000ULL;
 constexpr uint64_t LITEX_FLASH_WINDOW_SIZE = 0x01000000ULL;
 constexpr uint64_t LITEX_SRAM_BASE = 0x10000000ULL;
 constexpr uint64_t LITEX_SRAM_SIZE = 0x00004000ULL;
+// Keep the canonical bootrom-first Little64 LiteX helper contract in sync with
+// hdl/little64_cores/litex_soc.py and the generated DTS/stage-0 artifacts.
+// The explicit manual litex-flash + --disk compatibility path below is the one
+// intentional exception: it still uses the legacy LiteUART slot at 0xF0003800.
 constexpr uint64_t LITEX_SDCARD_BASE = 0xF0000800ULL;
 constexpr uint64_t LITEX_UART_BASE = 0xF0001000ULL;
 constexpr uint64_t LITEX_SDRAM_CSR_BASE = 0xF0003000ULL;

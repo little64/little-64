@@ -121,13 +121,14 @@ The Linux bring-up flow lives under `target/linux_port/` and is intentionally ou
 Typical direct-boot flow with the LiteX SD-capable machine:
 
 ```bash
-./.venv/bin/little64 kernel build vmlinux -j1
+./.venv/bin/little64 kernel build vmlinuz -j1
 little64 rootfs build
 little64 boot run
 ```
 
 The default direct-boot rootfs image is `target/linux_port/rootfs/build/rootfs.ext4`.
 For the LiteX machine, `little64 boot run` regenerates a minimal ext4 SD rootfs from `target/linux_port/rootfs/init.S` unless you override it with `--rootfs PATH` or disable it with `--no-rootfs`.
+The boot helper prefers `target/linux_port/build-litex/arch/little64/boot/vmlinuz` when it exists and falls back to `target/linux_port/build-litex/vmlinux`; symbol-oriented helpers still use `vmlinux`.
 Use `little64 boot run --no-rootfs` to boot the selected machine profile without attaching a rootfs image.
 Use `little64 boot run --mode=smoke` for the lower-overhead no-event-capture smoke path.
 Use `little64 boot run --mode=rsp` to launch the direct-boot RSP debug server.
@@ -157,18 +158,19 @@ The current flow is:
 ./.venv/bin/little64 hdl wrappers-llvm --output-dir builddir/litex-toolchain
 ./.venv/bin/little64 hdl dts-linux --output builddir/little64-litex.dts --with-spi-flash
 ./.venv/bin/little64 hdl flash-image --kernel-elf target/linux_port/build-litex/vmlinux --dtb builddir/hdl-verilator-linux-boot/little64-litex-sim.dtb --output builddir/little64-linux-spiflash.bin
-./.venv/bin/little64 sd build --kernel-elf target/linux_port/build-litex/vmlinux --dtb builddir/hdl-verilator-linux-boot/little64-litex-sim.dtb --flash-output builddir/little64-sd-stage0-spiflash.bin --sd-output builddir/little64-linux-sdcard.img
+./.venv/bin/little64 sd build --kernel-elf target/linux_port/build-litex/arch/little64/boot/vmlinuz --dtb builddir/hdl-verilator-linux-boot/little64-litex-sim.dtb --flash-output builddir/little64-sd-stage0-spiflash.bin --sd-output builddir/little64-linux-sdcard.img
 ```
 
 For a LiteX-native simulation run, use:
 
 ```bash
-./.venv/bin/little64 kernel build vmlinux -j1
+./.venv/bin/little64 kernel build vmlinuz -j1
 ./.venv/bin/little64 hdl sim-litex
 ```
 
 This path uses LiteX's own simulation builder and `SimPlatform` plumbing rather than the repo-local custom Linux-on-Verilator harness.
 It also requires the host development headers for `json-c` and `libevent` in addition to the Python packages from `requirements-hdl.txt`.
+`little64 hdl sim-litex` now prefers `target/linux_port/build-litex/arch/little64/boot/vmlinuz` when it exists and falls back to `target/linux_port/build-litex/vmlinux`.
 
 The generated flash image contains a dedicated stage-0 entry at
 `target/c_boot/litex_spi_boot.c` that establishes a temporary low-RAM stack,
@@ -182,6 +184,24 @@ This resolves the default LiteX kernel from `target/linux_port/build-litex/`, ge
 Explicit mode:
 pass `--kernel-elf`, `--dtb`, and explicit output paths when you need full control over the inputs or want to build a non-default target shape.
 Both modes regenerate the minimal ext4 rootfs from `target/linux_port/rootfs/init.S` unless `--no-rootfs` or `--rootfs-image PATH` is used.
+
+For the canonical Little64 LiteX helper flows (`little64 boot run`, `little64 sd build --machine litex`, and `little64 hdl sim-litex --with-sdcard`), the CSR window layout is now intentionally fixed rather than add-order-dependent:
+
+- LiteSDCard reader `0xF0000800`
+- LiteSDCard core `0xF0001000`
+- LiteSDCard IRQ `0xF0001800`
+- LiteSDCard writer `0xF0002000`
+- LiteSDCard PHY `0xF0002800`
+- LiteDRAM DFII / SDRAM CSR `0xF0003000`
+- LiteSPI flash CSR `0xF0003800` when present
+- LiteUART `0xF0004000`
+
+That fixed map is the contract shared by the native LiteX SoC, the generated DTS,
+the stage-0 SD boot headers, and the emulator's default `--machine=litex`
+bootrom-first flow. The older explicit manual emulator mode
+`--boot-mode=litex-flash --disk` remains a separate compatibility path and still
+uses its legacy flash-layout UART slot at `0xF0003800`; do not treat that
+manual mode as the source of truth for the canonical LiteX helper contract.
 
 The Linux tree still carries two separate built-in machine profiles:
 

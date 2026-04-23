@@ -178,7 +178,7 @@ def run(argv: List[str]) -> int:
         return 1
 
     python_bin = resolve_python_bin(root)
-    _ensure_litex_python_env(python_bin)
+    ensure_litex_python_env(python_bin)
 
     profile = resolve_litex_machine_profile(root=root, machine=args.machine)
     output_dir = profile.output_dir

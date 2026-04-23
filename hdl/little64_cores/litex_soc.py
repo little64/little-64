@@ -40,6 +40,15 @@ from .litex_sdcard import Little64SDCardImageBridge, Little64SDEmulator
 
 _anonymous_csr_names = count()
 LITTLE64_SPI_SDCARD_DATA_WIDTH = 32
+LITTLE64_LITEX_RESERVED_CSR_MAP = {
+    'sdcard_block2mem': 1,
+    'sdcard_core': 2,
+    'sdcard_irq': 3,
+    'sdcard_mem2block': 4,
+    'sdcard_phy': 5,
+    'sdram': 6,
+    'uart': 8,
+}
 
 
 def _py311_get_var_name(frame) -> str | None:
@@ -323,6 +332,7 @@ class Little64LiteXSoC(SoCCore):
         )
 
         platform.little64_mem_map = litex_mem_map_for_target(self.litex_target, boot_source=self.boot_source)
+        self.csr_map = dict(LITTLE64_LITEX_RESERVED_CSR_MAP)
         self.sys_clk_freq = int(sys_clk_freq)
         integrated_rom_init = [] if integrated_rom_init is None else integrated_rom_init
         kwargs.setdefault('uart_with_dynamic_baudrate', True)

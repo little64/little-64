@@ -215,6 +215,9 @@ static void spisdcard_process_command(struct session_s *s)
   case 12:
     s->multiblock_active = 0;
     s->pending_multiblock_poll = 0;
+    s->tx_head = s->tx_tail;
+    s->tx_loaded = 0;
+    s->tx_bit_index = 0;
     spisdcard_queue_byte(s, 0xFFU);
     spisdcard_queue_r1(s, 0x00U);
     break;

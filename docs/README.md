@@ -55,6 +55,7 @@ Alternative entry points:
 - Canonical direct-boot helper: `little64 boot run`
 	- The helper targets the LiteX machine profile only, and default mode is `smoke`.
 	- `--machine=litex` builds a matching LiteX DTB, bootrom stage-0 image, and SD card image, then boots the LiteX kernel profile through the emulator's `litex-bootrom` flow.
+	- The canonical Little64 LiteX helper contract now keeps the SD-capable CSR windows fixed at `sdcard_block2mem=0xF0000800`, `sdcard_core=0xF0001000`, `sdcard_irq=0xF0001800`, `sdcard_mem2block=0xF0002000`, `sdcard_phy=0xF0002800`, `sdram=0xF0003000`, optional `spiflash_core=0xF0003800`, and `uart=0xF0004000`.
 	- The default LiteX path also regenerates a minimal ext4 rootfs from `target/linux_port/rootfs/init.S` for SD partition 2 unless `--rootfs PATH` or `--no-rootfs` overrides it.
 	- The LiteX machine path also verifies that the selected kernel's adjacent `.config` enables `CONFIG_MMC_LITEX=y`, FAT/MSDOS boot-partition support, and `CONFIG_EXT4_FS=y` for the SD rootfs path, unless `LITTLE64_SKIP_LITEX_KERNEL_CONFIG_CHECK=1` is set.
 	- Use `--mode=smoke` for the faster no-event-capture smoke path.
@@ -71,6 +72,9 @@ Alternative entry points:
 - SD boot artifact builder used by LiteX smoke and emulator LiteX boots: `./.venv/bin/little64 sd build`
 	- `--machine litex --output-dir PATH` resolves the default LiteX kernel, generates DTS/DTB internally, and writes machine-matched stage-0 plus SD artifacts into `PATH`.
 	- Explicit `--kernel-elf` + `--dtb` inputs remain supported for low-level artifact builds.
+	- Raw LiteX-targeted builds now keep the stage-0 UART base aligned with the generated LiteX CSR map by default; pass `--emulator-bootrom-uart-layout` only for emulator-compatible bootrom artifacts that need the shifted emulator UART contract.
+	- The only intentionally different UART base is the legacy explicit emulator compatibility path `--boot-mode=litex-flash --disk`, which still uses `0xF0003800`; the canonical helper contract above remains the source of truth for the native LiteX and `--machine=litex` flows.
+	- The FAT32 boot partition now also carries a small `BOOT.CRC` manifest that the shared SD stage-0 uses to verify both the loaded payload bytes and the final SDRAM image before handoff.
 	- When `--rootfs-image` is omitted, it regenerates the default ext4 rootfs from `target/linux_port/rootfs/init.S` and installs it into the second SD partition.
 - LiteX LLVM wrapper generator: `./.venv/bin/little64 hdl wrappers-llvm`
 - LiteX DTS generator: `./.venv/bin/little64 hdl dts-linux`

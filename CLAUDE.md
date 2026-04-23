@@ -44,9 +44,9 @@ This file documents practical update paths and maintenance rules for common proj
   - `LITTLE64_CLANG_MAX_VMEM_KB` sets per-clang virtual memory cap in KB (default `10485760`, ~10 GB).
   - `LITTLE64_CLANG_GUARD_LOG_DIR` sets log directory (default `/tmp/little64-clang-guard`).
 - Direct ELF boot helper for first Linux bring-up exists at `little64 boot run`:
-  - Default image path: `target/linux_port/build-litex/vmlinux`.
+  - Default image path: `target/linux_port/build-litex/arch/little64/boot/vmlinuz` when present, otherwise `target/linux_port/build-litex/vmlinux`.
   - Default rootfs path: `target/linux_port/rootfs/build/rootfs.ext4`.
-  - Usage: `little64 boot run [--machine litex] [--mode trace|smoke|rsp] [--rootfs PATH | --no-rootfs] [--max-cycles N] [--port N] [optional-path-to-vmlinux]`.
+  - Usage: `little64 boot run [--machine litex] [--mode trace|smoke|rsp] [--rootfs PATH | --no-rootfs] [--max-cycles N] [--port N] [optional-path-to-kernel-elf]`.
   - Targets the LiteX machine profile only.
   - Default mode `smoke` launches the lower-overhead direct boot flow without boot-event capture.
   - The `litex` profile generates a bootrom-first LiteX image and launches emulator `--boot-mode=litex-bootrom` so the default path matches the SDRAM-backed hardware-oriented SoC layout.
@@ -108,6 +108,9 @@ This file documents practical update paths and maintenance rules for common proj
 - Little64 SD boot artifact helper: `little64 sd build`
   - Builds the bootrom stage-0 image plus the SD card image used by the emulator's `--machine=litex` path and by the bootrom-first LiteX smoke flows.
   - `little64 sd build --machine litex --output-dir <path>` auto-resolves the default LiteX kernel from `target/linux_port/build-litex/`, generates DTS/DTB internally, and emits the generated stage-0 plus SD image under `<path>`.
+  - The canonical Little64 LiteX helper contract uses fixed CSR slots: `sdcard_block2mem=0xF0000800`, `sdcard_core=0xF0001000`, `sdcard_irq=0xF0001800`, `sdcard_mem2block=0xF0002000`, `sdcard_phy=0xF0002800`, `sdram=0xF0003000`, optional `spiflash_core=0xF0003800`, and `uart=0xF0004000`.
+  - Treat those fixed locations as shared contract across `hdl/little64_cores/litex_soc.py`, generated DTS files, SD stage-0 headers, and the emulator's default `--machine=litex` bootrom-first path. If you intentionally move one, update all of those surfaces in the same change.
+  - The explicit manual emulator compatibility path `--boot-mode=litex-flash --disk` is a separate legacy layout and still uses LiteUART at `0xF0003800`; do not copy that compatibility address back into the canonical helper flow.
   - Explicit `--kernel-elf <path> --dtb <path>` inputs remain supported for low-level artifact builds.
   - Pass `--with-sdram` when a simulation target should emit generated LiteDRAM init support instead of the integrated-RAM-only contract.
   - Unless `--no-rootfs` or `--rootfs-image PATH` is passed, it regenerates the default ext4 rootfs from `target/linux_port/rootfs/init.S` and installs it into SD partition 2.

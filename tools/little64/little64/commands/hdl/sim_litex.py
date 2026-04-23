@@ -15,7 +15,8 @@ from pathlib import Path
 from typing import Any, cast
 
 from little64.build_support import run_checked
-from little64.paths import repo_root
+from little64.commands.kernel.build import default_defconfig_for_machine
+from little64.paths import existing_boot_kernel_path, kernel_path, repo_root
 from little64.tooling_support import compile_dts_to_dtb, little64_command
 
 sys.path.insert(0, str(repo_root() / "hdl"))
@@ -33,7 +34,9 @@ LITEX_SIM_MODULES_DIR = REPO_ROOT / 'hdl' / 'tools' / 'litex_sim_modules'
 DEFAULT_OUTPUT_DIR = REPO_ROOT / 'builddir' / 'hdl-litex-linux-boot'
 DEFAULT_SD_OUTPUT_DIR = REPO_ROOT / 'builddir' / 'hdl-litex-linux-boot-sdcard'
 DEFAULT_SD_SPI_OUTPUT_DIR = REPO_ROOT / 'builddir' / 'hdl-litex-linux-boot-sdcard-spi'
-DEFAULT_KERNEL_ELF = REPO_ROOT / 'target' / 'linux_port' / 'build-litex' / 'vmlinux'
+DEFAULT_KERNEL_ELF = existing_boot_kernel_path(default_defconfig_for_machine('litex'), repo=REPO_ROOT)
+if DEFAULT_KERNEL_ELF is None:
+    DEFAULT_KERNEL_ELF = kernel_path(default_defconfig_for_machine('litex'), repo=REPO_ROOT)
 DEFAULT_BOOTARGS = ''
 LINUX_VERSION_MARKER = 'Linux version '
 SPI_SD_READY_MARKER = 'stage0: sdcard ready (spi)'

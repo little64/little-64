@@ -69,6 +69,77 @@ def main() -> int:
         return result.returncode
 
     result = _run_python(
+        'import os\n'
+        'import tempfile\n'
+        'from pathlib import Path\n'
+        'import little64.litex_boot_support as support\n'
+        'with tempfile.TemporaryDirectory() as tmp:\n'
+        '    repo = Path(tmp)\n'
+        '    build_dir = repo / "target" / "linux_port" / "build-testcfg"\n'
+        '    boot_dir = build_dir / "arch" / "little64" / "boot"\n'
+        '    boot_dir.mkdir(parents=True)\n'
+        '    vmlinux = build_dir / "vmlinux"\n'
+        '    vmlinuz = boot_dir / "vmlinuz"\n'
+        '    vmlinux.write_text("plain", encoding="utf-8")\n'
+        '    vmlinuz.write_text("compressed", encoding="utf-8")\n'
+        '    old_repo_root = os.environ.get("LITTLE64_REPO_ROOT")\n'
+        '    old_default = support.default_defconfig_for_machine\n'
+        '    os.environ["LITTLE64_REPO_ROOT"] = str(repo)\n'
+        '    support.default_defconfig_for_machine = lambda machine: "testcfg"\n'
+        '    try:\n'
+        '        assert support.default_kernel_for_machine("litex") == vmlinuz\n'
+        '        vmlinuz.unlink()\n'
+        '        assert support.default_kernel_for_machine("litex") == vmlinux\n'
+        '    finally:\n'
+        '        support.default_defconfig_for_machine = old_default\n'
+        '        if old_repo_root is None:\n'
+        '            os.environ.pop("LITTLE64_REPO_ROOT", None)\n'
+        '        else:\n'
+        '            os.environ["LITTLE64_REPO_ROOT"] = old_repo_root\n'
+        'print("ok")\n'
+    )
+    if result.returncode != 0:
+        sys.stderr.write(result.stdout + result.stderr)
+        return result.returncode
+
+    result = _run_python(
+        'import os\n'
+        'import sys\n'
+        'import tempfile\n'
+        'from pathlib import Path\n'
+        'import importlib\n'
+        'with tempfile.TemporaryDirectory() as tmp:\n'
+        '    repo = Path(tmp)\n'
+        '    build_dir = repo / "target" / "linux_port" / "build-litex"\n'
+        '    boot_dir = build_dir / "arch" / "little64" / "boot"\n'
+        '    boot_dir.mkdir(parents=True)\n'
+        '    vmlinux = build_dir / "vmlinux"\n'
+        '    vmlinuz = boot_dir / "vmlinuz"\n'
+        '    vmlinux.write_text("plain", encoding="utf-8")\n'
+        '    vmlinuz.write_text("compressed", encoding="utf-8")\n'
+        '    old_repo_root = os.environ.get("LITTLE64_REPO_ROOT")\n'
+        '    os.environ["LITTLE64_REPO_ROOT"] = str(repo)\n'
+        '    sys.path.insert(0, str(Path.cwd() / "hdl"))\n'
+        '    for name in list(sys.modules):\n'
+        '        if name.startswith("little64.commands.hdl.sim_litex") or name.startswith("little64.commands.hdl.arty_build"):\n'
+        '            sys.modules.pop(name, None)\n'
+        '    sim_litex = importlib.import_module("little64.commands.hdl.sim_litex")\n'
+        '    arty_build = importlib.import_module("little64.commands.hdl.arty_build")\n'
+        '    try:\n'
+        '        assert sim_litex.DEFAULT_KERNEL_ELF == vmlinuz\n'
+        '        assert arty_build.DEFAULT_KERNEL_ELF == vmlinuz\n'
+        '    finally:\n'
+        '        if old_repo_root is None:\n'
+        '            os.environ.pop("LITTLE64_REPO_ROOT", None)\n'
+        '        else:\n'
+        '            os.environ["LITTLE64_REPO_ROOT"] = old_repo_root\n'
+        'print("ok")\n'
+    )
+    if result.returncode != 0:
+        sys.stderr.write(result.stdout + result.stderr)
+        return result.returncode
+
+    result = _run_python(
         'from pathlib import Path\n'
         'from little64.commands.sd.artifacts import parse_args\n'
         'args = parse_args(["--machine", "litex", "--output-dir", "/tmp/out"])\n'
