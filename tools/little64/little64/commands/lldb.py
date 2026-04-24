@@ -7,7 +7,7 @@ import os
 import sys
 from typing import List, Optional
 
-from little64 import paths
+from little64 import paths, tools
 
 
 DEFAULT_HOST = "127.0.0.1"
@@ -58,11 +58,10 @@ def _cmd_tui(args: argparse.Namespace) -> int:
         print("error: --port must be in range 1..65535", file=sys.stderr)
         return 1
 
-    lldb_bin = paths.compiler_bin() / "lldb"
-    if not lldb_bin.is_file() or not os.access(lldb_bin, os.X_OK):
-        print(f"error: missing LLDB binary: {lldb_bin}", file=sys.stderr)
-        print("hint: build LLVM tools first with: compilers/build.sh llvm", file=sys.stderr)
-        return 1
+    try:
+        lldb_bin = tools.require_compiler_tool(paths.compiler_bin(), "lldb")
+    except tools.MissingToolError as exc:
+        return tools.report_and_exit(exc)
 
     elf_path = _resolve_elf(args.elf, args.defconfig)
     lldb_args: list[str] = []

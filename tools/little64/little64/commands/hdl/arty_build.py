@@ -10,16 +10,16 @@ import sys
 from pathlib import Path
 from typing import Any, cast
 
+from little64 import config
 from little64.build_support import run_checked
 from little64.commands.kernel.build import default_defconfig_for_machine
+from little64.hdl_bridge import ensure_hdl_path
 from little64.paths import existing_boot_kernel_path, kernel_path, repo_root
 from little64.tooling_support import compile_dts_to_dtb
 from little64.vivado_support import run_vivado_batch, vivado_settings_script_from_env
 
 REPO_ROOT = repo_root()
-HDL_ROOT = REPO_ROOT / 'hdl'
-if str(HDL_ROOT) not in sys.path:
-    sys.path.insert(0, str(HDL_ROOT))
+HDL_ROOT = ensure_hdl_path(REPO_ROOT)
 
 from litex.build.xilinx import VivadoProgrammer  # type: ignore[import-untyped]
 from litex.soc.integration.builder import Builder  # type: ignore[import-untyped]
@@ -495,6 +495,12 @@ def _validate_requested_actions(args: argparse.Namespace, program_operations: tu
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description='Build a Little64 LiteX hardware bitstream for the Digilent Arty A7-35T.',
+    )
+    parser.add_argument(
+        '--machine',
+        choices=config.available_machines(),
+        default=config.DEFAULT_MACHINE,
+        help='Machine profile that provides the default kernel ELF and defconfig for bundled boot artifacts.',
     )
     parser.add_argument('--output-dir', type=Path, default=DEFAULT_OUTPUT_DIR, help='Output directory for generated LiteX gateware and project files.')
     parser.add_argument('--build-name', default=DEFAULT_BUILD_NAME, help='LiteX/Vivado build name.')

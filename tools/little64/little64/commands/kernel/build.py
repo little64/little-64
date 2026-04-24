@@ -7,6 +7,7 @@ clang-guard wrapping, and debug-info flag defaults.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import subprocess
 import sys
@@ -14,19 +15,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Mapping, Sequence
 
-from little64 import paths
+from little64 import config, paths
 
 
 LINUX_PORT_DIR = paths.repo_root() / "target" / "linux_port"
 LINUX_TREE = LINUX_PORT_DIR / "linux"
 CLANG_GUARD_SCRIPT = LINUX_PORT_DIR / "clang_guard.sh"
 
-DEFAULT_MACHINE = "litex"
+DEFAULT_MACHINE = config.DEFAULT_MACHINE
 DEFAULT_DEBUG_KCFLAGS = "-O2 -g -fno-omit-frame-pointer -fno-optimize-sibling-calls"
-MACHINE_DEFCONFIGS = {
-    "litex": "little64_litex_sim_defconfig",
-}
-DEFAULT_DEFCONFIG_NAME = MACHINE_DEFCONFIGS[DEFAULT_MACHINE]
+MACHINE_DEFCONFIGS = {name: profile.defconfig for name, profile in config.MACHINE_PROFILES.items()}
+DEFAULT_DEFCONFIG_NAME = config.DEFAULT_DEFCONFIG_NAME
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,10 +47,7 @@ def build_targets_for_request(request: BuildRequest) -> tuple[str, ...]:
 
 
 def default_defconfig_for_machine(machine: str) -> str:
-    try:
-        return MACHINE_DEFCONFIGS[machine]
-    except KeyError as exc:
-        raise ValueError(f"Unsupported machine profile: {machine}") from exc
+    return config.default_defconfig_for_machine(machine)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -90,12 +86,11 @@ def parse_args(argv: Sequence[str] | None = None) -> tuple[argparse.Namespace, l
 
 
 def resolve_defconfig_name(args: argparse.Namespace, env: Mapping[str, str] | None = None) -> str:
-    environment = env or os.environ
-    if args.defconfig:
-        return args.defconfig
-    if args.machine:
-        return default_defconfig_for_machine(args.machine)
-    return environment.get("LITTLE64_LINUX_DEFCONFIG", DEFAULT_DEFCONFIG_NAME)
+    return config.resolve_defconfig(
+        machine=args.machine,
+        defconfig=args.defconfig,
+        env=env,
+    )
 
 
 def _has_parallel_arg(make_args: Sequence[str]) -> bool:
@@ -177,7 +172,7 @@ def _make_base_command(build_dir: Path, cc_cmd: Path | str) -> list[str]:
 
 
 def _current_defconfig_sha(defconfig_path: Path) -> str:
-    return subprocess.check_output(["sha256sum", str(defconfig_path)], text=True).split()[0]
+    return hashlib.sha256(defconfig_path.read_bytes()).hexdigest()
 
 
 def _read_text_if_exists(path: Path) -> str:

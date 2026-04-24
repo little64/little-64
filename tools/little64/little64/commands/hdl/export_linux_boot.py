@@ -1,15 +1,14 @@
 from __future__ import annotations
 
 import argparse
-import sys
 from pathlib import Path
 
 from amaranth import Elaboratable, Module, Signal
 from amaranth.back import verilog
 
-from little64.paths import repo_root
+from little64.hdl_bridge import ensure_hdl_path
 
-sys.path.insert(0, str(repo_root() / "hdl"))
+ensure_hdl_path()
 
 from little64_cores.config import CACHE_TOPOLOGIES, Little64CoreConfig, SUPPORTED_CORE_VARIANTS
 from little64_cores.litex import LITTLE64_LITEX_MEM_MAP

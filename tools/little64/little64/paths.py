@@ -1,7 +1,8 @@
 """Path resolution for the Little64 repository.
 
 This module is the single source of truth for locating repository-rooted
-artifacts from tooling code.
+artifacts from tooling code. Machine-profile metadata (defconfig names,
+build-dir mappings) lives in :mod:`little64.config`.
 """
 
 from __future__ import annotations
@@ -10,12 +11,11 @@ import os
 import pathlib
 from typing import Optional
 
+from little64 import config
 
-DEFAULT_DEFCONFIG_NAME = "little64_litex_sim_defconfig"
+
+DEFAULT_DEFCONFIG_NAME = config.DEFAULT_DEFCONFIG_NAME
 DEFAULT_SYMBOL_CACHE_NAME = ".analyze_lockup_flow_addr2line_cache.json"
-BUILD_DIR_ALIASES = {
-    "little64_litex_sim_defconfig": "build-litex",
-}
 
 
 def repo_root() -> pathlib.Path:
@@ -35,7 +35,6 @@ def repo_root() -> pathlib.Path:
     for candidate in (here, *here.parents):
         if (candidate / "meson.build").is_file() and (candidate / "CLAUDE.md").is_file():
             return candidate
-    # Fallback: assume installed at <repo>/tools/little64/little64/paths.py.
     return here.parents[3]
 
 
@@ -55,13 +54,11 @@ def builddir(root: Optional[pathlib.Path] = None) -> pathlib.Path:
 
 
 def build_dir_name_for_defconfig(defconfig_name: str) -> str:
-    return BUILD_DIR_ALIASES.get(defconfig_name, f"build-{defconfig_name}")
+    return config.build_dir_name_for_defconfig(defconfig_name)
 
 
 def effective_defconfig_name(defconfig_name: Optional[str] = None) -> str:
-    if defconfig_name:
-        return defconfig_name
-    return os.environ.get("LITTLE64_LINUX_DEFCONFIG", DEFAULT_DEFCONFIG_NAME)
+    return config.resolve_defconfig(defconfig=defconfig_name)
 
 
 def linux_build_dir(

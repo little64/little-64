@@ -8,11 +8,12 @@ import sys
 from pathlib import Path
 from typing import Any, cast
 
+from little64.hdl_bridge import hdl_root, ensure_hdl_path
 from little64.paths import repo_root
 
 SCRIPT_PATH = Path(__file__).resolve()
 REPO_ROOT = repo_root()
-HDL_ROOT = REPO_ROOT / 'hdl'
+HDL_ROOT = hdl_root(REPO_ROOT)
 CACHE_VERSION = 1
 
 
@@ -116,8 +117,7 @@ def _write_text_if_changed(output_path: Path, text: str) -> None:
 
 
 def _generate_dts_text(args: argparse.Namespace, output_path: Path) -> str:
-    if str(HDL_ROOT) not in sys.path:
-        sys.path.insert(0, str(HDL_ROOT))
+    ensure_hdl_path(REPO_ROOT)
 
     from little64_cores.litex_soc import Little64LiteXSimSoC, generate_linux_dts
 
@@ -144,8 +144,7 @@ def _generate_dts_text(args: argparse.Namespace, output_path: Path) -> str:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    if str(HDL_ROOT) not in sys.path:
-        sys.path.insert(0, str(HDL_ROOT))
+    ensure_hdl_path(REPO_ROOT)
 
     from little64_cores.litex import LITTLE64_LITEX_BOOT_SOURCES, LITTLE64_LITEX_TARGET_NAMES
 

@@ -61,6 +61,15 @@ test('little64-cli-smoke',
   timeout : 30,
 )
 
+test('little64-tooling-refactor',
+  python3,
+  args : [
+    meson.project_source_root() / 'tests/host/test_tooling_refactor.py',
+  ],
+  suite : ['unit', 'tooling'],
+  timeout : 60,
+)
+
 test('no-shell-wrappers',
   python3,
   args : [

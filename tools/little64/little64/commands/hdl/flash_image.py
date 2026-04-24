@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import argparse
-import sys
 from pathlib import Path
 
 from little64.build_support import Stage0CompileUnit, build_stage0_binary
+from little64.hdl_bridge import ensure_hdl_path
 from little64.paths import repo_root as _repo_root_cli
 
-sys.path.insert(0, str(_repo_root_cli() / "hdl"))
+ensure_hdl_path()
 
 from little64_cores.litex import LITTLE64_LINUX_RAM_BASE
 from little64_cores.litex_linux_boot import build_litex_flash_image

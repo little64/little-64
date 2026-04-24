@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import subprocess
 from pathlib import Path
 from typing import Sequence
 
+from little64 import proc
 from little64.paths import compiler_bin
 
 
@@ -16,11 +16,8 @@ class Stage0CompileUnit:
 
 
 def run_checked(command: Sequence[str | Path], *, cwd: Path | None = None) -> None:
-    subprocess.run(
-        [str(arg) for arg in command],
-        check=True,
-        cwd=None if cwd is None else str(cwd),
-    )
+    """Back-compat shim; prefer :func:`little64.proc.run` in new code."""
+    proc.run(command, cwd=cwd, check=True)
 
 
 def build_stage0_binary(

@@ -15,7 +15,7 @@ EXPECTED_SDRAM_INIT_MARKER = "stage0: initializing sdram"
 EXPECTED_SDRAM_READY_MARKER = "stage0: sdram ready"
 EXPECTED_SD_MARKER = "stage0: sdcard ready"
 EXPECTED_RAM_DT_REG = "reg = <0x00000000 0x40000000 0x00000000 0x10000000>;"
-EXPECTED_BOOTARGS = 'bootargs = "console=liteuart earlycon=liteuart,0xf0004000 ignore_loglevel loglevel=8 root=/dev/mmcblk0p2 rootwait init=/init";'
+EXPECTED_BOOTARGS = 'bootargs = "console=liteuart0 earlycon=liteuart,0xf0004000 ignore_loglevel loglevel=8 root=/dev/mmcblk0p2 rootwait init=/init";'
 EXPECTED_STAGE0_RAM_SIZE_DEFINE = "#define L64_RAM_SIZE 0x0000000010000000ULL"
 
 

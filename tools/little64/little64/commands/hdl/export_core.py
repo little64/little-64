@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import argparse
-import sys
 from pathlib import Path
 
 from amaranth.back import verilog
 
-from little64.paths import repo_root
+from little64.hdl_bridge import ensure_hdl_path
 
-sys.path.insert(0, str(repo_root() / "hdl"))
+ensure_hdl_path()
 
 from little64_cores.config import Little64CoreConfig
 from little64_cores.core import Little64Core

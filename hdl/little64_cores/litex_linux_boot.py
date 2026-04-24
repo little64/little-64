@@ -522,10 +522,14 @@ def flatten_little64_linux_elf_image(
     if len(elf_bytes) < 64:
         raise ValueError('ELF image is too small')
 
-    ident = elf_bytes[:16]
-    if ident[:4] != b'\x7fELF':
+    # Go through a memoryview so the caller's buffer is never copied for slicing.
+    # This also lets read-only callers (e.g. SD-image checksum computation) keep
+    # zero-copy semantics on large kernel payloads.
+    elf_view = memoryview(elf_bytes)
+
+    if bytes(elf_view[:4]) != b'\x7fELF':
         raise ValueError('ELF image is missing the ELF magic')
-    if ident[4] != 2 or ident[5] != 1:
+    if elf_view[4] != 2 or elf_view[5] != 1:
         raise ValueError('ELF image must be ELF64 little-endian')
 
     (
@@ -543,10 +547,10 @@ def flatten_little64_linux_elf_image(
         _,
         _,
         _,
-    ) = struct.unpack_from('<16sHHIQQQIHHHHHH', elf_bytes, 0)
+    ) = struct.unpack_from('<16sHHIQQQIHHHHHH', elf_view, 0)
     if machine != EM_LITTLE64:
         raise ValueError(f'ELF machine does not match Little64: 0x{machine:x}')
-    if phoff + phnum * phentsize > len(elf_bytes):
+    if phoff + phnum * phentsize > len(elf_view):
         raise ValueError('ELF program headers extend beyond the file')
 
     load_segments: list[tuple[int, int, int, int]] = []
@@ -555,12 +559,12 @@ def flatten_little64_linux_elf_image(
     for index in range(phnum):
         p_type, _, p_offset, p_vaddr, _, p_filesz, p_memsz, _ = struct.unpack_from(
             '<IIQQQQQQ',
-            elf_bytes,
+            elf_view,
             phoff + index * phentsize,
         )
         if p_type != PT_LOAD:
             continue
-        if p_offset + p_filesz > len(elf_bytes):
+        if p_offset + p_filesz > len(elf_view):
             raise ValueError('ELF PT_LOAD segment extends beyond the file')
         min_vaddr = p_vaddr if min_vaddr is None else min(min_vaddr, p_vaddr)
         max_vaddr = max(max_vaddr, p_vaddr + p_memsz)
@@ -575,7 +579,7 @@ def flatten_little64_linux_elf_image(
 
     for segment_offset, segment_vaddr, segment_filesz, _ in load_segments:
         image_offset = segment_vaddr - virtual_base
-        image[image_offset:image_offset + segment_filesz] = elf_bytes[segment_offset:segment_offset + segment_filesz]
+        image[image_offset:image_offset + segment_filesz] = elf_view[segment_offset:segment_offset + segment_filesz]
 
     virtual_end = virtual_base + image_span
     if virtual_base <= entry < virtual_end:

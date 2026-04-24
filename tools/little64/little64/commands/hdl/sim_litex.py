@@ -16,10 +16,11 @@ from typing import Any, cast
 
 from little64.build_support import run_checked
 from little64.commands.kernel.build import default_defconfig_for_machine
+from little64.hdl_bridge import ensure_hdl_path
 from little64.paths import existing_boot_kernel_path, kernel_path, repo_root
 from little64.tooling_support import compile_dts_to_dtb, little64_command
 
-sys.path.insert(0, str(repo_root() / "hdl"))
+ensure_hdl_path()
 
 import litex
 from litex.build.sim.config import SimConfig

@@ -13,6 +13,8 @@ import importlib
 import sys
 from typing import Callable, Iterable
 
+from little64.errors import CLIError
+
 
 # (subcommand name, module under little64.commands, one-line help)
 COMMAND_GROUPS: tuple[tuple[str, str, str], ...] = (
@@ -49,6 +51,17 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Override the detected repository root (sets LITTLE64_REPO_ROOT).",
     )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Echo every tool shell-out before running it (sets LITTLE64_VERBOSE=1).",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Echo every tool shell-out but skip execution (sets LITTLE64_DRY_RUN=1).",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True, metavar="<command>")
     for name, module, help_text in COMMAND_GROUPS:
         _register(subparsers, name, module, help_text)
@@ -65,15 +78,25 @@ def main(argv: Iterable[str] | None = None) -> int:
     # parser. This avoids every subcommand having to re-declare ``--repo-root``.
     args, remaining = parser.parse_known_args(argv_list)
 
-    if args.repo_root is not None:
-        import os
+    import os
 
+    if args.repo_root is not None:
         os.environ["LITTLE64_REPO_ROOT"] = args.repo_root
+    if args.verbose:
+        os.environ["LITTLE64_VERBOSE"] = "1"
+    if args.dry_run:
+        os.environ["LITTLE64_DRY_RUN"] = "1"
 
     module_name: str = getattr(args, "_lazy_module")
     module = importlib.import_module(module_name)
     run: Callable[[list[str]], int] = getattr(module, "run")
-    return int(run(remaining) or 0)
+    try:
+        return int(run(remaining) or 0)
+    except CLIError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        for hint in exc.hints:
+            print(f"hint: {hint}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
