@@ -101,10 +101,10 @@ This file documents practical update paths and maintenance rules for common proj
   - Builds a real LiteX/Vivado hardware project for the Digilent Arty A7-35T and can also program the board.
   - Supports `--program volatile` for JTAG bitstream loads, `--program flash` for persistent configuration-flash writes, and `--program-only` to reuse existing artifacts.
   - Supports `--vivado-stop-after synthesis|implementation|bitstream` to stop after the synth checkpoint, after routed implementation reports/checkpoints, or after full bitstream generation.
-  - Uses the repo's Arty wrapper around `litex-boards` and supports configurable SPI-mode SD wiring through either the Arduino header preset or PMOD mappings.
+  - Uses the repo's Arty wrapper around `litex-boards` and now defaults to the Adafruit native 4-bit SDIO breakout header order on `ck_io34..40` (`CLK, D0, CMD, D3, D1, D2, DET`), while still supporting the older SPI Arduino preset on `ck_io30..33` and PMOD mappings through `--sdcard-mode spi`.
   - Each non-`--program-only` build also cleans stale `gateware/`, `software/`, and `boot/` outputs and regenerates staged SD boot artifacts under `builddir/hdl-litex-arty/boot/`.
   - The staged SD bootrom is built from `target/c_boot/litex_sd_boot.c`, which now supports both the native LiteSDCard and SPI-mode SD backends from the same C source via generated register-header selection.
-  - The Arty hardware path now preloads the SPI-mode build of that stage-0 into the integrated boot ROM. Linux DT/rootfs support for SPI-mode SD remains separate follow-up work.
+  - The Arty hardware path now preloads the backend-matched build of that stage-0 into the integrated boot ROM. Linux DT/rootfs support for SPI-mode SD remains separate follow-up work.
 - Little64 SD boot artifact helper: `little64 sd build`
   - Builds the bootrom stage-0 image plus the SD card image used by the emulator's `--machine=litex` path and by the bootrom-first LiteX smoke flows.
   - `little64 sd build --machine litex --output-dir <path>` auto-resolves the default LiteX kernel from `target/linux_port/build-litex/`, generates DTS/DTB internally, and emits the generated stage-0 plus SD image under `<path>`.

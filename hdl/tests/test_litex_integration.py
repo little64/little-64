@@ -10,6 +10,8 @@ import sys
 from pathlib import Path
 
 from amaranth.sim import Simulator
+from migen import Module, Signal
+from migen.fhdl import verilog
 import pytest
 
 from little64_cores.config import Little64CoreConfig
@@ -30,8 +32,18 @@ from little64_cores.litex import (
 )
 from little64_cores.litex_sdcard import EMULATOR_VERILOG_FILENAMES, _resolve_emulator_verilog_dir
 from little64_cores.litex_cpu import Little64, Little64WishboneDataBridge, ensure_litex_llvm_toolchain_wrappers, register_little64_with_litex
-from little64_cores.litex_arty import Little64ArtySPISDCardMapping, arty_spi_sdcard_extension, resolve_arty_spi_sdcard_mapping
-from little64_cores.litex_arty import Little64LiteXArtySoC
+from little64_cores.litex_arty import (
+    ARTY_SDCARD_MODE_NATIVE,
+    ARTY_SDCARD_MODE_SPI,
+    Little64ArtyNativeSDCardMapping,
+    Little64ArtySPISDCardMapping,
+    Little64LiteXArtySoC,
+    _little64_sd_output_enable_bus,
+    arty_native_sdcard_extension,
+    arty_spi_sdcard_extension,
+    resolve_arty_native_sdcard_mapping,
+    resolve_arty_spi_sdcard_mapping,
+)
 from little64_cores.litex_linux_boot import (
     BOOT_CHECKSUM_MAGIC,
     BOOT_CHECKSUM_STRUCT,
@@ -158,6 +170,19 @@ def test_arty_spi_sdcard_arduino_mapping_resolves_to_expected_fpga_pins() -> Non
     assert mapping.cs_n == 'R11'
 
 
+def test_arty_native_sdcard_arduino_mapping_resolves_to_expected_fpga_pins() -> None:
+    mapping = resolve_arty_native_sdcard_mapping(connector='arduino')
+
+    assert mapping.name == 'arduino-io34-40'
+    assert mapping.clk == 'R16'
+    assert mapping.cmd == 'N14'
+    assert mapping.data0 == 'N16'
+    assert mapping.data1 == 'T18'
+    assert mapping.data2 == 'R18'
+    assert mapping.data3 == 'U17'
+    assert mapping.det == 'P18'
+
+
 def test_arty_bitstream_parse_args_accepts_vivado_stop_after(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         sys,
@@ -168,6 +193,19 @@ def test_arty_bitstream_parse_args_accepts_vivado_stop_after(monkeypatch: pytest
     args = _BUILD_ARTY_BITSTREAM.parse_args()
 
     assert args.vivado_stop_after == _BUILD_ARTY_BITSTREAM.VIVADO_STOP_AFTER_IMPLEMENTATION
+
+
+def test_arty_bitstream_parse_args_accepts_native_sdcard_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        sys,
+        'argv',
+        ['build_litex_arty_bitstream.py', '--sdcard-mode', 'native', '--sdcard-det-pin', 'R1'],
+    )
+
+    args = _BUILD_ARTY_BITSTREAM.parse_args()
+
+    assert args.sdcard_mode == ARTY_SDCARD_MODE_NATIVE
+    assert args.sdcard_det_pin == 'R1'
 
 
 def test_arty_bitstream_render_stage_tcl_truncates_after_synthesis(tmp_path: Path) -> None:
@@ -262,6 +300,27 @@ def test_arty_spi_sdcard_mapping_overrides_selected_preset() -> None:
     assert mapping.cs_n == 'X4'
 
 
+def test_arty_native_sdcard_mapping_overrides_selected_preset() -> None:
+    mapping = resolve_arty_native_sdcard_mapping(
+        connector='arduino',
+        clk='X1',
+        cmd='X2',
+        data0='X3',
+        data1='X4',
+        data2='X5',
+        data3='X6',
+        det='X7',
+    )
+
+    assert mapping.clk == 'X1'
+    assert mapping.cmd == 'X2'
+    assert mapping.data0 == 'X3'
+    assert mapping.data1 == 'X4'
+    assert mapping.data2 == 'X5'
+    assert mapping.data3 == 'X6'
+    assert mapping.det == 'X7'
+
+
 def test_arty_spi_sdcard_extension_uses_mapping_pins() -> None:
     extension = arty_spi_sdcard_extension(
         Little64ArtySPISDCardMapping(
@@ -284,6 +343,31 @@ def test_arty_spi_sdcard_extension_uses_mapping_pins() -> None:
     assert any('CSPIN' in repr(item) for item in resource[2:])
 
 
+def test_arty_native_sdcard_extension_uses_mapping_pins() -> None:
+    extension = arty_native_sdcard_extension(
+        Little64ArtyNativeSDCardMapping(
+            name='custom-native',
+            description='custom native test mapping',
+            clk='CLKPIN',
+            cmd='CMDPIN',
+            data0='D0PIN',
+            data1='D1PIN',
+            data2='D2PIN',
+            data3='D3PIN',
+            det='DETPIN',
+        )
+    )
+
+    resource = extension[0]
+
+    assert resource[0] == 'sdcard'
+    assert resource[1] == 0
+    assert any('D0PIN D1PIN D2PIN D3PIN' in repr(item) for item in resource[2:])
+    assert any('CMDPIN' in repr(item) for item in resource[2:])
+    assert any('CLKPIN' in repr(item) for item in resource[2:])
+    assert any('DETPIN' in repr(item) for item in resource[2:])
+
+
 def test_arty_spi_sdcard_extension_only_applies_slew_to_outputs() -> None:
     extension = arty_spi_sdcard_extension(resolve_arty_spi_sdcard_mapping(connector='arduino'))
 
@@ -297,6 +381,77 @@ def test_arty_spi_sdcard_extension_only_applies_slew_to_outputs() -> None:
     assert 'SLEW=FAST' in mosi_repr
     assert 'SLEW=FAST' in cs_repr
     assert 'SLEW=FAST' not in miso_repr
+
+
+def test_arty_native_sdcard_extension_applies_slew_to_data_cmd_clk() -> None:
+    extension = arty_native_sdcard_extension(resolve_arty_native_sdcard_mapping(connector='arduino'))
+
+    resource = extension[0]
+    data_repr = repr(resource[2])
+    cmd_repr = repr(resource[3])
+    clk_repr = repr(resource[4])
+    cd_repr = repr(resource[5])
+
+    assert 'SLEW=FAST' in data_repr
+    assert 'SLEW=FAST' in cmd_repr
+    assert 'SLEW=FAST' in clk_repr
+    assert 'SLEW=FAST' not in cd_repr
+
+
+def test_native_sd_output_enable_broadcasts_shared_enable() -> None:
+    module = Module()
+    output_enable = Signal(name='output_enable')
+    output_enable_bus = Signal(4, name='output_enable_bus')
+
+    module.comb += output_enable_bus.eq(_little64_sd_output_enable_bus(output_enable, len(output_enable_bus)))
+
+    generated = verilog.convert(module, ios={output_enable, output_enable_bus}, name='little64_sd_output_enable_broadcast_test')
+
+    assert 'assign output_enable_bus = {4{output_enable}};' in generated.main_source
+
+
+def test_arty_bitstream_rejects_native_pin_overrides_in_spi_mode() -> None:
+    args = argparse.Namespace(
+        with_sdcard=True,
+        sdcard_mode=ARTY_SDCARD_MODE_SPI,
+        sdcard_connector='arduino',
+        sdcard_adapter='digilent',
+        sdcard_clk_pin=None,
+        sdcard_mosi_pin=None,
+        sdcard_miso_pin=None,
+        sdcard_cs_pin=None,
+        sdcard_cmd_pin='N14',
+        sdcard_d0_pin=None,
+        sdcard_d1_pin=None,
+        sdcard_d2_pin=None,
+        sdcard_d3_pin=None,
+        sdcard_det_pin=None,
+    )
+
+    with pytest.raises(SystemExit, match='require --sdcard-mode native'):
+        _BUILD_ARTY_BITSTREAM._resolve_sdcard_mapping(args)
+
+
+def test_arty_bitstream_rejects_spi_pin_overrides_in_native_mode() -> None:
+    args = argparse.Namespace(
+        with_sdcard=True,
+        sdcard_mode=ARTY_SDCARD_MODE_NATIVE,
+        sdcard_connector='arduino',
+        sdcard_adapter='digilent',
+        sdcard_clk_pin=None,
+        sdcard_mosi_pin='R13',
+        sdcard_miso_pin=None,
+        sdcard_cs_pin=None,
+        sdcard_cmd_pin=None,
+        sdcard_d0_pin=None,
+        sdcard_d1_pin=None,
+        sdcard_d2_pin=None,
+        sdcard_d3_pin=None,
+        sdcard_det_pin=None,
+    )
+
+    with pytest.raises(SystemExit, match='require --sdcard-mode spi'):
+        _BUILD_ARTY_BITSTREAM._resolve_sdcard_mapping(args)
 
 
 def test_create_arty_platform_reports_missing_litex_boards(monkeypatch) -> None:
@@ -1186,7 +1341,7 @@ def test_stage0_artifact_builder_emits_sdram_init_headers_for_arty(tmp_path) -> 
 
 def test_arty_hardware_soc_exposes_uart_phy_tuning_word_by_default(tmp_path) -> None:
     mapping = resolve_arty_spi_sdcard_mapping(connector='arduino', adapter='digilent')
-    soc = Little64LiteXArtySoC(spisdcard_mapping=mapping)
+    soc = Little64LiteXArtySoC(sdcard_mode=ARTY_SDCARD_MODE_SPI, sdcard_mapping=mapping)
     soc.platform.output_dir = str(tmp_path / 'litex-arty-hw-stage0')
 
     soc.finalize()
@@ -1205,7 +1360,7 @@ def test_arty_hardware_soc_exposes_uart_phy_tuning_word_by_default(tmp_path) -> 
 
 def test_arty_build_helper_generates_timer_enabled_hardware_dts(tmp_path) -> None:
     mapping = resolve_arty_spi_sdcard_mapping(connector='arduino', adapter='digilent')
-    soc = Little64LiteXArtySoC(spisdcard_mapping=mapping, with_timer=True)
+    soc = Little64LiteXArtySoC(sdcard_mode=ARTY_SDCARD_MODE_SPI, sdcard_mapping=mapping, with_timer=True)
     soc.platform.output_dir = str(tmp_path / 'litex-arty-hw-dts')
 
     dts_text = generate_linux_dts(
@@ -1225,7 +1380,7 @@ def test_arty_build_helper_generates_timer_enabled_hardware_dts(tmp_path) -> Non
 
 def test_arty_hardware_soc_can_select_basic_variant_explicitly(tmp_path) -> None:
     mapping = resolve_arty_spi_sdcard_mapping(connector='arduino', adapter='digilent')
-    soc = Little64LiteXArtySoC(cpu_variant='standard-basic', spisdcard_mapping=mapping)
+    soc = Little64LiteXArtySoC(cpu_variant='standard-basic', sdcard_mode=ARTY_SDCARD_MODE_SPI, sdcard_mapping=mapping)
     soc.platform.output_dir = str(tmp_path / 'litex-arty-hw-basic')
 
     soc.finalize()
@@ -1237,7 +1392,7 @@ def test_arty_hardware_soc_can_select_basic_variant_explicitly(tmp_path) -> None
 
 def test_arty_hardware_soc_wires_debug_leds(tmp_path) -> None:
     mapping = resolve_arty_spi_sdcard_mapping(connector='arduino', adapter='digilent')
-    soc = Little64LiteXArtySoC(spisdcard_mapping=mapping)
+    soc = Little64LiteXArtySoC(sdcard_mode=ARTY_SDCARD_MODE_SPI, sdcard_mapping=mapping)
     soc.platform.output_dir = str(tmp_path / 'litex-arty-hw-leds')
 
     soc.finalize()
@@ -1254,11 +1409,14 @@ def test_arty_hardware_soc_wires_debug_leds(tmp_path) -> None:
     assert soc.arty_led_store_activity is not None
     assert soc.arty_led_running_heartbeat is not None
     assert soc.arty_led_irq_pending is not None
+    assert soc.arty_led_sd_cmd_output_activity is not None
+    assert soc.arty_led_sd_cmd_output_enable_activity is not None
+    assert soc.arty_led_sd_cmd_released_input_activity is not None
 
 
 def test_stage0_artifact_builder_emits_spi_sd_header_for_arty_hardware(tmp_path) -> None:
     mapping = resolve_arty_spi_sdcard_mapping(connector='arduino', adapter='digilent')
-    soc = Little64LiteXArtySoC(spisdcard_mapping=mapping)
+    soc = Little64LiteXArtySoC(sdcard_mode=ARTY_SDCARD_MODE_SPI, sdcard_mapping=mapping)
     soc.platform.output_dir = str(tmp_path / 'litex-arty-hw-stage0-spi')
 
     regs_header = tmp_path / 'litex_sd_boot_regs.h'
@@ -1278,6 +1436,62 @@ def test_stage0_artifact_builder_emits_spi_sd_header_for_arty_hardware(tmp_path)
     assert '#define L64_SDCARD_SPI_CONTROL_ADDR ' in regs_text
     assert '#define L64_SDCARD_CORE_BASE ' not in regs_text
     assert soc.spisdcard.data_width == 32
+
+
+def test_arty_hardware_soc_supports_native_sdcard_mode(tmp_path) -> None:
+    mapping = resolve_arty_native_sdcard_mapping(connector='arduino', adapter='digilent')
+    soc = Little64LiteXArtySoC(sdcard_mode=ARTY_SDCARD_MODE_NATIVE, sdcard_mapping=mapping)
+    soc.platform.output_dir = str(tmp_path / 'litex-arty-hw-stage0-native')
+
+    soc.finalize()
+
+    assert 'sdcard_phy' in soc.csr.regions
+    assert 'sdcard_core' in soc.csr.regions
+    assert 'sdcard_irq' in soc.csr.regions
+    assert 'sdcard_mem2block' in soc.csr.regions
+    assert 'sdcard_block2mem' in soc.csr.regions
+    assert 'sdcard_debug' in soc.csr.regions
+    assert not hasattr(soc, 'spisdcard')
+    assert all('litesdcard/emulator/verilog' not in source[0] for source in soc.platform.sources)
+
+
+def test_arty_hardware_soc_generates_verilog_for_native_sdcard_mode(tmp_path) -> None:
+    mapping = resolve_arty_native_sdcard_mapping(connector='arduino', adapter='digilent')
+    soc = Little64LiteXArtySoC(sdcard_mode=ARTY_SDCARD_MODE_NATIVE, sdcard_mapping=mapping)
+    soc.platform.output_dir = str(tmp_path / 'litex-arty-hw-native-verilog')
+
+    soc.finalize()
+    verilog = soc.platform.get_verilog(soc, name='little64_arty_native_sdcard_test')
+
+    assert 'IOBUF' in verilog.main_source
+
+
+def test_stage0_artifact_builder_emits_native_sd_header_for_arty_hardware(tmp_path) -> None:
+    mapping = resolve_arty_native_sdcard_mapping(connector='arduino', adapter='digilent')
+    soc = Little64LiteXArtySoC(sdcard_mode=ARTY_SDCARD_MODE_NATIVE, sdcard_mapping=mapping)
+    soc.platform.output_dir = str(tmp_path / 'litex-arty-hw-stage0-native')
+
+    regs_header = tmp_path / 'litex_sd_boot_regs.h'
+    _BUILD_SD_BOOT_ARTIFACTS._write_stage0_header(
+        regs_header,
+        soc=soc,
+        ram_base=0x40000000,
+        ram_size=0x10000000,
+        kernel_physical_base=0x40000000,
+    )
+
+    regs_text = regs_header.read_text(encoding='utf-8')
+
+    assert '#define L64_SDCARD_INTERFACE_NATIVE 1' in regs_text
+    assert '#define L64_SDCARD_CORE_BASE ' in regs_text
+    assert '#define L64_SDCARD_PHY_BASE ' in regs_text
+    assert '#define L64_SDCARD_DEBUG_BASE ' in regs_text
+    assert '#define L64_SDCARD_DEBUG_SIGNALS_ADDR ' in regs_text
+    assert '#define L64_SDCARD_DEBUG_CMD_I_RELEASED_TRANSITIONS_ADDR ' in regs_text
+    assert '#define L64_SDCARD_DEBUG_DATA1_I_TRANSITIONS_ADDR ' in regs_text
+    assert '#define L64_SDCARD_DEBUG_DATA2_I_TRANSITIONS_ADDR ' in regs_text
+    assert '#define L64_SDCARD_DEBUG_DATA3_I_TRANSITIONS_ADDR ' in regs_text
+    assert '#define L64_SDCARD_SPI_BASE ' not in regs_text
 
 
 def test_stage0_artifact_builder_skips_sdram_init_for_sim_bootrom(tmp_path) -> None:

@@ -10,6 +10,7 @@
 #define PAGE_SIZE 4096ULL
 #define EARLY_PT_SCRATCH_PAGES 30ULL
 #define ELF_HEADER_SCRATCH_SIZE 4096ULL
+#define STAGE0_DMA_SCRATCH_SIZE SD_BLOCK_SIZE
 #define STAGE0_SDRAM_TEST_WORDS 8U
 #define STAGE0_LOAD_PROGRESS_MIN_STEP 0x00001000U
 #define STAGE0_LOAD_PROGRESS_MAX_STEP 0x00040000U
@@ -35,6 +36,13 @@
 #define SDCARD_CTRL_RESPONSE_SHORT 1U
 #define SDCARD_CTRL_RESPONSE_LONG 2U
 #define SDCARD_CTRL_RESPONSE_SHORT_BUSY 3U
+/*
+ * Arty native SD bring-up currently has a 4-bit bulk-read framing issue: init,
+ * SCR reads, and capability switching work, but filesystem block reads can
+ * return shifted payload bytes in 4-bit mode. Keep stage0 filesystem I/O on the
+ * stable 1-bit path until the hardware-side read path is fixed.
+ */
+#define SDCARD_NATIVE_FORCE_1BIT_FILESYSTEM_IO 1U
 
 #if defined(L64_SDCARD_INTERFACE_SPI)
 #define SDCARD_SPI_R1_IDLE 0x01U
@@ -129,6 +137,34 @@ static volatile u32* const sdcard_core_block_length = (volatile u32*)L64_SDCARD_
 static volatile u32* const sdcard_core_block_count = (volatile u32*)L64_SDCARD_CORE_BLOCK_COUNT_ADDR;
 static volatile u32* const sdcard_phy_clock_divider = (volatile u32*)L64_SDCARD_PHY_CLOCK_DIVIDER_ADDR;
 static volatile u32* const sdcard_phy_initialize = (volatile u32*)L64_SDCARD_PHY_INITIALIZE_ADDR;
+static volatile u32* const sdcard_phy_settings = (volatile u32*)L64_SDCARD_PHY_SETTINGS_ADDR;
+#if defined(L64_SDCARD_PHY_CARD_DETECT_ADDR)
+static volatile u32* const sdcard_phy_card_detect = (volatile u32*)L64_SDCARD_PHY_CARD_DETECT_ADDR;
+#endif
+#if defined(L64_SDCARD_DEBUG_SIGNALS_ADDR)
+static volatile u32* const sdcard_debug_signals = (volatile u32*)L64_SDCARD_DEBUG_SIGNALS_ADDR;
+static volatile u32* const sdcard_debug_cmd_i_transitions = (volatile u32*)L64_SDCARD_DEBUG_CMD_I_TRANSITIONS_ADDR;
+static volatile u32* const sdcard_debug_cmd_o_transitions = (volatile u32*)L64_SDCARD_DEBUG_CMD_O_TRANSITIONS_ADDR;
+static volatile u32* const sdcard_debug_cmd_oe_transitions = (volatile u32*)L64_SDCARD_DEBUG_CMD_OE_TRANSITIONS_ADDR;
+static volatile u32* const sdcard_debug_data0_i_transitions = (volatile u32*)L64_SDCARD_DEBUG_DATA0_I_TRANSITIONS_ADDR;
+static volatile u32* const sdcard_debug_clk_transitions = (volatile u32*)L64_SDCARD_DEBUG_CLK_TRANSITIONS_ADDR;
+static volatile u32* const sdcard_debug_cmd_i_released_transitions = (volatile u32*)L64_SDCARD_DEBUG_CMD_I_RELEASED_TRANSITIONS_ADDR;
+static volatile u32* const sdcard_debug_data1_i_transitions = (volatile u32*)L64_SDCARD_DEBUG_DATA1_I_TRANSITIONS_ADDR;
+static volatile u32* const sdcard_debug_data2_i_transitions = (volatile u32*)L64_SDCARD_DEBUG_DATA2_I_TRANSITIONS_ADDR;
+static volatile u32* const sdcard_debug_data3_i_transitions = (volatile u32*)L64_SDCARD_DEBUG_DATA3_I_TRANSITIONS_ADDR;
+#endif
+static u32 sdcard_last_cmd;
+static u32 sdcard_last_cmd_argument;
+static u32 sdcard_last_cmd_response_type;
+static u32 sdcard_last_cmd_data_type;
+static u32 sdcard_last_cmd_status;
+static u32 sdcard_last_cmd_event;
+static u32 sdcard_last_cmd_response_words[4];
+static u32 sdcard_last_data_status;
+static u32 sdcard_last_data_event;
+
+#define SDCARD_PHY_WIDTH_1BIT 0U
+#define SDCARD_PHY_WIDTH_4BIT 1U
 #elif defined(L64_SDCARD_INTERFACE_SPI)
 static volatile u32* const sdcard_spi_control = (volatile u32*)L64_SDCARD_SPI_CONTROL_ADDR;
 static volatile u32* const sdcard_spi_status = (volatile u32*)L64_SDCARD_SPI_STATUS_ADDR;
@@ -243,6 +279,23 @@ static void serial_put_hex_u64(u64 value) {
     }
 }
 
+static void serial_put_hex_u8(u8 value) {
+    serial_put_hex_digit((u8)((value >> 4U) & 0x0FU));
+    serial_put_hex_digit((u8)(value & 0x0FU));
+}
+
+static void serial_dump_bytes(const char* label, const u8* data, u32 size) {
+    u32 index = 0U;
+
+    serial_puts(label);
+    while (index < size) {
+        serial_putc(' ');
+        serial_put_hex_u8(data[index]);
+        ++index;
+    }
+    serial_putc('\n');
+}
+
 static void serial_put_labeled_hex64(const char* label, u64 value) {
     serial_puts(label);
     serial_put_hex_u64(value);
@@ -256,6 +309,10 @@ static void serial_put_labeled_hex32(const char* label, u32 value) {
 static int image_window_fits_ram(u64 physical_base, u64 image_span) {
     return physical_base >= L64_RAM_BASE &&
            physical_base + image_span <= L64_RAM_BASE + L64_RAM_SIZE;
+}
+
+static u64 pointer_to_u64(const void* ptr) {
+    return (u64)(unsigned long long)(unsigned long)ptr;
 }
 
 __attribute__((noreturn))
@@ -547,8 +604,82 @@ static void sdcard_set_clk_freq(u32 clk_freq) {
     *sdcard_phy_clock_divider = divider;
 }
 
+static void sdcard_set_data_width(u32 width) {
+    *sdcard_phy_settings = width;
+    spin_delay(256U);
+}
+
 static u32 sdcard_read_response_word(u32 word_index) {
     return sdcard_core_cmd_response[word_index];
+}
+
+static void sdcard_record_last_command_result(u32 status, u32 event) {
+    u32 word_index = 0U;
+
+    sdcard_last_cmd_status = status;
+    sdcard_last_cmd_event = event;
+    while (word_index < 4U) {
+        sdcard_last_cmd_response_words[word_index] = sdcard_core_cmd_response[word_index];
+        ++word_index;
+    }
+}
+
+static void sdcard_record_last_data_result(u32 status, u32 event) {
+    sdcard_last_data_status = status;
+    sdcard_last_data_event = event;
+}
+
+static void sdcard_log_last_command_state(const char* stage) {
+    serial_puts("stage0: sdcard native ");
+    serial_puts(stage);
+    serial_put_labeled_hex32(" cmd=", sdcard_last_cmd);
+    serial_put_labeled_hex32(" arg=", sdcard_last_cmd_argument);
+    serial_put_labeled_hex32(" resp_type=", sdcard_last_cmd_response_type);
+    serial_put_labeled_hex32(" data_type=", sdcard_last_cmd_data_type);
+    serial_put_labeled_hex32(" status=", sdcard_last_cmd_status);
+    serial_put_labeled_hex32(" event=", sdcard_last_cmd_event);
+#if defined(L64_SDCARD_PHY_CARD_DETECT_ADDR)
+    serial_put_labeled_hex32(" cd=", *sdcard_phy_card_detect);
+#endif
+    serial_putc('\n');
+    serial_puts("stage0: sdcard native responses");
+    serial_put_labeled_hex32(" r0=", sdcard_last_cmd_response_words[0]);
+    serial_put_labeled_hex32(" r1=", sdcard_last_cmd_response_words[1]);
+    serial_put_labeled_hex32(" r2=", sdcard_last_cmd_response_words[2]);
+    serial_put_labeled_hex32(" r3=", sdcard_last_cmd_response_words[3]);
+    serial_putc('\n');
+#if defined(L64_SDCARD_DEBUG_SIGNALS_ADDR)
+    serial_puts("stage0: sdcard native debug");
+    serial_put_labeled_hex32(" signals=", *sdcard_debug_signals);
+    serial_put_labeled_hex32(" cmd_i_edges=", *sdcard_debug_cmd_i_transitions);
+    serial_put_labeled_hex32(" cmd_o_edges=", *sdcard_debug_cmd_o_transitions);
+    serial_put_labeled_hex32(" cmd_oe_edges=", *sdcard_debug_cmd_oe_transitions);
+    serial_put_labeled_hex32(" data0_i_edges=", *sdcard_debug_data0_i_transitions);
+    serial_put_labeled_hex32(" clk_edges=", *sdcard_debug_clk_transitions);
+    serial_put_labeled_hex32(" cmd_i_rel_edges=", *sdcard_debug_cmd_i_released_transitions);
+    serial_putc('\n');
+#endif
+}
+
+static void sdcard_log_last_data_state(const char* stage) {
+    serial_puts("stage0: sdcard native ");
+    serial_puts(stage);
+    serial_put_labeled_hex32(" cmd=", sdcard_last_cmd);
+    serial_put_labeled_hex32(" arg=", sdcard_last_cmd_argument);
+    serial_put_labeled_hex32(" data_status=", sdcard_last_data_status);
+    serial_put_labeled_hex32(" data_event=", sdcard_last_data_event);
+    serial_put_labeled_hex32(" phy_settings=", *sdcard_phy_settings);
+    serial_putc('\n');
+#if defined(L64_SDCARD_DEBUG_SIGNALS_ADDR)
+    serial_puts("stage0: sdcard native data debug");
+    serial_put_labeled_hex32(" signals=", *sdcard_debug_signals);
+    serial_put_labeled_hex32(" data0_i_edges=", *sdcard_debug_data0_i_transitions);
+    serial_put_labeled_hex32(" data1_i_edges=", *sdcard_debug_data1_i_transitions);
+    serial_put_labeled_hex32(" data2_i_edges=", *sdcard_debug_data2_i_transitions);
+    serial_put_labeled_hex32(" data3_i_edges=", *sdcard_debug_data3_i_transitions);
+    serial_put_labeled_hex32(" clk_edges=", *sdcard_debug_clk_transitions);
+    serial_putc('\n');
+#endif
 }
 
 static u32 sdcard_wait_cmd_done(void) {
@@ -558,16 +689,20 @@ static u32 sdcard_wait_cmd_done(void) {
         if ((event & 0x1U) != 0U) {
             sdcard_ack_cmd_event(event);
             if ((event & 0x4U) != 0U) {
+                sdcard_record_last_command_result(SD_TIMEOUT, event);
                 return SD_TIMEOUT;
             }
             if ((event & 0x8U) != 0U) {
+                sdcard_record_last_command_result(SD_CRCERROR, event);
                 return SD_CRCERROR;
             }
+            sdcard_record_last_command_result(SD_OK, event);
             return SD_OK;
         }
         spin_delay(32U);
         --timeout;
     }
+    sdcard_record_last_command_result(SD_TIMEOUT, 0U);
     return SD_TIMEOUT;
 }
 
@@ -578,24 +713,32 @@ static u32 sdcard_wait_data_done(void) {
         if ((event & 0x1U) != 0U) {
             sdcard_ack_data_event(event);
             if ((event & 0x4U) != 0U) {
+                sdcard_record_last_data_result(SD_TIMEOUT, event);
                 return SD_TIMEOUT;
             }
             if ((event & 0x8U) != 0U) {
+                sdcard_record_last_data_result(SD_CRCERROR, event);
                 return SD_CRCERROR;
             }
+            sdcard_record_last_data_result(SD_OK, event);
             return SD_OK;
         }
         spin_delay(32U);
         --timeout;
     }
+    sdcard_record_last_data_result(SD_TIMEOUT, 0U);
     return SD_TIMEOUT;
 }
 
 static u32 sdcard_send_command(u32 argument, u32 cmd, u32 response_type, u32 data_type) {
+    sdcard_last_cmd = cmd;
+    sdcard_last_cmd_argument = argument;
+    sdcard_last_cmd_response_type = response_type;
+    sdcard_last_cmd_data_type = data_type;
     sdcard_ack_cmd_event(0xFU);
     sdcard_ack_data_event(0xFU);
     *sdcard_core_cmd_argument = argument;
-    *sdcard_core_cmd_command = (data_type << 5U) | (1U << 2U) | response_type | (cmd << 8U);
+    *sdcard_core_cmd_command = (data_type << 5U) | response_type | (cmd << 8U);
     *sdcard_core_cmd_send = 1U;
     return sdcard_wait_cmd_done();
 }
@@ -902,11 +1045,16 @@ static void sdcard_spi_read_blocks_contiguous(u32 start_block, u8* destination, 
 
 static void sdcard_read_block(u32 block, u8* destination) {
 #if defined(L64_SDCARD_INTERFACE_NATIVE)
+    u64 dma_base = pointer_to_u64(destination);
     u32 timeout = 1000000U;
 
+    if (!image_window_fits_ram(dma_base, SD_BLOCK_SIZE)) {
+        dma_base = L64_RAM_BASE + L64_RAM_SIZE - STAGE0_DMA_SCRATCH_SIZE;
+    }
+
     *sdcard_block2mem_dma_enable = 0U;
-    *sdcard_block2mem_dma_base_hi = (u32)((u64)(unsigned long long)(unsigned long)destination >> 32);
-    *sdcard_block2mem_dma_base_lo = (u32)(u64)(unsigned long long)(unsigned long)destination;
+    *sdcard_block2mem_dma_base_hi = (u32)(dma_base >> 32);
+    *sdcard_block2mem_dma_base_lo = (u32)dma_base;
     *sdcard_block2mem_dma_length = SD_BLOCK_SIZE;
     *sdcard_block2mem_dma_enable = 1U;
 
@@ -921,6 +1069,14 @@ static void sdcard_read_block(u32 block, u8* destination) {
 
     while (timeout != 0U) {
         if ((*sdcard_block2mem_dma_done & 0x1U) != 0U) {
+            if (dma_base != pointer_to_u64(destination)) {
+                volatile const u8* scratch = (volatile const u8*)(unsigned long)dma_base;
+                u32 index = 0U;
+                while (index < SD_BLOCK_SIZE) {
+                    destination[index] = scratch[index];
+                    ++index;
+                }
+            }
             return;
         }
         spin_delay(32U);
@@ -951,29 +1107,47 @@ static void sdcard_initialize_or_fail(void) {
     u32 timeout = 1000U;
     u16 rca;
     u32 response_word3;
+    u32 use_four_bit = 1U;
 
     serial_puts("stage0: initializing sdcard\n");
+    sdcard_set_data_width(SDCARD_PHY_WIDTH_1BIT);
     sdcard_set_clk_freq(400000U);
-    spin_delay(1024U);
+    /* Power-on settle: match the SPI path's >=1ms margin before SD traffic. */
+    spin_delay(200000U);
 
+    timeout = 16U;
     while (timeout != 0U) {
         *sdcard_phy_initialize = 1U;
-        spin_delay(1024U);
+        /*
+         * LiteSDCard's native init pulse emits 80 clocks.
+         * At the low bring-up clock (~390 kHz on the current divider), that
+         * takes about 205 us, so the previous ~10 us delay could start CMD0
+         * while the init clocks were still being generated.
+         */
+        spin_delay(50000U);
         if (sdcard_send_command(0U, 0U, SDCARD_CTRL_RESPONSE_NONE, SDCARD_CTRL_DATA_TRANSFER_NONE) == SD_OK) {
             break;
         }
+        spin_delay(20000U);
         --timeout;
     }
     if (timeout == 0U) {
+        sdcard_log_last_command_state("cmd0-failed");
         fail_hard("sdcard CMD0 failed");
     }
 
-    if (sdcard_send_command(0x000001AAU, 8U, SDCARD_CTRL_RESPONSE_SHORT, SDCARD_CTRL_DATA_TRANSFER_NONE) != SD_OK) {
+    timeout = 16U;
+    while (timeout != 0U) {
+        if (sdcard_send_command(0x000001AAU, 8U, SDCARD_CTRL_RESPONSE_SHORT, SDCARD_CTRL_DATA_TRANSFER_NONE) == SD_OK) {
+            break;
+        }
+        spin_delay(20000U);
+        --timeout;
+    }
+    if (timeout == 0U) {
+        sdcard_log_last_command_state("cmd8-failed");
         fail_hard("sdcard CMD8 failed");
     }
-
-    sdcard_set_clk_freq(25000000U);
-    spin_delay(1024U);
 
     timeout = 1000U;
     while (timeout != 0U) {
@@ -1010,22 +1184,6 @@ static void sdcard_initialize_or_fail(void) {
         fail_hard("sdcard CMD7 failed");
     }
     if (sdcard_send_command((u32)rca << 16U, 55U, SDCARD_CTRL_RESPONSE_SHORT, SDCARD_CTRL_DATA_TRANSFER_NONE) != SD_OK) {
-        fail_hard("sdcard CMD55 for ACMD6 failed");
-    }
-    if (sdcard_send_command(2U, 6U, SDCARD_CTRL_RESPONSE_SHORT, SDCARD_CTRL_DATA_TRANSFER_NONE) != SD_OK) {
-        fail_hard("sdcard ACMD6 failed");
-    }
-
-    *sdcard_core_block_length = 64U;
-    *sdcard_core_block_count = 1U;
-    if (sdcard_send_command(0x80FFFFF1U, 6U, SDCARD_CTRL_RESPONSE_SHORT, SDCARD_CTRL_DATA_TRANSFER_READ) != SD_OK) {
-        fail_hard("sdcard CMD6 switch failed");
-    }
-    if (sdcard_wait_data_done() != SD_OK) {
-        fail_hard("sdcard CMD6 data failed");
-    }
-
-    if (sdcard_send_command((u32)rca << 16U, 55U, SDCARD_CTRL_RESPONSE_SHORT, SDCARD_CTRL_DATA_TRANSFER_NONE) != SD_OK) {
         fail_hard("sdcard CMD55 for ACMD51 failed");
     }
     *sdcard_core_block_length = 8U;
@@ -1034,12 +1192,67 @@ static void sdcard_initialize_or_fail(void) {
         fail_hard("sdcard ACMD51 failed");
     }
     if (sdcard_wait_data_done() != SD_OK) {
+        sdcard_log_last_data_state("acmd51-data-failed");
         fail_hard("sdcard ACMD51 data failed");
+    }
+
+    if (sdcard_send_command((u32)rca << 16U, 55U, SDCARD_CTRL_RESPONSE_SHORT, SDCARD_CTRL_DATA_TRANSFER_NONE) != SD_OK) {
+        fail_hard("sdcard CMD55 for ACMD6 failed");
+    }
+    if (sdcard_send_command(2U, 6U, SDCARD_CTRL_RESPONSE_SHORT, SDCARD_CTRL_DATA_TRANSFER_NONE) != SD_OK) {
+        fail_hard("sdcard ACMD6 failed");
+    }
+    sdcard_set_data_width(SDCARD_PHY_WIDTH_4BIT);
+
+    *sdcard_core_block_length = 64U;
+    *sdcard_core_block_count = 1U;
+    if (sdcard_send_command(0x80FFFFF1U, 6U, SDCARD_CTRL_RESPONSE_SHORT, SDCARD_CTRL_DATA_TRANSFER_READ) != SD_OK) {
+        fail_hard("sdcard CMD6 switch failed");
+    }
+    if (sdcard_wait_data_done() != SD_OK) {
+        sdcard_log_last_data_state("cmd6-data-failed");
+        serial_puts("stage0: sdcard native falling back to 1-bit mode\n");
+        use_four_bit = 0U;
+        sdcard_set_data_width(SDCARD_PHY_WIDTH_1BIT);
+        if (sdcard_send_command((u32)rca << 16U, 55U, SDCARD_CTRL_RESPONSE_SHORT, SDCARD_CTRL_DATA_TRANSFER_NONE) != SD_OK) {
+            fail_hard("sdcard CMD55 for ACMD6 1-bit fallback failed");
+        }
+        if (sdcard_send_command(0U, 6U, SDCARD_CTRL_RESPONSE_SHORT, SDCARD_CTRL_DATA_TRANSFER_NONE) != SD_OK) {
+            fail_hard("sdcard ACMD6 1-bit fallback failed");
+        }
+        if (sdcard_send_command(0x80FFFFF1U, 6U, SDCARD_CTRL_RESPONSE_SHORT, SDCARD_CTRL_DATA_TRANSFER_READ) != SD_OK) {
+            fail_hard("sdcard CMD6 switch 1-bit retry failed");
+        }
+        if (sdcard_wait_data_done() != SD_OK) {
+            sdcard_log_last_data_state("cmd6-data-failed-1bit");
+            fail_hard("sdcard CMD6 data failed");
+        }
+    }
+
+    if (use_four_bit == 0U) {
+        serial_puts("stage0: sdcard native continuing in 1-bit mode\n");
     }
 
     if (sdcard_send_command(512U, 16U, SDCARD_CTRL_RESPONSE_SHORT, SDCARD_CTRL_DATA_TRANSFER_NONE) != SD_OK) {
         fail_hard("sdcard CMD16 failed");
     }
+
+#if defined(L64_SDCARD_INTERFACE_NATIVE)
+    if (SDCARD_NATIVE_FORCE_1BIT_FILESYSTEM_IO != 0U) {
+        serial_puts("stage0: sdcard native forcing 1-bit filesystem I/O\n");
+        if (sdcard_send_command((u32)rca << 16U, 55U, SDCARD_CTRL_RESPONSE_SHORT, SDCARD_CTRL_DATA_TRANSFER_NONE) != SD_OK) {
+            fail_hard("sdcard CMD55 for ACMD6 filesystem 1-bit forced mode failed");
+        }
+        if (sdcard_send_command(0U, 6U, SDCARD_CTRL_RESPONSE_SHORT, SDCARD_CTRL_DATA_TRANSFER_NONE) != SD_OK) {
+            fail_hard("sdcard ACMD6 filesystem 1-bit forced mode failed");
+        }
+        sdcard_set_data_width(SDCARD_PHY_WIDTH_1BIT);
+        use_four_bit = 0U;
+    }
+#endif
+
+    sdcard_set_clk_freq(10000000U);
+    spin_delay(1024U);
 
     serial_puts("stage0: sdcard ready\n");
 #elif defined(L64_SDCARD_INTERFACE_SPI)
@@ -1175,6 +1388,9 @@ static void load_fat32_volume_or_fail(void) {
 #endif
     sdcard_read_block(0U, sector_buffer);
     if (sector_buffer[510] != 0x55U || sector_buffer[511] != 0xAAU) {
+        serial_dump_bytes("stage0: mbr first16", sector_buffer, 16U);
+        serial_dump_bytes("stage0: mbr part0", &sector_buffer[446], 16U);
+        serial_dump_bytes("stage0: mbr tail16", &sector_buffer[496], 16U);
         fail_hard("sdcard MBR signature missing");
     }
 
@@ -1472,7 +1688,7 @@ static void load_kernel_and_handoff(const Stage0FileInfo* kernel_file, const Sta
     u64 kernel_end;
     u64 dtb_physical;
     u64 dtb_end;
-    u64 boot_stack_top = L64_RAM_BASE + L64_RAM_SIZE - 8ULL;
+    u64 boot_stack_top = L64_RAM_BASE + L64_RAM_SIZE - STAGE0_DMA_SCRATCH_SIZE - 8ULL;
     u32 current_kernel_offset = 0U;
     Stage0Progress kernel_progress;
     Stage0Progress dtb_progress;

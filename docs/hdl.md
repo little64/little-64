@@ -112,16 +112,17 @@ The Arty path currently:
 2. instantiates a real Arty platform through `litex-boards`,
 3. uses the onboard DDR3 via LiteDRAM,
 4. can optionally expose the onboard SPI flash as a LiteSPI controller,
-5. wires an external SD card through LiteX's SPI-mode SD controller,
-6. supports either the Arduino-style header preset on `ck_io30..33` or PMOD-based mappings,
+5. wires an external SD card through either the native 4-bit LiteSDCard path or the existing SPI-mode SD controller,
+6. defaults to an Arduino-style SDIO breakout preset on `ck_io34..40`, while still supporting the older SPI Arduino preset on `ck_io30..33` and PMOD-based mappings,
 7. stages a rebuilt DTS, DTB, SD bootrom image, and SD card image alongside the hardware build outputs,
 8. can optionally program the resulting artifacts over JTAG or into the board's configuration flash.
 
 The stage-0 source at `target/c_boot/litex_sd_boot.c` now supports both the
 native LiteSDCard bootrom-first flow and the Arty SPI-mode SD path from the
 same C file. The generated register header selects the backend at build time,
-so the Arty helper now compiles that same source against the hardware
-`spisdcard` CSR layout and preloads the result into the integrated boot ROM.
+so the Arty helper now compiles that same source against either the hardware
+native LiteSDCard CSR layout or the `spisdcard` CSR layout and preloads the
+result into the integrated boot ROM.
 That shared stage-0 now also consumes a small `BOOT.CRC` manifest from the
 FAT32 boot partition, verifies the loaded kernel image and DTB CRCs while it
 copies them from SD, and then rechecks the resulting SDRAM contents before
@@ -142,6 +143,9 @@ bring-up status without requiring any software support:
 - RGB LED 0 red = pulse-stretched store activity
 - RGB LED 0 green = running heartbeat (off when halted or locked up)
 - RGB LED 0 blue = pulse-stretched interrupt-pending indication
+- RGB LED 1 red = pulse-stretched native SD CMD output transitions
+- RGB LED 1 green = pulse-stretched native SD CMD output-enable transitions
+- RGB LED 1 blue = pulse-stretched native SD CMD input transitions observed while CMD is released
 - remaining RGB LEDs are held off for deterministic behavior
 
 The current Arty wiring drives the RGB channels as active-high. If the mono
@@ -156,7 +160,8 @@ LiteX wrapper hierarchy.
 
 Current limitation:
 
-- Kernel-side SPI-SD integration is still separate from stage-0. The bootrom can now load the kernel and DTB from SPI-mode SD on Arty builds, but the generated Linux DT path does not yet describe the SPI-SD storage path as a kernel rootfs device.
+- Kernel-side SPI-SD integration is still separate from stage-0. The bootrom can now load the kernel and DTB from SPI-mode SD on Arty builds, but the generated Linux DT path does not yet describe the SPI-SD storage path as a kernel rootfs device. The native 4-bit Arty path reuses the standard LiteX MMC/DTS contract instead.
+- The native Arty bootrom path currently forces filesystem block reads back to 1-bit mode after SD init. Hardware bring-up confirmed that card init, SCR reads, and bus-width switching work, but the current 4-bit bulk-read path can return shifted block payload bytes during FAT/kernel/DTB reads.
 - The simulation/emulator bootrom-first flow still uses the native LiteSDCard backend from the same source file.
 
 For repeated hardware testing against an already partitioned SD card, use `little64 sd update --device /dev/sdX` after regenerating the staged Arty SD image under `builddir/hdl-litex-arty/boot/`. That rewrites only the boot partition by default, and rewrites the rootfs partition only when `--update-rootfs` or `--rootfs-image PATH` is requested.
@@ -166,9 +171,11 @@ Typical usage:
 ```bash
 ./.venv/bin/little64 hdl arty-build
 ./.venv/bin/little64 hdl arty-build --generate-only
+./.venv/bin/little64 hdl arty-build --sdcard-mode native
+./.venv/bin/little64 hdl arty-build --sdcard-mode spi
 ./.venv/bin/little64 hdl arty-build --vivado-stop-after synthesis
 ./.venv/bin/little64 hdl arty-build --vivado-stop-after implementation
-./.venv/bin/little64 hdl arty-build --sdcard-connector pmodd --sdcard-adapter digilent
+./.venv/bin/little64 hdl arty-build --sdcard-mode spi --sdcard-connector pmodd --sdcard-adapter digilent
 ./.venv/bin/little64 hdl arty-build --program volatile
 ./.venv/bin/little64 hdl arty-build --program flash
 ./.venv/bin/little64 hdl arty-build --program-only --program volatile
@@ -184,8 +191,25 @@ Programming notes:
 - `--programmer auto|vivado|openocd` selects the programming backend; `auto` prefers Vivado when available.
 - Vivado-backed flash programming defaults to cfgmem part `s25fl128l-spi-x1_x2_x4`, matching the Arty A7-35T flash device used by the current LiteSPI integration.
 
-The default Arduino preset resolves the external SPI-mode SD wiring to the real
-Arty FPGA pins behind the board's Arduino-style header:
+The default Arduino preset now resolves the external Adafruit 4-bit SDIO
+breakout's physical header order to the real Arty FPGA pins behind the board's
+Arduino-style header:
+
+- `CLK` on `IO34` -> `R16`
+- `D0` on `IO35` -> `N16`
+- `CMD` on `IO36` -> `N14`
+- `D3` on `IO37` -> `U17`
+- `D1` on `IO38` -> `T18`
+- `D2` on `IO39` -> `R18`
+- `DET` on `IO40` -> `P18` (reserved for card-detect; omitted from the active LiteSDCard pad contract when unused)
+
+That ordering matches the Adafruit breakout's mixed SPI/SDIO header
+silkscreen, where the SDIO-capable pins appear physically as `CLK, D0, CMD,
+D3, D1, DAT2, DET`, while leaving the older SPI wiring on `IO30..33` free so
+both modules can remain connected for hardware testing.
+
+The explicit Arduino SPI preset remains available when you select
+`--sdcard-mode spi`:
 
 - `CS` on `IO30` -> `R11`
 - `MOSI` on `IO31` -> `R13`
@@ -193,7 +217,10 @@ Arty FPGA pins behind the board's Arduino-style header:
 - `MISO` on `IO33` -> `P15`
 
 Use `--sdcard-*-pin` overrides when you need an explicit custom wiring instead
-of the built-in Arduino or PMOD conventions.
+of the built-in Arduino or PMOD conventions. Native mode accepts
+`--sdcard-cmd-pin`, `--sdcard-d0-pin`, `--sdcard-d1-pin`, `--sdcard-d2-pin`,
+`--sdcard-d3-pin`, and `--sdcard-det-pin`; SPI mode keeps the existing
+`--sdcard-mosi-pin`, `--sdcard-miso-pin`, and `--sdcard-cs-pin` overrides.
 
 The V2 path now executes the shared ALU, jump, and LSU subsets, including register-form and PC-relative loads/stores, stack push/pop paths, load-linked/store-conditional sequencing, and split unaligned accesses on the 64-bit Wishbone bus. It now also performs privileged trap entry, Sv39-style page walking for fetch/data/vector accesses, and data-side cache-line reuse behind the `none` / `unified` / `split` cache-topology surface. The LiteX-facing delivery path now exposes those choices through CPU variants, and the Linux boot export/smoke helpers can select non-default V2 configurations. The V2 HDL regression matrix now covers same-line instruction invalidation, paged interrupt-vector fetch, and core trap/MMU fault cases in addition to the shared ISA and memory subsets.
 

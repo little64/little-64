@@ -108,6 +108,7 @@ def _write_stage0_header(
     sdcard_phy_region = soc.csr.regions.get('sdcard_phy')
     sdcard_core_region = soc.csr.regions.get('sdcard_core')
     sdcard_block2mem_region = soc.csr.regions.get('sdcard_block2mem')
+    sdcard_debug_region = soc.csr.regions.get('sdcard_debug')
     sdram_region = soc.csr.regions.get('sdram')
     has_native_sd = sdcard_phy_region is not None and sdcard_core_region is not None and sdcard_block2mem_region is not None
     has_spi_sd = spisdcard_region is not None
@@ -147,6 +148,20 @@ def _write_stage0_header(
             '#define L64_SDCARD_PHY_INITIALIZE_ADDR (L64_SDCARD_PHY_BASE + 0x08ULL)',
             '#define L64_SDCARD_PHY_DATAW_STATUS_ADDR (L64_SDCARD_PHY_BASE + 0x10ULL)',
             '#define L64_SDCARD_PHY_SETTINGS_ADDR (L64_SDCARD_PHY_BASE + 0x18ULL)',
+            *([] if sdcard_debug_region is None else [
+                '',
+                f'#define L64_SDCARD_DEBUG_BASE 0x{sdcard_debug_region.origin:016x}ULL',
+                '#define L64_SDCARD_DEBUG_SIGNALS_ADDR (L64_SDCARD_DEBUG_BASE + 0x00ULL)',
+                '#define L64_SDCARD_DEBUG_CMD_I_TRANSITIONS_ADDR (L64_SDCARD_DEBUG_BASE + 0x04ULL)',
+                '#define L64_SDCARD_DEBUG_CMD_O_TRANSITIONS_ADDR (L64_SDCARD_DEBUG_BASE + 0x08ULL)',
+                '#define L64_SDCARD_DEBUG_CMD_OE_TRANSITIONS_ADDR (L64_SDCARD_DEBUG_BASE + 0x0cULL)',
+                '#define L64_SDCARD_DEBUG_DATA0_I_TRANSITIONS_ADDR (L64_SDCARD_DEBUG_BASE + 0x10ULL)',
+                '#define L64_SDCARD_DEBUG_CLK_TRANSITIONS_ADDR (L64_SDCARD_DEBUG_BASE + 0x14ULL)',
+                '#define L64_SDCARD_DEBUG_CMD_I_RELEASED_TRANSITIONS_ADDR (L64_SDCARD_DEBUG_BASE + 0x18ULL)',
+                '#define L64_SDCARD_DEBUG_DATA1_I_TRANSITIONS_ADDR (L64_SDCARD_DEBUG_BASE + 0x1cULL)',
+                '#define L64_SDCARD_DEBUG_DATA2_I_TRANSITIONS_ADDR (L64_SDCARD_DEBUG_BASE + 0x20ULL)',
+                '#define L64_SDCARD_DEBUG_DATA3_I_TRANSITIONS_ADDR (L64_SDCARD_DEBUG_BASE + 0x24ULL)',
+            ]),
         ]
     else:
         spi_data_width = getattr(spisdcard, 'data_width', 8)

@@ -234,7 +234,9 @@ Useful variants:
 
 ```bash
 ./.venv/bin/little64 hdl arty-build --generate-only
-./.venv/bin/little64 hdl arty-build --sdcard-connector pmodd --sdcard-adapter digilent
+./.venv/bin/little64 hdl arty-build --sdcard-mode native
+./.venv/bin/little64 hdl arty-build --sdcard-mode spi
+./.venv/bin/little64 hdl arty-build --sdcard-mode spi --sdcard-connector pmodd --sdcard-adapter digilent
 ./.venv/bin/little64 hdl arty-build --with-spi-flash
 ./.venv/bin/little64 hdl arty-build --program volatile
 ./.venv/bin/little64 hdl arty-build --program flash
@@ -253,7 +255,13 @@ under `builddir/hdl-litex-arty/boot/`, including the SD bootrom built from
 `target/c_boot/litex_sd_boot.c`. That same source now builds both the native
 LiteSDCard stage-0 used by the simulator/emulator flows and the SPI-mode SD
 stage-0 used by the current Arty hardware path, and the Arty helper preloads
-the SPI-mode build into the integrated boot ROM.
+the backend-matched build into the integrated boot ROM.
+
+The default Arty SD wiring now targets the Adafruit 4-bit SDIO breakout on
+Arduino pins `IO34..40` in the breakout's physical header order `CLK, D0, CMD,
+D3, D1, D2, DET`, which leaves the older SPI test wiring on `IO30..33`
+available so both modules can stay connected during bring-up. Use
+`--sdcard-mode spi` to keep using the older SPI header mapping.
 
 The staged Arty DTS now also includes the Little64 Linux timer block, and the
 current hardware helper no longer advertises an unsupported MMC rootfs device

@@ -27,10 +27,14 @@ from litex.soc.integration.builder import Builder  # type: ignore[import-untyped
 import little64.commands.sd.artifacts as _BUILD_SD_BOOT_ARTIFACTS
 from little64_cores.litex import LITTLE64_LINUX_RAM_BASE
 from little64_cores.litex_arty import (
+    ARTY_SDCARD_MODE_NATIVE,
+    ARTY_SDCARD_MODE_SPI,
+    ARTY_SDCARD_MODES,
+    Little64ArtySDCardMapping,
     Little64ArtySPISDCardMapping,
     Little64LiteXArtySoC,
     create_arty_platform,
-    resolve_arty_spi_sdcard_mapping,
+    resolve_arty_sdcard_mapping,
 )
 from little64_cores.litex_soc import generate_linux_dts
 
@@ -392,7 +396,8 @@ def _rebuild_sd_boot_artifacts(
         with_spi_flash=args.with_spi_flash,
         with_sdcard=True,
         with_timer=True,
-        spisdcard_mapping=_resolve_sdcard_mapping(args),
+        sdcard_mode=args.sdcard_mode,
+        sdcard_mapping=_resolve_sdcard_mapping(args),
         toolchain=args.toolchain,
     )
     soc.platform.output_dir = str(artifact_paths['dir'])
@@ -423,8 +428,10 @@ def _rebuild_sd_boot_artifacts(
         stage0_linker=args.sd_bootrom_linker,
     )
     print(f'Rebuilt SD boot artifacts: {artifact_paths["bootrom"]} and {artifact_paths["sd_image"]}')
+    sd_backend = 'native LiteSDCard' if args.sdcard_mode == ARTY_SDCARD_MODE_NATIVE else 'SPI-mode SD'
     print(
-        'Compiled the staged bootrom from target/c_boot/litex_sd_boot.c against the Arty SPI-mode SD CSR layout and will preload it into the integrated boot ROM.'
+        'Compiled the staged bootrom from target/c_boot/litex_sd_boot.c '
+        f'against the Arty {sd_backend} CSR layout and will preload it into the integrated boot ROM.'
     )
     return _BUILD_SD_BOOT_ARTIFACTS.pack_litex_memory_words(
         bootrom_image,
@@ -516,13 +523,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument('--with-sdram', action=argparse.BooleanOptionalAction, default=True, help='Enable the onboard DDR3 controller and expose main RAM in SDRAM.')
     parser.add_argument('--integrated-main-ram-size', type=_parse_int, default=0x008000, help='Integrated main RAM size to use when SDRAM is disabled.')
     parser.add_argument('--with-spi-flash', action='store_true', help='Expose the onboard SPI flash as a memory-mapped LiteSPI controller.')
-    parser.add_argument('--with-sdcard', action=argparse.BooleanOptionalAction, default=True, help='Expose an SPI-mode SD card controller using the selected connector mapping.')
+    parser.add_argument('--with-sdcard', action=argparse.BooleanOptionalAction, default=True, help='Expose an SD card controller using the selected backend and connector mapping.')
+    parser.add_argument('--sdcard-mode', choices=ARTY_SDCARD_MODES, default=ARTY_SDCARD_MODE_NATIVE, help='SD card backend to expose on Arty hardware. `native` is the default and uses the non-conflicting Arduino IO34..40 SDIO preset; `spi` preserves the current SPI module path.')
     parser.add_argument('--sdcard-connector', choices=('arduino', 'pmoda', 'pmodb', 'pmodc', 'pmodd'), default='arduino', help='Board connector used for the external SD wiring.')
     parser.add_argument('--sdcard-adapter', choices=('digilent', 'numato'), default='digilent', help='Wiring convention used when the SD card is attached through a PMOD adapter.')
-    parser.add_argument('--sdcard-clk-pin', help='Override the resolved SPI clock pin or connector pin expression.')
-    parser.add_argument('--sdcard-mosi-pin', help='Override the resolved MOSI pin or connector pin expression.')
-    parser.add_argument('--sdcard-miso-pin', help='Override the resolved MISO pin or connector pin expression.')
-    parser.add_argument('--sdcard-cs-pin', help='Override the resolved chip-select pin or connector pin expression.')
+    parser.add_argument('--sdcard-clk-pin', help='Override the resolved SD clock pin or connector pin expression.')
+    parser.add_argument('--sdcard-mosi-pin', help='Override the resolved SPI MOSI pin or connector pin expression. Only valid with --sdcard-mode spi.')
+    parser.add_argument('--sdcard-miso-pin', help='Override the resolved SPI MISO pin or connector pin expression. Only valid with --sdcard-mode spi.')
+    parser.add_argument('--sdcard-cs-pin', help='Override the resolved SPI chip-select pin or connector pin expression. Only valid with --sdcard-mode spi.')
+    parser.add_argument('--sdcard-cmd-pin', help='Override the resolved native SD CMD pin or connector pin expression. Only valid with --sdcard-mode native.')
+    parser.add_argument('--sdcard-d0-pin', help='Override the resolved native SD DAT0 pin or connector pin expression. Only valid with --sdcard-mode native.')
+    parser.add_argument('--sdcard-d1-pin', help='Override the resolved native SD DAT1 pin or connector pin expression. Only valid with --sdcard-mode native.')
+    parser.add_argument('--sdcard-d2-pin', help='Override the resolved native SD DAT2 pin or connector pin expression. Only valid with --sdcard-mode native.')
+    parser.add_argument('--sdcard-d3-pin', help='Override the resolved native SD DAT3 pin or connector pin expression. Only valid with --sdcard-mode native.')
+    parser.add_argument('--sdcard-det-pin', help='Override the reserved SD card-detect pin or connector pin expression. Only valid with --sdcard-mode native.')
     parser.add_argument('--kernel-elf', type=Path, default=DEFAULT_KERNEL_ELF,
         help='Kernel ELF packed into regenerated SD boot artifacts when the SD boot path is enabled.')
     rootfs_group = parser.add_mutually_exclusive_group()
@@ -575,16 +589,29 @@ def _ensure_requested_toolchain_is_available(args: argparse.Namespace) -> None:
         )
 
 
-def _resolve_sdcard_mapping(args: argparse.Namespace) -> Little64ArtySPISDCardMapping | None:
+def _resolve_sdcard_mapping(args: argparse.Namespace) -> Little64ArtySDCardMapping | None:
     if not args.with_sdcard:
         return None
-    return resolve_arty_spi_sdcard_mapping(
+    if args.sdcard_mode == ARTY_SDCARD_MODE_SPI:
+        if any((args.sdcard_cmd_pin, args.sdcard_d0_pin, args.sdcard_d1_pin, args.sdcard_d2_pin, args.sdcard_d3_pin, args.sdcard_det_pin)):
+            raise SystemExit('Native SD pin overrides (--sdcard-cmd-pin/--sdcard-d{0,1,2,3}-pin/--sdcard-det-pin) require --sdcard-mode native')
+    elif args.sdcard_mode == ARTY_SDCARD_MODE_NATIVE:
+        if any((args.sdcard_mosi_pin, args.sdcard_miso_pin, args.sdcard_cs_pin)):
+            raise SystemExit('SPI SD pin overrides (--sdcard-mosi-pin/--sdcard-miso-pin/--sdcard-cs-pin) require --sdcard-mode spi')
+    return resolve_arty_sdcard_mapping(
+        mode=args.sdcard_mode,
         connector=args.sdcard_connector,
         adapter=args.sdcard_adapter,
         clk=args.sdcard_clk_pin,
         mosi=args.sdcard_mosi_pin,
         miso=args.sdcard_miso_pin,
         cs_n=args.sdcard_cs_pin,
+        cmd=args.sdcard_cmd_pin,
+        data0=args.sdcard_d0_pin,
+        data1=args.sdcard_d1_pin,
+        data2=args.sdcard_d2_pin,
+        data3=args.sdcard_d3_pin,
+        det=args.sdcard_det_pin,
     )
 
 
@@ -631,6 +658,24 @@ def _program_artifacts(
                 programmer.flash(args.flash_address, str(artifact_path))
 
 
+def _print_sdcard_mapping(mapping: Little64ArtySDCardMapping, *, mode: str) -> None:
+    print('Little64 Arty SD mapping:')
+    print(f'  mode:   {mode}')
+    print(f'  source: {mapping.name}')
+    print(f'  clk:    {mapping.clk}')
+    if isinstance(mapping, Little64ArtySPISDCardMapping):
+        print(f'  mosi:   {mapping.mosi}')
+        print(f'  miso:   {mapping.miso}')
+        print(f'  cs_n:   {mapping.cs_n}')
+        return
+    print(f'  cmd:    {mapping.cmd}')
+    print(f'  d0:     {mapping.data0}')
+    print(f'  d1:     {mapping.data1}')
+    print(f'  d2:     {mapping.data2}')
+    print(f'  d3:     {mapping.data3}')
+    print(f'  det:    {mapping.det or "(reserved only)"}')
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     requested_build_name = args.build_name
@@ -657,12 +702,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f'Adjusted build name for Verilog compatibility: {requested_build_name} -> {args.build_name}')
 
     if sdcard_mapping is not None:
-        print('Little64 Arty SPI SD mapping:')
-        print(f'  source: {sdcard_mapping.name}')
-        print(f'  clk:    {sdcard_mapping.clk}')
-        print(f'  mosi:   {sdcard_mapping.mosi}')
-        print(f'  miso:   {sdcard_mapping.miso}')
-        print(f'  cs_n:   {sdcard_mapping.cs_n}')
+        _print_sdcard_mapping(sdcard_mapping, mode=args.sdcard_mode)
 
     if not args.program_only:
         _clean_litex_output(output_dir)
@@ -679,7 +719,8 @@ def main(argv: list[str] | None = None) -> int:
             with_sdcard=args.with_sdcard,
             with_timer=True,
             cpu_variant=args.cpu_variant,
-            spisdcard_mapping=sdcard_mapping,
+            sdcard_mode=args.sdcard_mode,
+            sdcard_mapping=sdcard_mapping,
             toolchain=args.toolchain,
         )
 

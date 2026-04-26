@@ -1,11 +1,17 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+import os
 
-from migen import ClockDomain, If, Signal
+from dataclasses import dataclass, replace
+from typing import Literal
+
+from migen import ClockDomain, If, Instance, Module, Replicate, Signal
 
 from litex.build.generic_platform import IOStandard, Misc, Pins, Subsignal
+from litex.build.io import SDRTristate
+from litex.build.xilinx.common import XilinxSDRTristate
 from litex.gen import LiteXModule
+from litex.soc.interconnect.csr import CSRField, CSRStatus
 from litex.soc.cores.clock import S7IDELAYCTRL, S7PLL
 
 from litedram import modules as litedram_modules
@@ -19,8 +25,13 @@ from .litex_soc import Little64LiteXSoC
 
 
 ARTY_PMOD_HEADERS = ('pmoda', 'pmodb', 'pmodc', 'pmodd')
+ARTY_SDCARD_MODE_NATIVE = 'native'
+ARTY_SDCARD_MODE_SPI = 'spi'
+ARTY_SDCARD_MODES = (ARTY_SDCARD_MODE_NATIVE, ARTY_SDCARD_MODE_SPI)
 ARTY_SPI_SDCARD_PRESET_ARDUINO_IO30_33 = 'arduino-io30-33'
 ARTY_SPI_SDCARD_PRESETS = (ARTY_SPI_SDCARD_PRESET_ARDUINO_IO30_33,)
+ARTY_NATIVE_SDCARD_PRESET_ARDUINO_IO34_40 = 'arduino-io34-40'
+ARTY_NATIVE_SDCARD_PRESETS = (ARTY_NATIVE_SDCARD_PRESET_ARDUINO_IO34_40,)
 ARTY_USER_LED_COUNT = 4
 ARTY_RGB_LED_COUNT = 4
 # Hardware validation on the Arty board shows the RGB channels behave as
@@ -39,6 +50,23 @@ class Little64ArtySPISDCardMapping:
     cs_n: str
 
 
+@dataclass(frozen=True, slots=True)
+class Little64ArtyNativeSDCardMapping:
+    name: str
+    description: str
+    clk: str
+    cmd: str
+    data0: str
+    data1: str
+    data2: str
+    data3: str
+    det: str | None = None
+
+
+ArtySDCardMode = Literal['native', 'spi']
+Little64ArtySDCardMapping = Little64ArtySPISDCardMapping | Little64ArtyNativeSDCardMapping
+
+
 LITTLE64_ARTY_SPI_SDCARD_MAPPINGS = {
     ARTY_SPI_SDCARD_PRESET_ARDUINO_IO30_33: Little64ArtySPISDCardMapping(
         name=ARTY_SPI_SDCARD_PRESET_ARDUINO_IO30_33,
@@ -47,6 +75,20 @@ LITTLE64_ARTY_SPI_SDCARD_MAPPINGS = {
         mosi='R13',
         miso='P15',
         cs_n='R11',
+    ),
+}
+
+LITTLE64_ARTY_NATIVE_SDCARD_MAPPINGS = {
+    ARTY_NATIVE_SDCARD_PRESET_ARDUINO_IO34_40: Little64ArtyNativeSDCardMapping(
+        name=ARTY_NATIVE_SDCARD_PRESET_ARDUINO_IO34_40,
+        description='Arduino-style Adafruit SDIO breakout header mapping using Arty ck_io34..40',
+        clk='R16',
+        cmd='N14',
+        data0='N16',
+        data1='T18',
+        data2='R18',
+        data3='U17',
+        det='P18',
     ),
 }
 
@@ -95,6 +137,102 @@ def resolve_arty_spi_sdcard_mapping(
     )
 
 
+def resolve_arty_native_sdcard_mapping(
+    *,
+    connector: str = 'arduino',
+    adapter: str = 'digilent',
+    clk: str | None = None,
+    cmd: str | None = None,
+    data0: str | None = None,
+    data1: str | None = None,
+    data2: str | None = None,
+    data3: str | None = None,
+    det: str | None = None,
+) -> Little64ArtyNativeSDCardMapping:
+    if connector == 'arduino':
+        mapping = LITTLE64_ARTY_NATIVE_SDCARD_MAPPINGS[ARTY_NATIVE_SDCARD_PRESET_ARDUINO_IO34_40]
+    elif connector in ARTY_PMOD_HEADERS:
+        if adapter == 'digilent':
+            mapping = Little64ArtyNativeSDCardMapping(
+                name=f'digilent-{connector}',
+                description=f'Digilent MicroSD PMOD mapping on {connector}',
+                clk=f'{connector}:3',
+                cmd=f'{connector}:1',
+                data0=f'{connector}:2',
+                data1=f'{connector}:4',
+                data2=f'{connector}:5',
+                data3=f'{connector}:0',
+                det=f'{connector}:6',
+            )
+        elif adapter == 'numato':
+            mapping = Little64ArtyNativeSDCardMapping(
+                name=f'numato-{connector}',
+                description=f'Numato MicroSD PMOD mapping on {connector}',
+                clk=f'{connector}:5',
+                cmd=f'{connector}:1',
+                data0=f'{connector}:2',
+                data1=f'{connector}:6',
+                data2=f'{connector}:0',
+                data3=f'{connector}:4',
+                det=None,
+            )
+        else:
+            raise ValueError(f'Unsupported Arty native SD card adapter: {adapter}')
+    else:
+        raise ValueError(f'Unsupported Arty native SD card connector: {connector}')
+
+    return replace(
+        mapping,
+        clk=clk or mapping.clk,
+        cmd=cmd or mapping.cmd,
+        data0=data0 or mapping.data0,
+        data1=data1 or mapping.data1,
+        data2=data2 or mapping.data2,
+        data3=data3 or mapping.data3,
+        det=det if det is not None else mapping.det,
+    )
+
+
+def resolve_arty_sdcard_mapping(
+    *,
+    mode: ArtySDCardMode = ARTY_SDCARD_MODE_NATIVE,
+    connector: str = 'arduino',
+    adapter: str = 'digilent',
+    clk: str | None = None,
+    mosi: str | None = None,
+    miso: str | None = None,
+    cs_n: str | None = None,
+    cmd: str | None = None,
+    data0: str | None = None,
+    data1: str | None = None,
+    data2: str | None = None,
+    data3: str | None = None,
+    det: str | None = None,
+) -> Little64ArtySDCardMapping:
+    if mode == ARTY_SDCARD_MODE_SPI:
+        return resolve_arty_spi_sdcard_mapping(
+            connector=connector,
+            adapter=adapter,
+            clk=clk,
+            mosi=mosi,
+            miso=miso,
+            cs_n=cs_n,
+        )
+    if mode == ARTY_SDCARD_MODE_NATIVE:
+        return resolve_arty_native_sdcard_mapping(
+            connector=connector,
+            adapter=adapter,
+            clk=clk,
+            cmd=cmd,
+            data0=data0,
+            data1=data1,
+            data2=data2,
+            data3=data3,
+            det=det,
+        )
+    raise ValueError(f'Unsupported Arty SD card mode: {mode}')
+
+
 def arty_spi_sdcard_extension(mapping: Little64ArtySPISDCardMapping) -> list[tuple]:
     return [
         (
@@ -108,6 +246,21 @@ def arty_spi_sdcard_extension(mapping: Little64ArtySPISDCardMapping) -> list[tup
     ]
 
 
+def arty_native_sdcard_extension(mapping: Little64ArtyNativeSDCardMapping) -> list[tuple]:
+    resource = [
+        (
+            'sdcard', 0,
+            Subsignal('data', Pins(f'{mapping.data0} {mapping.data1} {mapping.data2} {mapping.data3}'), Misc('SLEW=FAST'), Misc('PULLUP True')),
+            Subsignal('cmd', Pins(mapping.cmd), Misc('SLEW=FAST'), Misc('PULLUP True')),
+            Subsignal('clk', Pins(mapping.clk), Misc('SLEW=FAST')),
+        )
+    ]
+    if mapping.det is not None:
+        resource[0] += (Subsignal('cd', Pins(mapping.det)),)
+    resource[0] += (IOStandard('LVCMOS33'),)
+    return resource
+
+
 def _import_digilent_arty_platform():
     try:
         from litex_boards.platforms import digilent_arty
@@ -118,9 +271,215 @@ def _import_digilent_arty_platform():
     return digilent_arty
 
 
+class _Little64XilinxSDRTristateImpl(Module):
+    def __init__(self, io, o, oe, i, clk):
+        output_enable_bus = Signal(len(io), name='little64_sd_output_enable_bus')
+
+        self.comb += output_enable_bus.eq(_little64_sd_output_enable_bus(oe, len(io)))
+
+        for bit in range(len(io)):
+            data_out = Signal(name=f'little64_sd_data_out_{bit}')
+            output_enable = Signal(name=f'little64_sd_output_enable_{bit}')
+            tristate_n = Signal(name=f'little64_sd_tristate_n_{bit}')
+            data_in = Signal(name=f'little64_sd_data_in_{bit}')
+
+            self.comb += output_enable.eq(output_enable_bus[bit])
+
+            self.specials += Instance(
+                'ODDR',
+                p_DDR_CLK_EDGE='SAME_EDGE',
+                i_C=clk,
+                i_CE=1,
+                i_S=0,
+                i_R=0,
+                i_D1=o[bit],
+                i_D2=o[bit],
+                o_Q=data_out,
+            )
+            self.specials += Instance(
+                'ODDR',
+                p_DDR_CLK_EDGE='SAME_EDGE',
+                i_C=clk,
+                i_CE=1,
+                i_S=0,
+                i_R=0,
+                i_D1=~output_enable,
+                i_D2=~output_enable,
+                o_Q=tristate_n,
+            )
+            self.specials += Instance(
+                'IDDR',
+                p_DDR_CLK_EDGE='SAME_EDGE',
+                i_C=clk,
+                i_CE=1,
+                i_S=0,
+                i_R=0,
+                i_D=data_in,
+                o_Q1=i[bit],
+                o_Q2=Signal(),
+            )
+            self.specials += Instance(
+                'IOBUF',
+                io_IO=io[bit],
+                o_O=data_in,
+                i_I=data_out,
+                i_T=tristate_n,
+            )
+
+
+class _Little64XilinxSDRTristate:
+    @staticmethod
+    def lower(dr):
+        if len(dr.io) == 1 and os.environ.get('LITTLE64_ARTY_FORCE_CMD_WAVE') == '1':
+            return _Little64ForcedCMDWaveTristateImpl(dr.io, dr.i, dr.clk)
+        if len(dr.io) == 1:
+            return XilinxSDRTristate.lower(dr)
+        return _Little64XilinxSDRTristateImpl(dr.io, dr.o, dr.oe, dr.i, dr.clk)
+
+
+def _little64_sd_output_enable_bus(oe, width: int):
+    if len(oe) == width:
+        return oe
+    if len(oe) == 1:
+        return Replicate(oe, width)
+    raise ValueError(f'Unsupported SD output-enable width: {len(oe)} for {width} lanes')
+
+
+class _Little64ForcedCMDWaveTristateImpl(Module):
+    def __init__(self, io, i, clk):
+        pad_in = Signal()
+        counter = Signal(18)
+        wave = Signal()
+
+        self.sync += counter.eq(counter + 1)
+        self.comb += wave.eq(counter[-1])
+        self.specials += SDRInput(pad_in, i, clk)
+        self.specials += Instance(
+            'IOBUF',
+            io_IO=io,
+            o_O=pad_in,
+            i_I=wave,
+            i_T=0,
+        )
+
+
+class _Little64NativeSDDebug(LiteXModule):
+    def __init__(self, sdpads):
+        self.signals = CSRStatus(fields=[
+            CSRField('cmd_i', size=1, offset=0),
+            CSRField('cmd_o', size=1, offset=1),
+            CSRField('cmd_oe', size=1, offset=2),
+            CSRField('data0_i', size=1, offset=3),
+            CSRField('data1_i', size=1, offset=4),
+            CSRField('data2_i', size=1, offset=5),
+            CSRField('data3_i', size=1, offset=6),
+            CSRField('data0_o', size=1, offset=7),
+            CSRField('data_oe', size=1, offset=8),
+            CSRField('clk', size=1, offset=9),
+        ])
+        self.cmd_i_transitions = CSRStatus(32)
+        self.cmd_o_transitions = CSRStatus(32)
+        self.cmd_oe_transitions = CSRStatus(32)
+        self.data0_i_transitions = CSRStatus(32)
+        self.data1_i_transitions = CSRStatus(32)
+        self.data2_i_transitions = CSRStatus(32)
+        self.data3_i_transitions = CSRStatus(32)
+        self.clk_transitions = CSRStatus(32)
+        self.cmd_i_released_transitions = CSRStatus(32)
+
+        cmd_i_prev = Signal()
+        cmd_o_prev = Signal()
+        cmd_oe_prev = Signal()
+        data0_i_prev = Signal()
+        data1_i_prev = Signal()
+        data2_i_prev = Signal()
+        data3_i_prev = Signal()
+        clk_prev = Signal()
+        cmd_i_count = Signal(32)
+        cmd_o_count = Signal(32)
+        cmd_oe_count = Signal(32)
+        data0_i_count = Signal(32)
+        data1_i_count = Signal(32)
+        data2_i_count = Signal(32)
+        data3_i_count = Signal(32)
+        clk_count = Signal(32)
+        cmd_i_released_count = Signal(32)
+
+        self.comb += [
+            self.signals.fields.cmd_i.eq(sdpads.cmd.i),
+            self.signals.fields.cmd_o.eq(sdpads.cmd.o),
+            self.signals.fields.cmd_oe.eq(sdpads.cmd.oe),
+            self.signals.fields.data0_i.eq(sdpads.data.i[0]),
+            self.signals.fields.data1_i.eq(sdpads.data.i[1]),
+            self.signals.fields.data2_i.eq(sdpads.data.i[2]),
+            self.signals.fields.data3_i.eq(sdpads.data.i[3]),
+            self.signals.fields.data0_o.eq(sdpads.data.o[0]),
+            self.signals.fields.data_oe.eq(sdpads.data.oe),
+            self.signals.fields.clk.eq(sdpads.clk),
+            self.cmd_i_transitions.status.eq(cmd_i_count),
+            self.cmd_o_transitions.status.eq(cmd_o_count),
+            self.cmd_oe_transitions.status.eq(cmd_oe_count),
+            self.data0_i_transitions.status.eq(data0_i_count),
+            self.data1_i_transitions.status.eq(data1_i_count),
+            self.data2_i_transitions.status.eq(data2_i_count),
+            self.data3_i_transitions.status.eq(data3_i_count),
+            self.clk_transitions.status.eq(clk_count),
+            self.cmd_i_released_transitions.status.eq(cmd_i_released_count),
+        ]
+
+        self.sync += [
+            If(cmd_i_prev != sdpads.cmd.i,
+                cmd_i_count.eq(cmd_i_count + 1),
+            ),
+            If(cmd_o_prev != sdpads.cmd.o,
+                cmd_o_count.eq(cmd_o_count + 1),
+            ),
+            If(cmd_oe_prev != sdpads.cmd.oe,
+                cmd_oe_count.eq(cmd_oe_count + 1),
+            ),
+            If(data0_i_prev != sdpads.data.i[0],
+                data0_i_count.eq(data0_i_count + 1),
+            ),
+            If(data1_i_prev != sdpads.data.i[1],
+                data1_i_count.eq(data1_i_count + 1),
+            ),
+            If(data2_i_prev != sdpads.data.i[2],
+                data2_i_count.eq(data2_i_count + 1),
+            ),
+            If(data3_i_prev != sdpads.data.i[3],
+                data3_i_count.eq(data3_i_count + 1),
+            ),
+            If(clk_prev != sdpads.clk,
+                clk_count.eq(clk_count + 1),
+            ),
+            If((cmd_i_prev != sdpads.cmd.i) & ~sdpads.cmd.oe,
+                cmd_i_released_count.eq(cmd_i_released_count + 1),
+            ),
+            cmd_i_prev.eq(sdpads.cmd.i),
+            cmd_o_prev.eq(sdpads.cmd.o),
+            cmd_oe_prev.eq(sdpads.cmd.oe),
+            data0_i_prev.eq(sdpads.data.i[0]),
+            data1_i_prev.eq(sdpads.data.i[1]),
+            data2_i_prev.eq(sdpads.data.i[2]),
+            data3_i_prev.eq(sdpads.data.i[3]),
+            clk_prev.eq(sdpads.clk),
+        ]
+
+
+def _little64_arty_platform_class(base_platform):
+    class Little64ArtyPlatform(base_platform):
+        def get_verilog(self, *args, special_overrides=dict(), **kwargs):
+            so = {SDRTristate: _Little64XilinxSDRTristate}
+            so.update(special_overrides)
+            return super().get_verilog(*args, special_overrides=so, **kwargs)
+
+    return Little64ArtyPlatform
+
+
 def create_arty_platform(*, variant: str = 'a7-35', toolchain: str = 'vivado'):
     digilent_arty = _import_digilent_arty_platform()
-    return digilent_arty.Platform(variant=variant, toolchain=toolchain)
+    platform_cls = _little64_arty_platform_class(digilent_arty.Platform)
+    return platform_cls(variant=variant, toolchain=toolchain)
 
 
 class Little64LiteXArtyCRG(LiteXModule):
@@ -170,7 +529,8 @@ class Little64LiteXArtySoC(Little64LiteXSoC):
         boot_source: str | None = None,
         boot_r1: int = 0,
         boot_stack_address: int | None = None,
-        spisdcard_mapping: Little64ArtySPISDCardMapping | None = None,
+        sdcard_mode: ArtySDCardMode = ARTY_SDCARD_MODE_NATIVE,
+        sdcard_mapping: Little64ArtySDCardMapping | None = None,
         board_variant: str = 'a7-35',
         toolchain: str = 'vivado',
         **kwargs,
@@ -190,9 +550,18 @@ class Little64LiteXArtySoC(Little64LiteXSoC):
 
         platform = create_arty_platform(variant=board_variant, toolchain=toolchain)
         if effective_with_sdcard:
-            if spisdcard_mapping is None:
-                raise ValueError('An SPI SD card mapping is required when the Arty hardware SoC enables SD card support')
-            platform.add_extension(arty_spi_sdcard_extension(spisdcard_mapping))
+            if sdcard_mapping is None:
+                raise ValueError('An SD card mapping is required when the Arty hardware SoC enables SD card support')
+            if sdcard_mode == ARTY_SDCARD_MODE_SPI:
+                if not isinstance(sdcard_mapping, Little64ArtySPISDCardMapping):
+                    raise ValueError('SPI Arty SD mode requires an SPI SD card mapping')
+                platform.add_extension(arty_spi_sdcard_extension(sdcard_mapping))
+            elif sdcard_mode == ARTY_SDCARD_MODE_NATIVE:
+                if not isinstance(sdcard_mapping, Little64ArtyNativeSDCardMapping):
+                    raise ValueError('Native Arty SD mode requires a native SD card mapping')
+                platform.add_extension(arty_native_sdcard_extension(sdcard_mapping))
+            else:
+                raise ValueError(f'Unsupported Arty SD card mode: {sdcard_mode}')
 
         self.crg = Little64LiteXArtyCRG(
             platform,
@@ -212,7 +581,7 @@ class Little64LiteXArtySoC(Little64LiteXSoC):
             with_sdram=with_sdram,
             with_spi_flash=with_spi_flash,
             with_sdcard=with_sdcard,
-            sdcard_mode='spi',
+            sdcard_mode=sdcard_mode,
             sdram_module=sdram_module,
             sdram_data_width=sdram_data_width,
             ident=ident,
@@ -225,6 +594,16 @@ class Little64LiteXArtySoC(Little64LiteXSoC):
             **kwargs,
         )
         self._configure_debug_leds()
+
+    def _configure_sdcard(self, *, mode: str, sdcard_image_path: str | Path | None) -> None:
+        if mode == ARTY_SDCARD_MODE_NATIVE:
+            if sdcard_image_path is not None:
+                raise ValueError('sdcard_image_path is only supported for simulation-backed native LiteSDCard mode')
+            self.add_sdcard('sdcard', use_emulator=False)
+            if hasattr(self, 'sdcard_phy') and hasattr(self.sdcard_phy, 'sdpads'):
+                self.add_module(name='sdcard_debug', module=_Little64NativeSDDebug(self.sdcard_phy.sdpads))
+            return
+        super()._configure_sdcard(mode=mode, sdcard_image_path=sdcard_image_path)
 
     def _configure_debug_leds(self) -> None:
         pulse_cycles = max(1, int(self.sys_clk_freq // 8))
@@ -247,6 +626,9 @@ class Little64LiteXArtySoC(Little64LiteXSoC):
         self.arty_led_store_activity = Signal(name='arty_led_store_activity')
         self.arty_led_running_heartbeat = Signal(name='arty_led_running_heartbeat')
         self.arty_led_irq_pending = Signal(name='arty_led_irq_pending')
+        self.arty_led_sd_cmd_output_activity = Signal(name='arty_led_sd_cmd_output_activity')
+        self.arty_led_sd_cmd_output_enable_activity = Signal(name='arty_led_sd_cmd_output_enable_activity')
+        self.arty_led_sd_cmd_released_input_activity = Signal(name='arty_led_sd_cmd_released_input_activity')
 
         def _make_stretched_level(source: Signal, *, name: str) -> Signal:
             counter = Signal(max=pulse_counter_max, name=f'{name}_stretch_counter')
@@ -259,12 +641,50 @@ class Little64LiteXArtySoC(Little64LiteXSoC):
             self.comb += level.eq(source | (counter != 0))
             return level
 
+        def _make_stretched_transition(source: Signal, *, name: str, gate: Signal | None = None) -> Signal:
+            counter = Signal(max=pulse_counter_max, name=f'{name}_transition_counter')
+            previous = Signal(name=f'{name}_previous')
+            pulse = Signal(name=f'{name}_transition_level')
+            gate_enabled = Signal(name=f'{name}_gate_enabled')
+
+            if gate is None:
+                self.comb += gate_enabled.eq(1)
+            else:
+                self.comb += gate_enabled.eq(gate)
+
+            self.sync += [
+                If((previous != source) & gate_enabled,
+                    counter.eq(pulse_cycles),
+                ).Elif(counter != 0,
+                    counter.eq(counter - 1),
+                ),
+                previous.eq(source),
+            ]
+            self.comb += pulse.eq(counter != 0)
+            return pulse
+
         i_bus_request = Signal(name='arty_i_bus_request')
         d_bus_request = Signal(name='arty_d_bus_request')
         store_request = Signal(name='arty_store_request')
         irq_pending = Signal(name='arty_irq_pending')
+        sd_cmd_i = Signal(name='arty_sd_cmd_i')
+        sd_cmd_o = Signal(name='arty_sd_cmd_o')
+        sd_cmd_oe = Signal(name='arty_sd_cmd_oe')
         heartbeat_counter = Signal(max=max(2, heartbeat_half_period), name='arty_heartbeat_counter')
         heartbeat_toggle = Signal(name='arty_heartbeat_toggle')
+
+        if hasattr(self, 'sdcard_phy') and hasattr(self.sdcard_phy, 'sdpads'):
+            self.comb += [
+                sd_cmd_i.eq(self.sdcard_phy.sdpads.cmd.i),
+                sd_cmd_o.eq(self.sdcard_phy.sdpads.cmd.o),
+                sd_cmd_oe.eq(self.sdcard_phy.sdpads.cmd.oe),
+            ]
+        else:
+            self.comb += [
+                sd_cmd_i.eq(0),
+                sd_cmd_o.eq(0),
+                sd_cmd_oe.eq(0),
+            ]
 
         self.comb += [
             i_bus_request.eq(self.cpu.ibus.cyc & self.cpu.ibus.stb),
@@ -278,6 +698,9 @@ class Little64LiteXArtySoC(Little64LiteXSoC):
             self.arty_led_store_activity.eq(_make_stretched_level(store_request, name='arty_store_activity')),
             self.arty_led_irq_pending.eq(_make_stretched_level(irq_pending, name='arty_irq_pending')),
             self.arty_led_running_heartbeat.eq(heartbeat_toggle & ~self.cpu.halted & ~self.cpu.locked_up),
+            self.arty_led_sd_cmd_output_activity.eq(_make_stretched_transition(sd_cmd_o, name='arty_sd_cmd_output')),
+            self.arty_led_sd_cmd_output_enable_activity.eq(_make_stretched_transition(sd_cmd_oe, name='arty_sd_cmd_output_enable')),
+            self.arty_led_sd_cmd_released_input_activity.eq(_make_stretched_transition(sd_cmd_i, name='arty_sd_cmd_released_input', gate=~sd_cmd_oe)),
         ]
 
         self.sync += If(heartbeat_counter == (heartbeat_half_period - 1),
@@ -301,7 +724,14 @@ class Little64LiteXArtySoC(Little64LiteXSoC):
             rgb_led0.b.eq(~self.arty_led_irq_pending if ARTY_RGB_LED_ACTIVE_LOW else self.arty_led_irq_pending),
         ]
 
-        for rgb_led in self.arty_rgb_led_pads[1:]:
+        rgb_led1 = self.arty_rgb_led_pads[1]
+        self.comb += [
+            rgb_led1.r.eq(~self.arty_led_sd_cmd_output_activity if ARTY_RGB_LED_ACTIVE_LOW else self.arty_led_sd_cmd_output_activity),
+            rgb_led1.g.eq(~self.arty_led_sd_cmd_output_enable_activity if ARTY_RGB_LED_ACTIVE_LOW else self.arty_led_sd_cmd_output_enable_activity),
+            rgb_led1.b.eq(~self.arty_led_sd_cmd_released_input_activity if ARTY_RGB_LED_ACTIVE_LOW else self.arty_led_sd_cmd_released_input_activity),
+        ]
+
+        for rgb_led in self.arty_rgb_led_pads[2:]:
             self.comb += [
                 rgb_led.r.eq(1 if ARTY_RGB_LED_ACTIVE_LOW else 0),
                 rgb_led.g.eq(1 if ARTY_RGB_LED_ACTIVE_LOW else 0),
