@@ -11,12 +11,30 @@ Usage
   # Single variant (no speedup table)
   ./.venv/bin/python hdl/tests/perf_bench.py --variants v3
 
-  # Include compiled CoreMark (requires CoreMark source tree)
+  # Compare cache topology on v3
+  ./.venv/bin/python hdl/tests/perf_bench.py --variants v3 --cache-topology split
+
+  # Sweep all cache topologies in one command
+  ./.venv/bin/python hdl/tests/perf_bench.py --variants v3 --cache-topology all
+
+  # Quick regression check after perf-critical changes (no CoreMark)
+  ./.venv/bin/python hdl/tests/perf_bench.py --variants v2,v3 --repeats 2 \\
+      --cache-topology unified
+
+  # Full regression suite with CoreMark (requires CoreMark source tree)
   ./.venv/bin/python hdl/tests/perf_bench.py \\
-      --variants v2,v3 --coremark-src ~/coremark
+      --variants v2,v3 --coremark-src ~/coremark --coremark-total-data-size 128
 
 Performance is measured as simulated cycle count, which is independent of
 host wall-clock speed.  CoreMark/MHz = iterations * 1e6 / cycles.
+
+Benchmarks included:
+  - alu_loop: Basic arithmetic operations (~20-50 cycles)
+  - branchy_loop: Branch-heavy code (~30-100 cycles)
+  - memory_unrolled: Memory load/store patterns (~800-1000 cycles)
+  - mixed_loop: Combined ALU + memory (~2000-3000 cycles)
+  - nested_loop: Triple-nested loop, intermediate workload (~5000-15000 cycles)
+  - coremark (optional): Full CoreMark benchmark (~100k+ cycles with reduced size)
 """
 from __future__ import annotations
 
@@ -28,6 +46,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from statistics import geometric_mean
+from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 HDL_ROOT = REPO_ROOT / "hdl"
@@ -36,7 +55,7 @@ TESTS_ROOT = HDL_ROOT / "tests"
 sys.path.insert(0, str(HDL_ROOT))
 sys.path.insert(0, str(TESTS_ROOT))
 
-from little64_cores.config import Little64CoreConfig, SUPPORTED_CORE_VARIANTS  # noqa: E402
+from little64_cores.config import CACHE_TOPOLOGIES, Little64CoreConfig, SUPPORTED_CORE_VARIANTS  # noqa: E402
 from shared_program import run_program_source, run_elf_flat  # noqa: E402
 
 CLANG = REPO_ROOT / "compilers" / "bin" / "clang"
@@ -160,12 +179,44 @@ def _make_mixed_loop_case(iterations: int) -> AsmCase:
     )
 
 
+def _make_nested_loop_case(ops: int) -> AsmCase:
+    """Extended memory access loop for intermediate-complexity benchmark.
+
+    Extends memory_unrolled pattern with more operations.
+    Intermediate complexity between quick micro-benchmarks and full CoreMark.
+    Typical runtime: 4,000-15,000 cycles depending on cache topology and core variant.
+    """
+    lines = [
+        "LDI #0x40, R2",
+        "LDI.S1 #0x20, R2",
+        "LDI #1, R1",
+        "LDI #0, R3",
+    ]
+    # Unrolled memory operations
+    for _ in range(ops):
+        lines.extend([
+            "STORE [R2], R1",
+            "LOAD [R2], R4",
+            "ADD R4, R3",
+            "STORE [R2], R3",
+            "LOAD [R2], R5",
+            "ADD R5, R3",
+        ])
+    lines.append("STOP")
+    return AsmCase(
+        name=f"nested_loop_{ops}",
+        source="\n".join(lines),
+        max_cycles=(ops * 30) + 512,
+    )
+
+
 def _default_asm_cases() -> list[AsmCase]:
     return [
         _make_alu_loop_case(200),
         _make_branchy_loop_case(200),
         _make_memory_unrolled_case(96),
         _make_mixed_loop_case(128),
+        _make_nested_loop_case(256),  # intermediate complexity: ~8k cycles
     ]
 
 
@@ -284,9 +335,10 @@ def _run_asm_case(
     variant: str,
     case: AsmCase,
     *,
+    cache_topology: str,
     max_cycle_cap: int,
 ) -> dict:
-    config = Little64CoreConfig(core_variant=variant, reset_vector=0)
+    config = Little64CoreConfig(core_variant=variant, cache_topology=cache_topology, reset_vector=0)
     budget = case.max_cycles
 
     while True:
@@ -316,9 +368,11 @@ def _run_asm_case(
 def _run_elf_case(
     variant: str,
     case: ElfCase,
+    *,
+    cache_topology: str,
 ) -> dict:
     elf_bytes = case.elf_path.read_bytes()
-    config = Little64CoreConfig(core_variant=variant, reset_vector=0)
+    config = Little64CoreConfig(core_variant=variant, cache_topology=cache_topology, reset_vector=0)
     budget = case.max_cycles
 
     while True:
@@ -356,6 +410,7 @@ def run_suite(
     elf_cases: list[ElfCase],
     repeats: int,
     *,
+    cache_topology: str,
     max_cycle_cap: int,
 ) -> dict:
     all_cases: list[AsmCase | ElfCase] = [*asm_cases, *elf_cases]
@@ -369,10 +424,13 @@ def run_suite(
             for _ in range(repeats):
                 if isinstance(case, AsmCase):
                     result = _run_asm_case(
-                        variant, case, max_cycle_cap=max_cycle_cap
+                        variant,
+                        case,
+                        cache_topology=cache_topology,
+                        max_cycle_cap=max_cycle_cap,
                     )
                 else:
-                    result = _run_elf_case(variant, case)
+                    result = _run_elf_case(variant, case, cache_topology=cache_topology)
                 raw[variant][case.name].append(result)
 
     summary: dict[str, dict[str, dict]] = {v: {} for v in variants}
@@ -408,6 +466,7 @@ def run_suite(
 
     return {
         "variants": variants,
+        "cache_topology": cache_topology,
         "cases": [c.name for c in all_cases],
         "repeats": repeats,
         "max_cycle_cap": max_cycle_cap,
@@ -442,6 +501,7 @@ def print_report(report: dict) -> None:
 
     print("Little-64 HDL Performance Benchmark")
     print(f"  variants : {', '.join(variants)}")
+    print(f"  cache    : {report['cache_topology']}")
     print(f"  repeats  : {report['repeats']}")
     print()
 
@@ -510,6 +570,7 @@ def main() -> int:
 Examples:
   %(prog)s
   %(prog)s --variants all
+    %(prog)s --variants v3 --cache-topology split
   %(prog)s --variants v3
   %(prog)s --variants v2,v3 --coremark-src ~/coremark --repeats 3
 
@@ -524,6 +585,15 @@ Supported variants: {', '.join(SUPPORTED_CORE_VARIANTS)}
             f"Comma-separated variant list, or \"all\" for "
             f"{{{', '.join(SUPPORTED_CORE_VARIANTS)}}}. "
             "First entry is the baseline for speedup comparisons. (default: v2,v3)"
+        ),
+    )
+    parser.add_argument(
+        "--cache-topology",
+        default="none",
+        metavar="TOPOLOGY|all",
+        help=(
+            "Core cache topology to benchmark (none|unified|split), or 'all'. "
+            "Applies to all selected variants. (default: none)."
         ),
     )
     parser.add_argument(
@@ -600,6 +670,20 @@ Supported variants: {', '.join(SUPPORTED_CORE_VARIANTS)}
             raise SystemExit(
                 f"Unknown variant {v!r}; supported: {', '.join(SUPPORTED_CORE_VARIANTS)}"
             )
+    cache_arg = args.cache_topology.strip().lower()
+    if cache_arg == "all":
+        cache_topologies = list(CACHE_TOPOLOGIES)
+    elif cache_arg in CACHE_TOPOLOGIES:
+        cache_topologies = [cache_arg]
+    else:
+        raise SystemExit(
+            f"Unknown --cache-topology {args.cache_topology!r}; supported: {', '.join(CACHE_TOPOLOGIES)} or all"
+        )
+
+    if any(v == "basic" for v in variants) and any(t != "none" for t in cache_topologies):
+        raise SystemExit(
+            "basic core only supports --cache-topology none; choose --cache-topology none or exclude basic"
+        )
     if args.repeats < 1:
         raise SystemExit("--repeats must be >= 1")
     if args.max_cycle_cap < 1:
@@ -641,18 +725,35 @@ Supported variants: {', '.join(SUPPORTED_CORE_VARIANTS)}
             )
         )
 
-    report = run_suite(
-        variants=variants,
-        asm_cases=asm_cases,
-        elf_cases=elf_cases,
-        repeats=args.repeats,
-        max_cycle_cap=args.max_cycle_cap,
-    )
-    print_report(report)
+    reports_by_cache: dict[str, dict[str, Any]] = {}
+    for idx, cache_topology in enumerate(cache_topologies):
+        if len(cache_topologies) > 1:
+            if idx:
+                print()
+            print(f"=== cache-topology: {cache_topology} ===")
+
+        report = run_suite(
+            variants=variants,
+            asm_cases=asm_cases,
+            elf_cases=elf_cases,
+            repeats=args.repeats,
+            cache_topology=cache_topology,
+            max_cycle_cap=args.max_cycle_cap,
+        )
+        print_report(report)
+        reports_by_cache[cache_topology] = report
 
     if args.json_out is not None:
         args.json_out.parent.mkdir(parents=True, exist_ok=True)
-        args.json_out.write_text(json.dumps(report, indent=2), encoding="utf-8")
+        if len(cache_topologies) == 1:
+            json_payload: dict[str, Any] = reports_by_cache[cache_topologies[0]]
+        else:
+            json_payload = {
+                "cache_topology_mode": "all",
+                "cache_topologies": cache_topologies,
+                "reports_by_cache_topology": reports_by_cache,
+            }
+        args.json_out.write_text(json.dumps(json_payload, indent=2), encoding="utf-8")
         print(f"Wrote JSON report: {args.json_out}")
 
     return 0

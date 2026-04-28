@@ -574,6 +574,12 @@ Results are cycle-based and independent of host wall-clock speed.
 # Single variant (reports metrics only, no speedup table)
 ./.venv/bin/python hdl/tests/perf_bench.py --variants v3
 
+# Select cache topology (v2/v3: none|unified|split)
+./.venv/bin/python hdl/tests/perf_bench.py --variants v3 --cache-topology split
+
+# Sweep all cache topologies in one run
+./.venv/bin/python hdl/tests/perf_bench.py --variants v3 --cache-topology all
+
 # Include a compiled CoreMark case (requires CoreMark source)
 ./.venv/bin/python hdl/tests/perf_bench.py \
     --variants v2,v3 --coremark-src ~/coremark
@@ -597,3 +603,9 @@ HDL harness via `run_elf_flat` in `shared_program.py`. Use
 `TOTAL_DATA_SIZE` at compile time (default: 128, reduced from standard 2000; lower values run much faster
 in HDL simulation). Use `--coremark-cycle-cap N` to raise the hard cycle budget
 if the benchmark does not halt within the default 5 000 000 cycles.
+
+**Cache topology support.** Use `--cache-topology none|unified|split` to run
+the full benchmark suite under a specific cache topology, or
+`--cache-topology all` to run all topologies sequentially. This setting applies
+to all selected variants in a run and is included in both console and JSON
+reports. The `basic` core only supports `--cache-topology none`.

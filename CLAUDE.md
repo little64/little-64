@@ -329,6 +329,143 @@ meson test -C builddir debug-rsp-integration --print-errorlogs
 meson test -C builddir debug-lldb-remote-smoke --print-errorlogs
 ```
 
-## Required Reading
+## Performance Regression Testing with perf_bench.py
+
+The `hdl/tests/perf_bench.py` tool provides deterministic, cycle-based performance measurement for Little-64 cores. Use it to detect performance regressions after changes to the HDL microarchitecture, pipeline, cache, or control logic.
+
+### Quick Regression Check (recommended after perf-affecting changes)
+
+```bash
+# Quick check: ~30-60 seconds, covers both v2 and v3, includes intermediate workloads
+./.venv/bin/python hdl/tests/perf_bench.py --variants v2,v3 --repeats 2 \
+    --cache-topology unified
+```
+
+This runs:
+- 5 benchmark cases: `alu_loop`, `branchy_loop`, `memory_unrolled`, `mixed_loop`, `nested_loop`
+- 2 variants: v2, v3
+- 2 repetitions each (for median stability)
+- 1 cache topology: `unified`
+- Total: ~10 measured runs, ~30-60 seconds
+
+Output shows cycles, IPC, and speedup table. If speedup ratios shift unexpectedly, drill into individual cases or topologies.
+
+### Before/After Measurement Workflow
+
+**Before making a change:**
+
+```bash
+./.venv/bin/python hdl/tests/perf_bench.py --variants v2,v3 --repeats 3 \
+    --cache-topology unified --json-out /tmp/perf_before.json
+```
+
+**Make your HDL change**
+
+**After the change:**
+
+```bash
+./.venv/bin/python hdl/tests/perf_bench.py --variants v2,v3 --repeats 3 \
+    --cache-topology unified --json-out /tmp/perf_after.json
+```
+
+**Compare the JSON output** (or console output side-by-side for quick visual inspection):
+
+```bash
+# For detailed comparison, examine the JSON files:
+# Before: cat /tmp/perf_before.json | grep cycles_median
+# After:  cat /tmp/perf_after.json | grep cycles_median
+```
+
+Expected patterns:
+- If only cycles improve → good (optimization worked)
+- If cycles worsen → bad (regression introduced)
+- If IPC degrades while cycles stay flat → pipeline/frontend issue
+- If memory case cycles improve but others worsen → cache interaction artifact (investigate further)
+
+### Full Regression Suite (comprehensive validation)
+
+When making architectural changes (e.g., pipeline depth, cache design, ALU changes), run the full suite:
+
+```bash
+# Full validation: ~5-10 minutes, all variants, all cache topologies, reduced CoreMark
+./.venv/bin/python hdl/tests/perf_bench.py --variants all --repeats 3 \
+    --cache-topology all --coremark-src target/coremark \
+    --coremark-total-data-size 128 --json-out /tmp/perf_full.json
+```
+
+This includes:
+- 3 core variants: `basic`, `v2`, `v3`
+- 3 cache topologies: `none`, `unified`, `split` (tests cache interaction effects)
+- 5 assembly micro-benchmarks (fast)
+- 1 CoreMark case with reduced data size (medium)
+- 3 repetitions each (robust statistics)
+- Total: ~40-50 measured runs
+
+Output sections:
+1. Cycles per benchmark
+2. IPC per benchmark
+3. CoreMark/MHz (ELF cases only)
+4. Speedup table (variants vs. first variant)
+
+### Non-CoreMark Quick Measurement (without compiling CoreMark)
+
+If you want to avoid CoreMark compilation overhead but still want intermediate-complexity workloads:
+
+```bash
+# ~10-20 seconds: includes nested_loop intermediate case (5k-15k cycles)
+./.venv/bin/python hdl/tests/perf_bench.py --variants v2,v3 --repeats 3 \
+    --cache-topology unified
+```
+
+This still exercises:
+- Loop-heavy code (branchy_loop, nested_loop)
+- Memory patterns (memory_unrolled, mixed_loop)
+- Pure ALU (alu_loop)
+- Speedup comparisons across v2 vs. v3
+
+### Interpreting Results
+
+**Cycles table:**
+- Lower is better. Represents simulated execution cycles (independent of host wall-clock).
+- Compare median cycles before/after to detect regressions.
+
+**IPC (Instructions Per Cycle):**
+- Higher is better. IPC < 1.0 means the pipeline is not saturated.
+- If cycles increase but IPC stays flat, the loop iteration count increased (likely a correctness issue, not performance).
+- If IPC drops significantly, pipeline efficiency declined (possible stall/bubble increase).
+
+**CoreMark/MHz (for ELF benchmarks):**
+- Higher is better. Metric = iterations × 1e6 / cycles.
+- Normalized by work size; directly comparable across runs.
+
+**Speedup table (multi-variant):**
+- Shows ratio of baseline (first variant) cycles to target variant cycles.
+- >1.0 = speedup (good). <1.0 = slowdown (regression).
+- Geomean speedup aggregates across all cases.
+
+### Typical Regressions Patterns
+
+| Pattern | Likely Cause | Next Step |
+|---------|--------------|-----------|
+| Cycles ↑, IPC flat | Loop iterations increased | Check control flow logic |
+| Cycles ↑, IPC ↓ | Pipeline stalls/hazards | Check data hazards, forwarding, stall logic |
+| memory_unrolled ↑ much, others flat | Cache/LSU issue | Review memory subsystem, cache replacement |
+| nested_loop ↑ significantly, simple loops ↔ | Branch predictor or frontend | Check prediction accuracy, fetch efficiency |
+| All cycles ↑ proportionally | Global clock gating or throughput bottleneck | Check critical path, gate delays |
+| Speedup v2→v3 drops | v3-specific regression | Check v3 HDL diffs since last good run |
+
+### Tool Flags Reference
+
+- `--variants [VARIANT,...]|all`: Cores to test (basic, v2, v3). Default: v2,v3
+- `--cache-topology [TOPOLOGY]|all`: Cache configuration (none, unified, split). Default: none
+- `--repeats N`: Repetitions per case per variant (default: 5)
+- `--coremark-src PATH`: Add compiled CoreMark case (requires CoreMark source directory)
+- `--coremark-total-data-size N`: CoreMark dataset size (default: 128; lower = faster in HDL)
+- `--coremark-iterations N`: CoreMark iterations (default: 1)
+- `--coremark-cycle-cap N`: Hard cycle budget for CoreMark (default: 5,000,000)
+- `--max-cycle-cap N`: Auto-expand budget cap for assembly cases (default: 65536)
+- `--json-out PATH`: Write full report as JSON (useful for automated comparisons)
+
+
 
 Before answering any questions, planning any tasks or implementing any changes, you are required to read the documentation under `docs/`. If you find code contradicts the documentation, the code is authorative, as previously stated, and you must in your next response message report the contradiction, and how it should be solved.
