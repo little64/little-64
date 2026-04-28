@@ -1886,7 +1886,6 @@ static void litex_soc_boot_entry(void) {
 
     liteuart_initialize();
     serial_puts("stage0: entered from internal bootrom\n");
-    serial_puts("stage0: build-tag spi-cmd-entry-1\n");
     clear_bss();
     serial_puts("stage0: cleared .bss\n");
     sdram_initialize_or_fail();

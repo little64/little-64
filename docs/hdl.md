@@ -557,3 +557,43 @@ meson test -C builddir-hdl --suite jumps --suite memory --print-errorlogs
 ```
 
 The shared `gp`, `ldi`, `jumps`, and `memory` suites are intended to run both the emulator and HDL backends against the same backend-neutral case files wherever the instruction subset overlaps.
+
+## Deterministic HDL Performance Benchmark
+
+`hdl/tests/perf_bench.py` runs fixed halting workloads in the HDL harness and
+reports median cycles, IPC, and speedup across any number of core variants.
+Results are cycle-based and independent of host wall-clock speed.
+
+```bash
+# Default: compare v2 and v3 on assembly micro-benchmarks
+./.venv/bin/python hdl/tests/perf_bench.py
+
+# All supported variants
+./.venv/bin/python hdl/tests/perf_bench.py --variants all
+
+# Single variant (reports metrics only, no speedup table)
+./.venv/bin/python hdl/tests/perf_bench.py --variants v3
+
+# Include a compiled CoreMark case (requires CoreMark source)
+./.venv/bin/python hdl/tests/perf_bench.py \
+    --variants v2,v3 --coremark-src ~/coremark
+```
+
+Reported metrics per case and variant:
+
+- **Cycles** — simulated clock cycles until `STOP` (lower is better).
+- **IPC** — `commit_count / cycles` (higher is better).
+- **CoreMark/MHz** — `iterations × 10⁶ / cycles` (ELF cases only; higher is better).
+- **Speedup** — cycle ratio relative to the first variant (baseline).
+- **Geomean speedup** — geometric mean of per-case speedups.
+
+**CoreMark support.** Pass `--coremark-src PATH` to a directory containing the
+standard CoreMark C sources (`core_main.c`, `core_list_join.c`, etc.). The
+script compiles them with the repo's Little-64 LLVM toolchain using the
+bare-metal port in `target/coremark_hdl/` and runs the resulting ELF under the
+HDL harness via `run_elf_flat` in `shared_program.py`. Use
+`--coremark-iterations N` to control the iteration count baked into the binary
+(default: 1). Use `--coremark-total-data-size N` to control CoreMark
+`TOTAL_DATA_SIZE` at compile time (default: 128, reduced from standard 2000; lower values run much faster
+in HDL simulation). Use `--coremark-cycle-cap N` to raise the hard cycle budget
+if the benchmark does not halt within the default 5 000 000 cycles.

@@ -10,3 +10,6 @@
 [submodule "target/linux_port/linux"]
 	path = target/linux_port/linux
 	url = ./target/linux_port/linux
+[submodule "target/coremark"]
+	path = target/coremark
+	url = https://github.com/eembc/coremark.git

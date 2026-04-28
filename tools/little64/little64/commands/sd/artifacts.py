@@ -109,6 +109,7 @@ def _write_stage0_header(
     sdcard_core_region = soc.csr.regions.get('sdcard_core')
     sdcard_block2mem_region = soc.csr.regions.get('sdcard_block2mem')
     sdcard_debug_region = soc.csr.regions.get('sdcard_debug')
+    sdcard_idelay_region = soc.csr.regions.get('sdcard_idelay')
     sdram_region = soc.csr.regions.get('sdram')
     has_native_sd = sdcard_phy_region is not None and sdcard_core_region is not None and sdcard_block2mem_region is not None
     has_spi_sd = spisdcard_region is not None
@@ -161,6 +162,12 @@ def _write_stage0_header(
                 '#define L64_SDCARD_DEBUG_DATA1_I_TRANSITIONS_ADDR (L64_SDCARD_DEBUG_BASE + 0x1cULL)',
                 '#define L64_SDCARD_DEBUG_DATA2_I_TRANSITIONS_ADDR (L64_SDCARD_DEBUG_BASE + 0x20ULL)',
                 '#define L64_SDCARD_DEBUG_DATA3_I_TRANSITIONS_ADDR (L64_SDCARD_DEBUG_BASE + 0x24ULL)',
+            ]),
+            *([] if sdcard_idelay_region is None else [
+                '',
+                f'#define L64_SDCARD_IDELAY_BASE 0x{sdcard_idelay_region.origin:016x}ULL',
+                '#define L64_SDCARD_IDELAY_TAP_ADDR (L64_SDCARD_IDELAY_BASE + 0x00ULL)',
+                '#define L64_SDCARD_IDELAY_LOAD_ADDR (L64_SDCARD_IDELAY_BASE + 0x04ULL)',
             ]),
         ]
     else:

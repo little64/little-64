@@ -8,10 +8,10 @@ from typing import Literal
 from migen import ClockDomain, If, Instance, Module, Replicate, Signal
 
 from litex.build.generic_platform import IOStandard, Misc, Pins, Subsignal
-from litex.build.io import SDRTristate
+from litex.build.io import SDRInput, SDROutput, SDRTristate
 from litex.build.xilinx.common import XilinxSDRTristate
 from litex.gen import LiteXModule
-from litex.soc.interconnect.csr import CSRField, CSRStatus
+from litex.soc.interconnect.csr import CSR, CSRField, CSRStatus, CSRStorage
 from litex.soc.cores.clock import S7IDELAYCTRL, S7PLL
 
 from litedram import modules as litedram_modules
@@ -272,7 +272,7 @@ def _import_digilent_arty_platform():
 
 
 class _Little64XilinxSDRTristateImpl(Module):
-    def __init__(self, io, o, oe, i, clk):
+    def __init__(self, io, o, oe, i, clk, *, idelay=None):
         output_enable_bus = Signal(len(io), name='little64_sd_output_enable_bus')
 
         self.comb += output_enable_bus.eq(_little64_sd_output_enable_bus(oe, len(io)))
@@ -281,47 +281,44 @@ class _Little64XilinxSDRTristateImpl(Module):
             data_out = Signal(name=f'little64_sd_data_out_{bit}')
             output_enable = Signal(name=f'little64_sd_output_enable_{bit}')
             tristate_n = Signal(name=f'little64_sd_tristate_n_{bit}')
+            data_in_raw = Signal(name=f'little64_sd_data_in_raw_{bit}')
             data_in = Signal(name=f'little64_sd_data_in_{bit}')
 
             self.comb += output_enable.eq(output_enable_bus[bit])
 
-            self.specials += Instance(
-                'ODDR',
-                p_DDR_CLK_EDGE='SAME_EDGE',
-                i_C=clk,
-                i_CE=1,
-                i_S=0,
-                i_R=0,
-                i_D1=o[bit],
-                i_D2=o[bit],
-                o_Q=data_out,
-            )
-            self.specials += Instance(
-                'ODDR',
-                p_DDR_CLK_EDGE='SAME_EDGE',
-                i_C=clk,
-                i_CE=1,
-                i_S=0,
-                i_R=0,
-                i_D1=~output_enable,
-                i_D2=~output_enable,
-                o_Q=tristate_n,
-            )
-            self.specials += Instance(
-                'IDDR',
-                p_DDR_CLK_EDGE='SAME_EDGE',
-                i_C=clk,
-                i_CE=1,
-                i_S=0,
-                i_R=0,
-                i_D=data_in,
-                o_Q1=i[bit],
-                o_Q2=Signal(),
-            )
+            self.specials += SDROutput(o[bit], data_out, clk)
+            self.specials += SDROutput(~output_enable, tristate_n, clk)
+
+            if idelay is not None:
+                self.specials += Instance(
+                    'IDELAYE2',
+                    p_DELAY_SRC='IDATAIN',
+                    p_HIGH_PERFORMANCE_MODE='TRUE',
+                    p_IDELAY_TYPE='VAR_LOAD',
+                    p_IDELAY_VALUE=0,
+                    p_PIPE_SEL='FALSE',
+                    p_REFCLK_FREQUENCY=200.0,
+                    p_SIGNAL_PATTERN='DATA',
+                    i_C=clk,
+                    i_CE=0,
+                    i_INC=0,
+                    i_LD=idelay.load_pulse,
+                    i_LDPIPEEN=0,
+                    i_REGRST=0,
+                    i_CINVCTRL=0,
+                    i_CNTVALUEIN=idelay.tap_value,
+                    i_DATAIN=0,
+                    i_IDATAIN=data_in_raw,
+                    o_DATAOUT=data_in,
+                )
+            else:
+                self.comb += data_in.eq(data_in_raw)
+
+            self.specials += SDRInput(data_in, i[bit], clk)
             self.specials += Instance(
                 'IOBUF',
                 io_IO=io[bit],
-                o_O=data_in,
+                o_O=data_in_raw,
                 i_I=data_out,
                 i_T=tristate_n,
             )
@@ -334,7 +331,35 @@ class _Little64XilinxSDRTristate:
             return _Little64ForcedCMDWaveTristateImpl(dr.io, dr.i, dr.clk)
         if len(dr.io) == 1:
             return XilinxSDRTristate.lower(dr)
-        return _Little64XilinxSDRTristateImpl(dr.io, dr.o, dr.oe, dr.i, dr.clk)
+        return _Little64XilinxSDRTristateImpl(
+            dr.io, dr.o, dr.oe, dr.i, dr.clk,
+            idelay=_LITTLE64_ARTY_SDCARD_IDELAY,
+        )
+
+
+_LITTLE64_ARTY_SDCARD_IDELAY = None
+
+
+class _Little64ArtySDCardIDelay(LiteXModule):
+    """Software-tunable IDELAYE2 tap controller for the Arty native SD data lanes.
+
+    Exposes a CSR knob to sweep the input delay applied to DAT0..3 so we can
+    compensate for IOBUF + PCB + card tCK->DAT skew per board without rebuilding
+    the bitstream. Tap is loaded into all four lanes' IDELAYE2 instances on a
+    write-pulse to ``load`` after the desired tap value has been written to ``tap``.
+    Default tap is 0 (no extra delay), matching the upstream timing.
+    """
+
+    def __init__(self):
+        self.tap = CSRStorage(5, description='IDELAYE2 tap value (0-31) applied to SD data lanes on the next load pulse.')
+        self.load = CSR()
+
+        self.tap_value = Signal(5)
+        self.load_pulse = Signal()
+        self.comb += [
+            self.tap_value.eq(self.tap.storage),
+            self.load_pulse.eq(self.load.re),
+        ]
 
 
 def _little64_sd_output_enable_bus(oe, width: int):
@@ -483,12 +508,14 @@ def create_arty_platform(*, variant: str = 'a7-35', toolchain: str = 'vivado'):
 
 
 class Little64LiteXArtyCRG(LiteXModule):
-    def __init__(self, platform, sys_clk_freq: int, *, with_dram: bool) -> None:
+    def __init__(self, platform, sys_clk_freq: int, *, with_dram: bool, with_idelay: bool = False) -> None:
         self.rst = Signal()
         self.cd_sys = ClockDomain('sys')
+        need_idelay = with_dram or with_idelay
         if with_dram:
             self.cd_sys4x = ClockDomain('sys4x')
             self.cd_sys4x_dqs = ClockDomain('sys4x_dqs')
+        if need_idelay:
             self.cd_idelay = ClockDomain('idelay')
 
         clk100 = platform.request('clk100')
@@ -501,6 +528,7 @@ class Little64LiteXArtyCRG(LiteXModule):
         if with_dram:
             pll.create_clkout(self.cd_sys4x, 4 * sys_clk_freq)
             pll.create_clkout(self.cd_sys4x_dqs, 4 * sys_clk_freq, phase=90)
+        if need_idelay:
             pll.create_clkout(self.cd_idelay, 200e6)
             self.idelayctrl = S7IDELAYCTRL(self.cd_idelay)
 
@@ -567,6 +595,7 @@ class Little64LiteXArtySoC(Little64LiteXSoC):
             platform,
             int(sys_clk_freq),
             with_dram=effective_with_sdram and not integrated_main_ram_size,
+            with_idelay=effective_with_sdcard and sdcard_mode == ARTY_SDCARD_MODE_NATIVE,
         )
 
         super().__init__(
@@ -599,6 +628,10 @@ class Little64LiteXArtySoC(Little64LiteXSoC):
         if mode == ARTY_SDCARD_MODE_NATIVE:
             if sdcard_image_path is not None:
                 raise ValueError('sdcard_image_path is only supported for simulation-backed native LiteSDCard mode')
+            sdcard_idelay = _Little64ArtySDCardIDelay()
+            self.add_module(name='sdcard_idelay', module=sdcard_idelay)
+            global _LITTLE64_ARTY_SDCARD_IDELAY
+            _LITTLE64_ARTY_SDCARD_IDELAY = sdcard_idelay
             self.add_sdcard('sdcard', use_emulator=False)
             if hasattr(self, 'sdcard_phy') and hasattr(self.sdcard_phy, 'sdpads'):
                 self.add_module(name='sdcard_debug', module=_Little64NativeSDDebug(self.sdcard_phy.sdpads))

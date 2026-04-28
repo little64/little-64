@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import re
+import struct
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -316,7 +317,13 @@ def _load_program_execution(code_memory: dict[int, int], data_memory: dict[int, 
             data_memory[address] = value & 0xFF
 
 
-def _snapshot_execution(ctx, dut, data_memory: dict[int, int], commit_count: int) -> dict[str, object]:
+def _snapshot_execution(
+    ctx,
+    dut,
+    data_memory: dict[int, int],
+    commit_count: int,
+    executed_cycles: int,
+) -> dict[str, object]:
     registers = [ctx.get(dut.register_file[index]) for index in range(16)]
     return {
         'registers': registers,
@@ -341,6 +348,7 @@ def _snapshot_execution(ctx, dut, data_memory: dict[int, int], commit_count: int
         },
         'data_memory': dict(data_memory),
         'commit_count': commit_count,
+        'executed_cycles': executed_cycles,
     }
 
 
@@ -421,17 +429,19 @@ def run_batched_program_words(executions: list[ProgramExecution], *, config: Lit
             )
 
             commit_count = 0
+            executed_cycles = 0
             for cycle in range(execution.max_cycles):
                 if execution.irq_schedule and cycle in execution.irq_schedule:
                     current_irq_lines['value'] = execution.irq_schedule[cycle]
                     ctx.set(dut.irq_lines, current_irq_lines['value'])
                 await ctx.tick()
+                executed_cycles += 1
                 if ctx.get(dut.commit_valid):
                     commit_count += 1
                 if ctx.get(dut.halted) or ctx.get(dut.locked_up):
                     break
 
-            results.append(_snapshot_execution(ctx, dut, data_memory, commit_count))
+            results.append(_snapshot_execution(ctx, dut, data_memory, commit_count, executed_cycles))
 
         ready['value'] = False
         ctx.set(dut.irq_lines, 0)
@@ -475,6 +485,7 @@ def _run_program_words_fresh(words: list[int],
     ready = {'value': False}
     current_irq_lines = {'value': 0}
     commit_count = {'value': 0}
+    executed_cycles = {'value': 0}
 
     def read_code_qword(addr: int) -> int:
         return sum((code_memory.get(addr + byte_index, 0) & 0xFF) << (8 * byte_index) for byte_index in range(8))
@@ -524,12 +535,21 @@ def _run_program_words_fresh(words: list[int],
                 current_irq_lines['value'] = irq_schedule[cycle]
                 ctx.set(dut.irq_lines, current_irq_lines['value'])
             await ctx.tick()
+            executed_cycles['value'] += 1
             if ctx.get(dut.commit_valid):
                 commit_count['value'] += 1
             if ctx.get(dut.halted) or ctx.get(dut.locked_up):
                 break
 
-        observed.update(_snapshot_execution(ctx, dut, data_memory, commit_count['value']))
+        observed.update(
+            _snapshot_execution(
+                ctx,
+                dut,
+                data_memory,
+                commit_count['value'],
+                executed_cycles['value'],
+            )
+        )
 
     sim.add_testbench(bus_process, background=True)
     sim.add_testbench(observe_process)
@@ -604,3 +624,138 @@ def run_program_source(source: str,
         irq_schedule=irq_schedule,
         max_cycles=max_cycles,
     )
+
+
+# ---------------------------------------------------------------------------
+# Flat-ELF runner (unified address space for compiled C programmes)
+# ---------------------------------------------------------------------------
+
+_EM_LITTLE64 = 0x4C36
+_PT_LOAD = 1
+
+
+def _load_elf_flat(elf_bytes: bytes) -> tuple[int, dict[int, int]]:
+    """Parse a Little-64 ELF64 binary into (entry_point, byte_dict).
+
+    All PT_LOAD segments are merged into a single flat byte dictionary keyed
+    by virtual address.  BSS regions (memsz > filesz) are zero-filled so the
+    caller does not need a separate BSS-clearing step.
+    """
+    (
+        e_ident,
+        _,            # e_type
+        e_machine,
+        _,            # e_version
+        e_entry,
+        e_phoff,
+        _,            # e_shoff
+        _,            # e_flags
+        _,            # e_ehsize
+        e_phentsize,
+        e_phnum,
+        _, _, _,      # e_shentsize, e_shnum, e_shstrndx
+    ) = struct.unpack_from('<16sHHIQQQIHHHHHH', elf_bytes, 0)
+
+    if e_ident[0:4] != b'\x7fELF':
+        raise ValueError('Not an ELF file')
+    if e_machine != _EM_LITTLE64:
+        raise ValueError(
+            f'ELF machine 0x{e_machine:x} is not Little-64 (expected 0x{_EM_LITTLE64:x})'
+        )
+
+    flat: dict[int, int] = {}
+    for i in range(e_phnum):
+        p_type, _, p_offset, p_vaddr, _, p_filesz, p_memsz, _ = struct.unpack_from(
+            '<IIQQQQQQ', elf_bytes, e_phoff + i * e_phentsize
+        )
+        if p_type != _PT_LOAD:
+            continue
+        for j in range(p_filesz):
+            flat[p_vaddr + j] = elf_bytes[p_offset + j]
+        for j in range(p_filesz, p_memsz):
+            flat[p_vaddr + j] = 0
+
+    return e_entry, flat
+
+
+def run_elf_flat(
+    elf_bytes: bytes,
+    *,
+    config: Little64CoreConfig | None = None,
+    stack_top: int = 0x0004_0000,
+    max_cycles: int = 131072,
+) -> dict[str, object]:
+    """Run a flat-linked Little-64 ELF using a unified memory model.
+
+    Both the instruction bus and the data bus are backed by the same flat byte
+    dictionary, matching the bare-metal linker's single address-space layout.
+    The ELF entry point is used as the initial PC; *stack_top* is loaded into
+    R13 before the first instruction executes.
+
+    Returns the same snapshot dict as ``run_program_words`` (including
+    ``executed_cycles`` and ``commit_count``).  The ``data_memory`` field in
+    the snapshot is always ``{}`` to avoid capturing the full program image.
+    """
+    entry_point, flat_memory = _load_elf_flat(elf_bytes)
+    resolved_config = config or Little64CoreConfig(core_variant='v2', reset_vector=0)
+    adapter = adapter_for_variant(resolved_config.core_variant)
+    dut = adapter.create_core(resolved_config)
+    sim = Simulator(dut)
+    sim.add_clock(1e-6)
+
+    memory: dict[int, int] = flat_memory
+    observed: dict[str, object] = {}
+    ready = {'value': False}
+    commit_count = {'value': 0}
+    executed_cycles = {'value': 0}
+
+    def read_qword(addr: int) -> int:
+        return sum((memory.get(addr + b, 0) & 0xFF) << (8 * b) for b in range(8))
+
+    async def bus_process(ctx):
+        ctx.set(dut.i_bus.ack, 0)
+        ctx.set(dut.d_bus.ack, 0)
+        while True:
+            await ctx.tick()
+            if ready['value'] and ctx.get(dut.i_bus.cyc) and ctx.get(dut.i_bus.stb):
+                ctx.set(dut.i_bus.dat_r, read_qword(ctx.get(dut.i_bus.adr)))
+                ctx.set(dut.i_bus.ack, 1)
+            else:
+                ctx.set(dut.i_bus.ack, 0)
+            if ready['value'] and ctx.get(dut.d_bus.cyc) and ctx.get(dut.d_bus.stb):
+                d_addr = ctx.get(dut.d_bus.adr)
+                if ctx.get(dut.d_bus.we):
+                    d_value = ctx.get(dut.d_bus.dat_w)
+                    d_sel = ctx.get(dut.d_bus.sel)
+                    for byte_index in range(8):
+                        if d_sel & (1 << byte_index):
+                            memory[d_addr + byte_index] = (d_value >> (8 * byte_index)) & 0xFF
+                else:
+                    ctx.set(dut.d_bus.dat_r, read_qword(d_addr))
+                ctx.set(dut.d_bus.ack, 1)
+            else:
+                ctx.set(dut.d_bus.ack, 0)
+
+    async def observe_process(ctx):
+        await adapter.prepare_for_execution(
+            ctx,
+            dut,
+            resolved_config,
+            ready=ready,
+            initial_registers={13: stack_top, 15: entry_point},
+        )
+        for _ in range(max_cycles):
+            await ctx.tick()
+            executed_cycles['value'] += 1
+            if ctx.get(dut.commit_valid):
+                commit_count['value'] += 1
+            if ctx.get(dut.halted) or ctx.get(dut.locked_up):
+                break
+        observed.update(
+            _snapshot_execution(ctx, dut, {}, commit_count['value'], executed_cycles['value'])
+        )
+
+    sim.add_testbench(bus_process, background=True)
+    sim.add_testbench(observe_process)
+    sim.run_until((max_cycles + 8) * 1e-6)
+    return observed
