@@ -27,6 +27,7 @@ from litex.build.sim.config import SimConfig
 from litex.soc.integration.common import get_mem_data
 
 from little64_cores.litex_soc import Little64LiteXSimSoC
+from little64_cores.config import DEFAULT_CORE_VARIANT
 
 
 REPO_ROOT = repo_root()
@@ -373,7 +374,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         '--cpu-variant',
         default='standard',
-        help='LiteX CPU variant to use for the simulation SoC build. `standard` selects the V2 core; use `standard-basic` for the legacy core.',
+        help=f'LiteX CPU variant (default: `standard` → {DEFAULT_CORE_VARIANT}; use `standard-v2`, `standard-v3`, `standard-basic`, etc.).',
     )
     parser.add_argument(
         '--build-only',

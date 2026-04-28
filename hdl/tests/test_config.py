@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from little64_cores.config import Little64CoreConfig
+from little64_cores.config import DEFAULT_CORE_VARIANT, Little64CoreConfig
 
 
 def test_default_config_matches_reference_choices() -> None:
@@ -10,7 +10,7 @@ def test_default_config_matches_reference_choices() -> None:
 
     assert config.instruction_bus_width == 64
     assert config.data_bus_width == 64
-    assert config.core_variant == 'v2'
+    assert config.core_variant == DEFAULT_CORE_VARIANT
     assert config.cache_topology == 'none'
     assert config.enable_tlb is True
     assert config.tlb_entries == 64

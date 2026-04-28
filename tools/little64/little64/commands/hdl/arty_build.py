@@ -26,6 +26,7 @@ from litex.soc.integration.builder import Builder  # type: ignore[import-untyped
 
 import little64.commands.sd.artifacts as _BUILD_SD_BOOT_ARTIFACTS
 from little64_cores.litex import LITTLE64_LINUX_RAM_BASE
+from little64_cores.config import DEFAULT_CORE_VARIANT
 from little64_cores.litex_arty import (
     ARTY_SDCARD_MODE_NATIVE,
     ARTY_SDCARD_MODE_SPI,
@@ -515,7 +516,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         '--cpu-variant',
         default='standard',
-        help='Little64 LiteX CPU variant to synthesize. `standard` selects the V2 core; use `standard-basic` for the legacy core.',
+        help=f'Little64 LiteX CPU variant to synthesize (default: `standard` → {DEFAULT_CORE_VARIANT}; use `standard-v2`, `standard-v3`, `standard-basic`, etc.).',
     )
     parser.add_argument('--toolchain', default='vivado', help='LiteX toolchain backend. Vivado is the supported path for Arty.')
     parser.add_argument('--vivado-settings', type=Path, default=None,

@@ -37,7 +37,7 @@ If the HDL conflicts with the ISA docs or proving tests, the HDL should be corre
 The current multi-cycle core now lives under `hdl/little64_cores/basic/`.
 The new pipelined implementation path lives under `hdl/little64_cores/v2/`.
 The experimental next-generation pipeline bring-up now also lives under `hdl/little64_cores/v3/`.
-The top-level `hdl/little64_cores/core.py` module remains as a compatibility export for the current default core variant, which is now V2.
+The top-level `hdl/little64_cores/core.py` module remains as a compatibility export for the current default core variant, which is now V3.
 
 ## Current Layout
 
@@ -83,7 +83,7 @@ The top-level `hdl/little64_cores/core.py` module remains as a compatibility exp
 - `hdl/little64_cores/litex_linux_boot.py` — Linux ELF flattening and SPI-flash image packing helpers for the LiteX path
 - `hdl/little64_cores/litex_soc.py` — minimal LiteX simulation SoC wrapper and Linux DTS generator
 - `hdl/tests/` — Python simulation and unit tests for unit and ISA coverage
-	- shared HDL suites default to the current `v2,v3` matrix and can be run against `basic`, `v2`, experimental `v3`, or `all` with `./.venv/bin/python -m pytest hdl/tests --core-variants default|basic|v2|v3|all`
+	- shared HDL suites default to the current `v3,v2` matrix and can be run against `basic`, `v2`, `v3`, or `all` with `./.venv/bin/python -m pytest hdl/tests --core-variants default|basic|v2|v3|all`
 	- shared architectural suites now use capability markers and a test-only core adapter layer so variant-specific startup details and component factories stay out of the shared test bodies
 	- includes shared generated ISA/program/MMIO coverage, shared unaligned-access coverage, shared trap/atomic/core-smoke coverage, explicit V3 MMU/trap regression coverage, and V2/V3 cache-topology regression tests
 - `little64 hdl flash-image` — build a bootable SPI-flash image containing stage-0, Linux, and a DTB
@@ -224,7 +224,7 @@ of the built-in Arduino or PMOD conventions. Native mode accepts
 
 The V2 path now executes the shared ALU, jump, and LSU subsets, including register-form and PC-relative loads/stores, stack push/pop paths, load-linked/store-conditional sequencing, and split unaligned accesses on the 64-bit Wishbone bus. It now also performs privileged trap entry, Sv39-style page walking for fetch/data/vector accesses, and data-side cache-line reuse behind the `none` / `unified` / `split` cache-topology surface. The LiteX-facing delivery path now exposes those choices through CPU variants, and the Linux boot export/smoke helpers can select non-default V2 configurations. The V2 HDL regression matrix now covers same-line instruction invalidation, paged interrupt-vector fetch, and core trap/MMU fault cases in addition to the shared ISA and memory subsets.
 
-The V3 path now shares the same cache-topology contract as V2 for the current 4-line data-cache implementation: `none` bypasses the cache entirely, `unified` updates the current fetch line on same-line stores, and `split` invalidates that fetch line instead. The LiteX-facing path now exposes explicit `standard-v3`, `standard-v3-none`, `standard-v3-unified`, and `standard-v3-split` CPU variants, while the default LiteX `standard` variant remains on V2.
+The V3 path now shares the same cache-topology contract as V2 for the current 4-line data-cache implementation: `none` bypasses the cache entirely, `unified` updates the current fetch line on same-line stores, and `split` invalidates that fetch line instead. The LiteX-facing path now exposes explicit `standard-v3`, `standard-v3-none`, `standard-v3-unified`, and `standard-v3-split` CPU variants. The default LiteX `standard` variant now uses V3; use `standard-v2` to target V2 explicitly.
 
 ## Linux Boot Smoke
 

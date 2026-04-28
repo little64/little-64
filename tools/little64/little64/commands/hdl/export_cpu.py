@@ -7,7 +7,7 @@ from little64.hdl_bridge import ensure_hdl_path
 
 ensure_hdl_path()
 
-from little64_cores.config import CACHE_TOPOLOGIES, CORE_VARIANTS, Little64CoreConfig
+from little64_cores.config import CACHE_TOPOLOGIES, CORE_VARIANTS, DEFAULT_CORE_VARIANT, Little64CoreConfig
 from little64_cores.litex import emit_litex_cpu_verilog
 
 
@@ -28,7 +28,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         '--core-variant',
         choices=CORE_VARIANTS,
-        default='v2',
+        default=DEFAULT_CORE_VARIANT,
         help='Core variant used for the exported CPU wrapper.',
     )
     parser.add_argument(

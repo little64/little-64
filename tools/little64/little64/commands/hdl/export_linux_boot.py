@@ -10,7 +10,7 @@ from little64.hdl_bridge import ensure_hdl_path
 
 ensure_hdl_path()
 
-from little64_cores.config import CACHE_TOPOLOGIES, Little64CoreConfig, SUPPORTED_CORE_VARIANTS
+from little64_cores.config import CACHE_TOPOLOGIES, DEFAULT_CORE_VARIANT, Little64CoreConfig, SUPPORTED_CORE_VARIANTS
 from little64_cores.litex import LITTLE64_LITEX_MEM_MAP
 from little64_cores.variants import create_core
 
@@ -112,7 +112,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         '--core-variant',
         choices=SUPPORTED_CORE_VARIANTS,
-        default='v2',
+        default=DEFAULT_CORE_VARIANT,
         help='Core variant used by the Linux-boot wrapper.',
     )
     parser.add_argument(

@@ -14,7 +14,7 @@ from migen import Module, Signal
 from migen.fhdl import verilog
 import pytest
 
-from little64_cores.config import Little64CoreConfig
+from little64_cores.config import DEFAULT_CORE_VARIANT, Little64CoreConfig
 from little64_cores.litex import (
     LITTLE64_LITEX_BOOTROM_MAIN_RAM_BASE,
     LITTLE64_LITEX_BOOTROM_SIZE,
@@ -1058,7 +1058,7 @@ def test_register_little64_with_litex_exposes_cpu_plugin() -> None:
 
 
 def test_litex_cpu_variant_names_resolve_to_core_variants() -> None:
-    assert resolve_litex_core_variant('standard') == 'v2'
+    assert resolve_litex_core_variant('standard') == DEFAULT_CORE_VARIANT
     assert resolve_litex_core_variant('standard-basic') == 'basic'
     assert resolve_litex_core_variant('standard-v2') == 'v2'
     assert resolve_litex_core_variant('standard-v2-none') == 'v2'
@@ -1112,10 +1112,10 @@ def test_litex_cpu_can_select_v3_cache_topology_variants() -> None:
     assert cpu.core_config.cache_topology == 'split'
 
 
-def test_litex_cpu_standard_variant_defaults_to_v2() -> None:
+def test_litex_cpu_standard_variant_defaults_to_config_default() -> None:
     cpu = Little64(type('Platform', (), {'output_dir': 'builddir'})(), variant='standard')
 
-    assert cpu.core_config.core_variant == 'v2'
+    assert cpu.core_config.core_variant == DEFAULT_CORE_VARIANT
     assert cpu.core_config.cache_topology == 'none'
 
 
@@ -1150,11 +1150,11 @@ def test_litex_sim_soc_can_select_v3_cache_variant() -> None:
     assert soc.cpu.core_config.cache_topology == 'unified'
 
 
-def test_litex_sim_soc_defaults_to_v2_variant() -> None:
+def test_litex_sim_soc_defaults_to_config_default_variant() -> None:
     soc = Little64LiteXSimSoC()
 
     assert soc.cpu.variant == 'standard'
-    assert soc.cpu.core_config.core_variant == 'v2'
+    assert soc.cpu.core_config.core_variant == DEFAULT_CORE_VARIANT
     assert soc.cpu.core_config.cache_topology == 'none'
 
 
@@ -1355,7 +1355,7 @@ def test_arty_hardware_soc_exposes_uart_phy_tuning_word_by_default(tmp_path) -> 
     assert [csr.size for csr in uart_phy_region.obj] == [32]
     assert expected_tuning_word == (115200 << 32) // soc.sys_clk_freq
     assert soc.cpu.variant == 'standard'
-    assert soc.cpu.core_config.core_variant == 'v2'
+    assert soc.cpu.core_config.core_variant == DEFAULT_CORE_VARIANT
 
 
 def test_arty_build_helper_generates_timer_enabled_hardware_dts(tmp_path) -> None:

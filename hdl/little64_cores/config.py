@@ -3,11 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
-CORE_VARIANTS = ('basic', 'v2')
-EXPERIMENTAL_CORE_VARIANTS = ('v3',)
-SUPPORTED_CORE_VARIANTS = CORE_VARIANTS + EXPERIMENTAL_CORE_VARIANTS
+CORE_VARIANTS = ('basic', 'v2', 'v3')
+SUPPORTED_CORE_VARIANTS = CORE_VARIANTS
 CACHE_TOPOLOGIES = ('none', 'unified', 'split')
 
+DEFAULT_CORE_VARIANT = 'v3'
 DEFAULT_BUS_TIMEOUT_CYCLES = 1024
 
 
@@ -16,7 +16,7 @@ class Little64CoreConfig:
     instruction_bus_width: int = 64
     data_bus_width: int = 64
     address_width: int = 64
-    core_variant: str = 'v2'
+    core_variant: str = DEFAULT_CORE_VARIANT
     cache_topology: str = 'none'
     enable_mmu: bool = True
     enable_tlb: bool = True

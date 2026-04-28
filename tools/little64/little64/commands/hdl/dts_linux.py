@@ -147,6 +147,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ensure_hdl_path(REPO_ROOT)
 
     from little64_cores.litex import LITTLE64_LITEX_BOOT_SOURCES, LITTLE64_LITEX_TARGET_NAMES
+    from little64_cores.config import DEFAULT_CORE_VARIANT
 
     parser = argparse.ArgumentParser(description='Generate a Linux DTS for the Little64 LiteX simulation SoC.')
     parser.add_argument('--output', type=Path, required=True, help='Path to the DTS file to write.')
@@ -171,7 +172,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         '--cpu-variant',
         default='standard',
-        help='LiteX CPU variant to model when instantiating the simulation SoC. `standard` selects the V2 core; use `standard-basic` for the legacy core.',
+        help=f'LiteX CPU variant to model (default: `standard` → {DEFAULT_CORE_VARIANT}; use `standard-v2`, `standard-v3`, `standard-basic`, etc.).',
     )
     parser.add_argument(
         '--litex-target',

@@ -243,7 +243,7 @@ Note: `little64 dev new-device` currently instructs contributors to add new devi
 - Generic test macros: `tests/support/test_harness.hpp`
 - CPU-specific helpers: `tests/support/cpu_test_helpers.hpp`
 - Backward-compat include shim: `tests/test_harness.hpp`
-- Shared HDL pytest suites under `hdl/tests/` default to the V2 core; run `./.venv/bin/python -m pytest hdl/tests --core-variants basic|v2|all` when you need the generic HDL coverage against a specific core or both cores.
+- Shared HDL pytest suites under `hdl/tests/` default to the `v3,v2` matrix; run `./.venv/bin/python -m pytest hdl/tests --core-variants basic|v2|v3|all` when you need coverage against a specific core or all cores.
 
 When adding CPU tests, prefer including `tests/support/cpu_test_helpers.hpp` directly.
 

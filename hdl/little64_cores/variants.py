@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 from .basic import Little64BasicCore
-from .config import CACHE_TOPOLOGIES, CORE_VARIANTS, Little64CoreConfig
+from .config import CACHE_TOPOLOGIES, CORE_VARIANTS, DEFAULT_CORE_VARIANT, Little64CoreConfig
 from .v2 import Little64V2Core
 from .v3 import Little64V3Core
 
 
 LITEX_CPU_VARIANT_CONFIGS = {
-    'standard': ('v2', 'none'),
+    'standard': (DEFAULT_CORE_VARIANT, 'none'),
     'standard-basic': ('basic', 'none'),
     'standard-v2': ('v2', 'none'),
     'standard-v2-none': ('v2', 'none'),
@@ -60,6 +60,7 @@ def config_for_litex_variant(cpu_variant: str, *, reset_vector: int = 0) -> Litt
 __all__ = [
     'CACHE_TOPOLOGIES',
     'CORE_VARIANTS',
+    'DEFAULT_CORE_VARIANT',
     'LITEX_CPU_VARIANT_CONFIGS',
     'Little64BasicCore',
     'Little64V2Core',

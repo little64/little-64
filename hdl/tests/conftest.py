@@ -15,15 +15,24 @@ HDL_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HDL_ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from little64_cores.config import Little64CoreConfig, SUPPORTED_CORE_VARIANTS
+from little64_cores.config import DEFAULT_CORE_VARIANT, Little64CoreConfig, SUPPORTED_CORE_VARIANTS
 
 from core_test_contract import adapter_for_variant, variants_with_capabilities
+
+
+def _default_shared_core_variants() -> list[str]:
+	# Keep the current default core first, then include the other pipelined core for comparisons.
+	ordered = [DEFAULT_CORE_VARIANT]
+	for candidate in ('v2', 'v3'):
+		if candidate != DEFAULT_CORE_VARIANT and candidate in SUPPORTED_CORE_VARIANTS:
+			ordered.append(candidate)
+	return ordered
 
 
 def _parse_shared_core_variants(raw_value: str) -> list[str]:
 	normalized = raw_value.strip().lower()
 	if normalized in ('', 'default', 'current'):
-		return ['v2', 'v3']
+		return _default_shared_core_variants()
 	if normalized == 'all':
 		return list(SUPPORTED_CORE_VARIANTS)
 	if normalized in SUPPORTED_CORE_VARIANTS:
@@ -55,11 +64,15 @@ def _required_core_capabilities(metafunc: pytest.Metafunc) -> set[str]:
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
+	default_variants = ','.join(_default_shared_core_variants())
 	parser.addoption(
 		'--core-variants',
 		action='store',
 		default='default',
-		help='Shared HDL test core variants to run: `default` (`v2,v3`), `v2`, `basic`, experimental `v3`, comma-separated variants, or `all`.',
+		help=(
+			f'Shared HDL test core variants to run: `default` (`{default_variants}`), '
+			'`v3`, `v2`, `basic`, comma-separated variants, or `all`.'
+		),
 	)
 
 
