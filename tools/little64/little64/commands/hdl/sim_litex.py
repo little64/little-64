@@ -653,13 +653,22 @@ def _format_bus_region_summary(soc: Little64LiteXSimSoC) -> str:
     return ', '.join(parts)
 
 
-def _restrict_sim_modules(build_script: Path, sim_config: SimConfig) -> None:
+def _restrict_sim_modules(
+    build_script: Path,
+    sim_config: SimConfig,
+    *,
+    require_spi_flash_model: bool = False,
+) -> None:
     sim_modules = cast(list[dict[str, Any]], getattr(sim_config, 'modules', []))
     required_modules: list[str] = sorted({
         module['module']
         for module in sim_modules
         if module['module'] in LITEX_BUILTIN_SIM_MODULES
     })
+    if require_spi_flash_model and 'spdeeprom' not in required_modules:
+        # Non-SD smoke boots from the SPI flash model; keep its simulator module.
+        required_modules.append('spdeeprom')
+        required_modules.sort()
     module_list = ' '.join(required_modules)
     original = build_script.read_text(encoding='utf-8')
     marker = ' OPT_LEVEL='
@@ -679,7 +688,8 @@ def _build_simulator(
     enable_trace = args.trace or args.trace_fst
     sim_config = SimConfig()
     sim_config.add_clocker('sys_clk', freq_hz=int(1e9))
-    sim_config.add_module('resetpulse', [], clocks='sys_rst', tickfirst=True)
+    # resetpulse drives the sys_rst pad and must be clocked by sys_clk.
+    sim_config.add_module('resetpulse', 'sys_rst', clocks='sys_clk', tickfirst=True)
     if enable_trace:
         sim_config.add_module('simtraceon', [], clocks='sim_trace', tickfirst=True)
     sim_config.add_module('serial2console', 'serial')
@@ -723,7 +733,11 @@ def _build_simulator(
     _apply_litex_sim_compatibility_patches()
     if enable_trace:
         _patch_generated_sim_init(gateware_dir)
-    _restrict_sim_modules(build_script, sim_config)
+    _restrict_sim_modules(
+        build_script,
+        sim_config,
+        require_spi_flash_model=not args.with_sdcard,
+    )
     _run_checked(['bash', build_script.name], cwd=gateware_dir, label='Building LiteX simulator binary with Verilator')
     _log_progress('Building local simulator helper modules')
     _build_local_sim_modules(
@@ -805,9 +819,15 @@ def _run_simulator(
 ) -> int:
     _set_phase('running simulator')
     _log_progress(f'Launching LiteX simulator binary {binary_path}')
+    run_command: list[str]
+    stdbuf = shutil.which('stdbuf')
+    if stdbuf is not None:
+        run_command = [stdbuf, '-o0', '-e0', str(binary_path)]
+    else:
+        run_command = [str(binary_path)]
     terminal_state = _capture_terminal_state()
     process = subprocess.Popen(
-        [str(binary_path)],
+        run_command,
         cwd=gateware_dir,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
