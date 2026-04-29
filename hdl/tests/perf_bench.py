@@ -29,10 +29,11 @@ Performance is measured as simulated cycle count, which is independent of
 host wall-clock speed.  CoreMark/MHz = iterations * 1e6 / cycles.
 
 Benchmarks included:
-  - alu_loop: Basic arithmetic operations (~20-50 cycles)
-  - branchy_loop: Branch-heavy code (~30-100 cycles)
+    - alu_loop: Basic arithmetic operations (~9k cycles)
+    - branchy_loop: Forward-taken branch-heavy code (~26k cycles)
+    - branchy_back_loop: Backward-branch-heavy code (predictor-friendly, ~18k cycles)
   - memory_unrolled: Memory load/store patterns (~800-1000 cycles)
-  - mixed_loop: Combined ALU + memory (~2000-3000 cycles)
+    - mixed_loop: Combined ALU + memory (~7k-12k cycles)
   - nested_loop: Triple-nested loop, intermediate workload (~5000-15000 cycles)
   - coremark (optional): Full CoreMark benchmark (~100k+ cycles with reduced size)
 """
@@ -92,48 +93,74 @@ class ElfCase:
 def _make_alu_loop_case(iterations: int) -> AsmCase:
     lines = [
         "LDI #1, R1",
-        f"LDI #{iterations}, R2",
+        "LDI #2, R2",
         "LDI #0, R3",
-        "loop:",
-        "ADD R1, R3",
-        "SUB R1, R2",
-        "TEST R2, R2",
-        "JUMP.Z @done",
-        "JUMP @loop",
-        "done:",
-        "STOP",
     ]
+    for _ in range(iterations):
+        lines.extend([
+            "ADD R1, R3",
+            "SUB R2, R3",
+            "ADD R2, R3",
+        ])
+    lines.append("STOP")
     return AsmCase(
         name=f"alu_loop_{iterations}",
         source="\n".join(lines),
-        max_cycles=(iterations * 16) + 128,
+        max_cycles=(iterations * 12) + 256,
     )
 
 
 def _make_branchy_loop_case(iterations: int) -> AsmCase:
     lines = [
         "LDI #1, R1",
+        "LDI #0, R3",
+    ]
+    for idx in range(iterations):
+        lines.extend([
+            "TEST R1, R1",
+            f"JUMP.Z @nz_skip_{idx}",
+            "ADD R1, R3",
+            f"nz_skip_{idx}:",
+            "TEST R0, R0",
+            f"JUMP.Z @z_taken_{idx}",
+            "ADD R2, R3",
+            f"z_taken_{idx}:",
+        ])
+    lines.append("STOP")
+    return AsmCase(
+        name=f"branchy_loop_{iterations}",
+        source="\n".join(lines),
+        max_cycles=(iterations * 20) + 256,
+    )
+
+
+def _make_branchy_back_loop_case(iterations: int) -> AsmCase:
+    """Branch-heavy loop that emphasizes taken backward branches.
+
+    This case complements branchy_loop by stressing the predictor path where
+    backward conditional branches are expected to be predicted taken.
+    """
+    lines = [
+        "LDI #1, R1",
         f"LDI #{iterations}, R2",
         "LDI #0, R3",
         "loop:",
-        "TEST R3, R3",
-        "JUMP.Z @odd_path",
+        "TEST R0, R1",
+        "JUMP.Z @skip_add",
         "ADD R1, R3",
-        "JUMP @after_path",
-        "odd_path:",
-        "SUB R1, R3",
-        "after_path:",
+        "skip_add:",
         "SUB R1, R2",
-        "TEST R2, R2",
+        "TEST R0, R2",
         "JUMP.Z @done",
-        "JUMP @loop",
+        "TEST R1, R1",
+        "JUMP.Z @loop",
         "done:",
         "STOP",
     ]
     return AsmCase(
-        name=f"branchy_loop_{iterations}",
+        name=f"branchy_back_loop_{iterations}",
         source="\n".join(lines),
-        max_cycles=(iterations * 20) + 128,
+        max_cycles=(iterations * 20) + 512,
     )
 
 
@@ -159,23 +186,20 @@ def _make_mixed_loop_case(iterations: int) -> AsmCase:
         "LDI #0x40, R2",
         "LDI.S1 #0x20, R2",
         "LDI #1, R1",
-        f"LDI #{iterations}, R5",
         "LDI #0, R3",
-        "loop:",
-        "STORE [R2], R1",
-        "LOAD [R2], R4",
-        "ADD R4, R3",
-        "SUB R1, R5",
-        "TEST R5, R5",
-        "JUMP.Z @done",
-        "JUMP @loop",
-        "done:",
-        "STOP",
     ]
+    for _ in range(iterations):
+        lines.extend([
+            "STORE [R2], R1",
+            "LOAD [R2], R4",
+            "ADD R4, R3",
+            "ADD R1, R3",
+        ])
+    lines.append("STOP")
     return AsmCase(
         name=f"mixed_loop_{iterations}",
         source="\n".join(lines),
-        max_cycles=(iterations * 24) + 256,
+        max_cycles=(iterations * 24) + 512,
     )
 
 
@@ -212,10 +236,13 @@ def _make_nested_loop_case(ops: int) -> AsmCase:
 
 def _default_asm_cases() -> list[AsmCase]:
     return [
-        _make_alu_loop_case(200),
-        _make_branchy_loop_case(200),
+        # Keep quick-regression runtime short while making short cases less
+        # dominated by pipeline warm-up/fill overhead.
+        _make_alu_loop_case(2000),
+        _make_branchy_loop_case(2000),
+        _make_branchy_back_loop_case(2000),
         _make_memory_unrolled_case(96),
-        _make_mixed_loop_case(128),
+        _make_mixed_loop_case(1024),
         _make_nested_loop_case(256),  # intermediate complexity: ~8k cycles
     ]
 

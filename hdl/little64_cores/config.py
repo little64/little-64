@@ -3,11 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
-CORE_VARIANTS = ('basic', 'v2', 'v3')
+CORE_VARIANTS = ('basic', 'v2', 'v3', 'v4')
 SUPPORTED_CORE_VARIANTS = CORE_VARIANTS
 CACHE_TOPOLOGIES = ('none', 'unified', 'split')
 
-DEFAULT_CORE_VARIANT = 'v3'
+DEFAULT_CORE_VARIANT = 'v4'
 DEFAULT_BUS_TIMEOUT_CYCLES = 1024
 
 

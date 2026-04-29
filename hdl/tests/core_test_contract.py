@@ -10,6 +10,7 @@ from little64_cores.config import Little64CoreConfig, SUPPORTED_CORE_VARIANTS
 from little64_cores.mmu import ACCESS_EXECUTE
 from little64_cores.v2 import Little64V2SpecialRegisterFile, Little64V2TLB, V2PipelineState
 from little64_cores.v3 import Little64V3SpecialRegisterFile, Little64V3TLB, V3PipelineState
+from little64_cores.v4 import Little64V4Core
 from little64_cores.variants import create_core
 
 
@@ -93,6 +94,9 @@ class CoreTestAdapter:
             ctx.set(dut.execute_operand_b, 0)
         if hasattr(dut, 'execute_flags'):
             ctx.set(dut.execute_flags, 0)
+        if self.variant == 'v4':
+            # V4 has no pipeline-state enum; only valid bits drive the pipeline.
+            return
         ctx.set(dut.state, V3PipelineState.FETCH)
 
     async def prepare_for_execution(
@@ -117,7 +121,7 @@ class CoreTestAdapter:
         )
 
         await ctx.tick()
-        if self.variant != 'v3':
+        if self.variant not in ('v3', 'v4'):
             self.seed_runtime_state(
                 ctx,
                 dut,
@@ -170,6 +174,21 @@ CORE_TEST_CAPABILITIES = {
         'tlb',
         'unaligned',
     }),
+    'v4': frozenset({
+        'atomics',
+        'cache-topology',
+        'commit-profile',
+        'interrupts',
+        'litex',
+        'mmio-trace',
+        'mmu',
+        'pipelined',
+        'reset',
+        'shared-architecture',
+        'special-register-file',
+        'tlb',
+        'unaligned',
+    }),
 }
 
 
@@ -189,6 +208,13 @@ CORE_TEST_ADAPTERS = {
     'v3': CoreTestAdapter(
         variant='v3',
         capabilities=CORE_TEST_CAPABILITIES['v3'],
+        special_register_file_factory=Little64V3SpecialRegisterFile,
+        tlb_factory=Little64V3TLB,
+    ),
+    'v4': CoreTestAdapter(
+        variant='v4',
+        capabilities=CORE_TEST_CAPABILITIES['v4'],
+        # V4 reuses V3's special-register and TLB implementations.
         special_register_file_factory=Little64V3SpecialRegisterFile,
         tlb_factory=Little64V3TLB,
     ),

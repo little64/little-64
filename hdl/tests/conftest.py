@@ -21,9 +21,9 @@ from core_test_contract import adapter_for_variant, variants_with_capabilities
 
 
 def _default_shared_core_variants() -> list[str]:
-	# Keep the current default core first, then include the other pipelined core for comparisons.
+	# Keep the current default core first, then include pipelined cores for comparison.
 	ordered = [DEFAULT_CORE_VARIANT]
-	for candidate in ('v2', 'v3'):
+	for candidate in ('v2', 'v3', 'v4'):
 		if candidate != DEFAULT_CORE_VARIANT and candidate in SUPPORTED_CORE_VARIANTS:
 			ordered.append(candidate)
 	return ordered

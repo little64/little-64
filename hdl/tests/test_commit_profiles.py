@@ -21,6 +21,10 @@ EXPECTED_COMMIT_COUNTS = {
         'simple': 3,
         'memory': 5,
     },
+    'v4': {
+        'simple': 3,
+        'memory': 5,
+    },
 }
 
 

@@ -36,8 +36,8 @@ If the HDL conflicts with the ISA docs or proving tests, the HDL should be corre
 
 The current multi-cycle core now lives under `hdl/little64_cores/basic/`.
 The new pipelined implementation path lives under `hdl/little64_cores/v2/`.
-The experimental next-generation pipeline bring-up now also lives under `hdl/little64_cores/v3/`.
-The top-level `hdl/little64_cores/core.py` module remains as a compatibility export for the current default core variant, which is now V3.
+The experimental next-generation pipeline bring-up now also lives under `hdl/little64_cores/v4/`.
+The top-level `hdl/little64_cores/core.py` module remains as a compatibility export for the current default core variant, which is now V4.
 
 ## Current Layout
 
@@ -77,13 +77,20 @@ The top-level `hdl/little64_cores/core.py` module remains as a compatibility exp
 - `hdl/little64_cores/v3/execute_stage.py` — execute-stage instruction semantics and memory-operation generation
 - `hdl/little64_cores/v3/memory_stage.py` — LSU-backed memory-stage completion and chained push/pop sequencing
 - `hdl/little64_cores/v3/retire_stage.py` — retire-stage decode of writeback, commit, halt, trap, and CPU-control actions
+- `hdl/little64_cores/v4/core.py` — experimental V4 in-order pipelined core with v4-local frontend/LSU/decode and shared V3 stage logic reuse where appropriate
+- `hdl/little64_cores/v4/frontend.py` — V4-local fetch frontend implementation owned by the V4 subtree
+- `hdl/little64_cores/v4/lsu.py` — V4-local load/store unit implementation owned by the V4 subtree
+- `hdl/little64_cores/v4/decode_stage.py` — V4-local decode and hazard handling with branch-prediction wiring
+- `hdl/little64_cores/v4/predictor.py` — V4 branch-prediction policies
+- `hdl/little64_cores/v4/bundles.py` — V4 stage-local signal bundle classes
+- `hdl/little64_cores/v4/__init__.py` — V4-local package export surface
 - `hdl/little64_cores/variants.py` — shared core-variant and cache-topology selection helpers used by the LiteX-facing path
 - `hdl/little64_cores/litex.py` — LiteX-facing profile, named target and boot-source descriptors, wrapper shim, and generic CPU export top
 - `hdl/little64_cores/litex_cpu.py` — real LiteX CPU plugin and raw Little64 data-bus alignment bridge
 - `hdl/little64_cores/litex_linux_boot.py` — Linux ELF flattening and SPI-flash image packing helpers for the LiteX path
 - `hdl/little64_cores/litex_soc.py` — minimal LiteX simulation SoC wrapper and Linux DTS generator
 - `hdl/tests/` — Python simulation and unit tests for unit and ISA coverage
-	- shared HDL suites default to the current `v3,v2` matrix and can be run against `basic`, `v2`, `v3`, or `all` with `./.venv/bin/python -m pytest hdl/tests --core-variants default|basic|v2|v3|all`
+	- shared HDL suites default to the current `v4,v2,v3` matrix and can be run against `basic`, `v2`, `v3`, `v4`, or `all` with `./.venv/bin/python -m pytest hdl/tests --core-variants default|basic|v2|v3|v4|all`
 	- shared architectural suites now use capability markers and a test-only core adapter layer so variant-specific startup details and component factories stay out of the shared test bodies
 	- includes shared generated ISA/program/MMIO coverage, shared unaligned-access coverage, shared trap/atomic/core-smoke coverage, explicit V3 MMU/trap regression coverage, and V2/V3 cache-topology regression tests
 - `little64 hdl flash-image` — build a bootable SPI-flash image containing stage-0, Linux, and a DTB

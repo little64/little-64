@@ -153,6 +153,10 @@ def test_litex_profile_matches_current_cpu_contract() -> None:
         'standard-v3-none',
         'standard-v3-unified',
         'standard-v3-split',
+        'standard-v4',
+        'standard-v4-none',
+        'standard-v4-unified',
+        'standard-v4-split',
     )
     assert profile.mem_map['rom'] == 0x0000_0000
     assert profile.mem_map['spiflash'] == 0x2000_0000
