@@ -51,3 +51,19 @@ def test_overlapping_store_invalidates_llr_reservation(interfering_store: str, s
     assert observed['registers'][3] == 0x1122_3344_5566_7788
     assert observed['flags'] == 0x6
     assert observed['data_memory'][0x2000] != 0xEF
+
+
+def test_second_scr_fails_after_success_even_with_intervening_alu(shared_core_config) -> None:
+    observed = run_program_source(
+        'LLR R14, R3\nADD R0, R0\nSCR R14, R2\nSCR R14, R1\nSTOP',
+        config=shared_core_config,
+        initial_registers={14: 0x2000, 2: 0x1111_2222_3333_4444, 1: 0xAAAA_BBBB_CCCC_DDDD},
+        initial_data_memory={0x2000 + offset: byte for offset, byte in _u64_bytes(0x1122_3344_5566_7788).items()},
+        initial_flags=0x6,
+    )
+
+    assert observed['locked_up'] == 0
+    assert observed['halted'] == 1
+    # First SCR succeeds and writes R2 value; second SCR must fail and leave memory unchanged.
+    assert observed['data_memory'][0x2000] == 0x44
+    assert observed['data_memory'][0x2007] == 0x11

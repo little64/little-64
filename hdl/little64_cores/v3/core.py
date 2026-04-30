@@ -220,6 +220,7 @@ class Little64V3Core(Elaboratable):
         entry_vector = Signal(64)
         entry_epc = Signal(64)
         trap_cpu_control_value = Signal(64)
+        execute_special_write_commit = Signal()
         paging_enabled = Signal()
         fetch_phys_valid = Signal()
         self.dbg_fetch_phys_valid = fetch_phys_valid
@@ -601,14 +602,15 @@ class Little64V3Core(Elaboratable):
             ),
             self.frontend.update_line_valid.eq(frontend_line_update_valid),
             self.frontend.update_line_data.eq(unified_line_update_value),
+            execute_special_write_commit.eq(execute_stage.special_write_stb & execute_to_retire),
             self.special_regs.user_mode.eq(self.special_regs.cpu_control[17]),
             self.special_regs.read_selector.eq(execute_stage.special_read_selector),
-            self.special_regs.write_stb.eq(execute_stage.special_write_stb),
+            self.special_regs.write_stb.eq(execute_special_write_commit),
             self.special_regs.write_selector.eq(execute_stage.special_write_selector),
             self.special_regs.write_data.eq(execute_stage.special_write_data),
             self.special_regs.interrupt_states_high_set.eq(Mux(
                 (irq_line_pending_mask != 0) &
-                ~(execute_stage.special_write_stb & (execute_stage.special_write_selector == SpecialRegister.INTERRUPT_STATES_HIGH)),
+                ~(execute_special_write_commit & (execute_stage.special_write_selector == SpecialRegister.INTERRUPT_STATES_HIGH)),
                 irq_line_pending_mask,
                 0,
             )),

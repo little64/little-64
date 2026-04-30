@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from little64_cores.isa import (
@@ -10,7 +12,7 @@ from little64_cores.isa import (
     CPU_CONTROL_USER_MODE,
     TrapVector,
 )
-from shared_program import assemble_source, encode_gp_imm, encode_ls_reg, run_program_source, run_program_words
+from shared_program import assemble_source, encode_gp_imm, encode_gp_rr, encode_ls_reg, run_program_source, run_program_words
 
 
 pytestmark = pytest.mark.core_capabilities('interrupts', 'mmu')
@@ -494,7 +496,85 @@ def test_maskable_irq_enters_handler_and_iret_returns(shared_core_config) -> Non
     assert observed['special_registers']['interrupt_states_high'] & (1 << 1) == 0
 
 
-def test_lower_irq_vector_wins_and_pending_bits_are_not_cleared_on_entry() -> None:
+def test_maskable_irq_handler_push_pop_preserves_gprs(shared_core_config) -> None:
+    handler_addr = 0x40
+    vector_base = 0x100
+    irq_vector = 65
+    initial_regs = {
+        1: 0x1111,
+        2: 0x2222,
+        3: 0x3333,
+        4: 0x4444,
+        5: 0x5555,
+        6: 0x6666,
+        7: 0x7777,
+        8: 0x8888,
+        9: 0x9999,
+        10: 0xAAAA,
+        11: 0xBBBB,
+        12: 0xCCCC,
+        13: 0x3000,
+        14: 0xDDDD,
+    }
+    handler_words = assemble_source(
+        '\n'.join([
+            'PUSH R1, R13',
+            'PUSH R2, R13',
+            'PUSH R3, R13',
+            'PUSH R4, R13',
+            'PUSH R5, R13',
+            'PUSH R6, R13',
+            'PUSH R7, R13',
+            'PUSH R8, R13',
+            'PUSH R9, R13',
+            'PUSH R10, R13',
+            'PUSH R11, R13',
+            'PUSH R12, R13',
+            'LDI #21, R2',
+            'LDI #2, R3',
+            'SSR R2, R3',
+            'LDI #20, R2',
+            'LDI #0, R3',
+            'SSR R2, R3',
+            'POP R12, R13',
+            'POP R11, R13',
+            'POP R10, R13',
+            'POP R9, R13',
+            'POP R8, R13',
+            'POP R7, R13',
+            'POP R6, R13',
+            'POP R5, R13',
+            'POP R4, R13',
+            'POP R3, R13',
+            'POP R2, R13',
+            'POP R1, R13',
+            'STOP',
+        ])
+    )
+    # Main program spins; the IRQ handler itself STOPs after restoring registers.
+    # This makes termination unconditional regardless of pipeline depth / interrupt_epc timing.
+    observed = run_program_source(
+        'spin:\nJUMP @spin',
+        config=shared_core_config,
+        initial_registers=initial_regs,
+        initial_special_registers={
+            'cpu_control': CPU_CONTROL_INT_ENABLE,
+            'interrupt_table_base': vector_base,
+            'interrupt_mask_high': 1 << 1,
+        },
+        extra_code_words={handler_addr + index * 2: word for index, word in enumerate(handler_words)},
+        initial_data_memory=_vector_entry(vector_base, irq_vector, handler_addr),
+        irq_schedule={0: 1, 1: 0},
+        max_cycles=1024,
+    )
+
+    assert observed['locked_up'] == 0
+    assert observed['halted'] == 1
+    for reg_index, reg_value in initial_regs.items():
+        assert observed['registers'][reg_index] == reg_value
+
+
+def test_lower_irq_vector_wins_and_pending_bits_are_not_cleared_on_entry(shared_core_config) -> None:
     vector_base = 0x100
     handler_65_addr = 0x40
     handler_66_addr = 0x60
@@ -507,6 +587,7 @@ def test_lower_irq_vector_wins_and_pending_bits_are_not_cleared_on_entry() -> No
             'spin:',
             'JUMP @spin',
         ]),
+        config=shared_core_config,
         initial_special_registers={
             'cpu_control': CPU_CONTROL_INT_ENABLE,
             'interrupt_table_base': vector_base,
@@ -607,7 +688,7 @@ def test_paged_interrupt_table_fetch_failure_enters_lockup(shared_core_config) -
     assert observed['trap_cause'] == TrapVector.SYSCALL_FROM_SUPERVISOR
 
 
-def test_exception_preempts_device_irq_handler() -> None:
+def test_exception_preempts_device_irq_handler(shared_core_config) -> None:
     handler_addr = 0x40
     vector_base = 0x100
     outer_irq = 65
@@ -616,6 +697,7 @@ def test_exception_preempts_device_irq_handler() -> None:
 
     observed = run_program_words(
         [],
+        config=shared_core_config,
         initial_registers={15: 1},
         initial_special_registers={
             'cpu_control': outer_cpu_control,
@@ -635,7 +717,162 @@ def test_exception_preempts_device_irq_handler() -> None:
     assert ((observed['special_registers']['cpu_control'] >> CPU_CONTROL_CUR_INT_SHIFT) & 0x7F) == TrapVector.EXEC_ALIGN
 
 
-def test_lower_numbered_exception_preempts_active_exception_and_preserves_trap_cause() -> None:
+
+def test_irq_does_not_drop_pending_mr_load_result_v4() -> None:
+    """Guard against the MR-buffer IRQ admission typo regression in v4/core.py.
+
+    The bug was `~mr.valid` (dead bundle field) in `irq_start` instead of `~mr_valid`
+    (real MR-buffer occupancy signal), which allowed IRQ entry to race a pending load writeback.
+    """
+    core_path = Path(__file__).resolve().parents[1] / 'little64_cores' / 'v4' / 'core.py'
+    source = core_path.read_text(encoding='utf-8')
+
+    irq_start_begin = source.find('irq_start.eq(')
+    entry_start_begin = source.find('entry_start.eq', irq_start_begin)
+    assert irq_start_begin != -1
+    assert entry_start_begin != -1
+
+    irq_start_block = source[irq_start_begin:entry_start_begin]
+    assert '~mr_valid &' in irq_start_block
+    assert '~mr.valid' not in irq_start_block
+
+
+def test_v4_clear_pipeline_sync_zeroes_mr_valid_not_bundle_field() -> None:
+    """clear_pipeline_sync() must zero mr_valid (real Signal) — not mr.valid (dead bundle field).
+
+    The pipeline-flush helper is the counterpart of the irq_start admission check.  If it were to
+    zero only the dead bundle field `mr.valid`, the real `mr_valid` tracking signal would never be
+    cleared on flush and the MR buffer would appear permanently full, stalling the pipeline.
+    """
+    core_path = Path(__file__).resolve().parents[1] / 'little64_cores' / 'v4' / 'core.py'
+    source = core_path.read_text(encoding='utf-8')
+
+    # Locate the clear_pipeline_sync function body (ends at the closing bracket before the next def)
+    fn_begin = source.find('def clear_pipeline_sync():')
+    fn_end = source.find('\n        def ', fn_begin + 1)
+    assert fn_begin != -1 and fn_end != -1
+    fn_body = source[fn_begin:fn_end]
+
+    assert 'mr_valid.eq(0)' in fn_body, 'clear_pipeline_sync must zero mr_valid'
+    assert 'mr.valid.eq(0)' not in fn_body, 'clear_pipeline_sync must not reference dead mr.valid'
+
+
+def test_v4_irq_start_includes_storebuf_drain_guard() -> None:
+    """irq_start must check ~storebuf_any_valid so a pending store drains before IRQ entry.
+
+    Without this, an IRQ could take effect while a store-buffer entry is still waiting to commit,
+    racing the store with the vector fetch over the LSU.
+    """
+    core_path = Path(__file__).resolve().parents[1] / 'little64_cores' / 'v4' / 'core.py'
+    source = core_path.read_text(encoding='utf-8')
+
+    irq_start_begin = source.find('irq_start.eq(')
+    entry_start_begin = source.find('entry_start.eq', irq_start_begin)
+    assert irq_start_begin != -1 and entry_start_begin != -1
+
+    irq_start_block = source[irq_start_begin:entry_start_begin]
+    assert '~storebuf_any_valid &' in irq_start_block
+
+
+def test_v4_execute_to_storebuf_excludes_memory_flags_write() -> None:
+    """execute_to_storebuf must exclude flags-write memory ops (SCR / compare-and-store variants).
+
+    A flags-write memory op must always go through the main memory path so the flags register
+    update (reg_write side-channel) is handled correctly.  Routing it to the store buffer, which
+    only handles pure data stores, would silently drop the register writeback.
+    """
+    core_path = Path(__file__).resolve().parents[1] / 'little64_cores' / 'v4' / 'core.py'
+    source = core_path.read_text(encoding='utf-8')
+
+    storebuf_begin = source.find('execute_to_storebuf.eq(')
+    storebuf_load_begin = source.find('execute_to_storebuf_load.eq(', storebuf_begin + 1)
+    assert storebuf_begin != -1 and storebuf_load_begin != -1
+
+    storebuf_block = source[storebuf_begin:storebuf_load_begin]
+    assert '~execute_stage.outputs.memory_flags_write &' in storebuf_block
+
+
+@pytest.mark.parametrize('variant', ['v3', 'v4'])
+def test_ssr_write_gated_on_execute_to_retire(variant: str) -> None:
+    """special_regs.write_stb must use execute_special_write_commit, not raw special_write_stb.
+
+    execute_special_write_commit = special_write_stb & execute_to_retire.
+    Without the execute_to_retire gate a squashed SSR (e.g., one following a load-redirect) would
+    still commit its side effect to the special register file, corrupting cpu_control or
+    interrupt_states_high.  The same gated signal must also guard the interrupt_states_high_set
+    inhibit so a squashed SSR does not suppress a hardware IRQ edge.
+    """
+    core_path = Path(__file__).resolve().parents[1] / 'little64_cores' / variant / 'core.py'
+    source = core_path.read_text(encoding='utf-8')
+
+    assert 'execute_special_write_commit.eq(execute_stage.special_write_stb & execute_to_retire)' in source
+    assert 'write_stb.eq(execute_special_write_commit)' in source
+    assert '~(execute_special_write_commit & (execute_stage.special_write_selector == SpecialRegister.INTERRUPT_STATES_HIGH))' in source
+
+
+def test_v3_irq_start_pipeline_signals_match_clear_inflight_sync() -> None:
+    """Every pipeline-valid signal checked in v3 irq_start must also be zeroed by clear_inflight_sync.
+
+    The irq_start gate and the pipeline-flush helper must agree on which registers constitute
+    'pipeline not empty'.  A mismatch (signal checked but not cleared, or cleared but not checked)
+    would either permit IRQ entry with in-flight work surviving the flush, or permanently block IRQ
+    admission for registers that are never cleared.
+    """
+    core_path = Path(__file__).resolve().parents[1] / 'little64_cores' / 'v3' / 'core.py'
+    source = core_path.read_text(encoding='utf-8')
+
+    # Extract irq_start block
+    irq_start_begin = source.find('irq_start.eq(')
+    entry_start_begin = source.find('entry_start.eq', irq_start_begin)
+    assert irq_start_begin != -1 and entry_start_begin != -1
+    irq_start_block = source[irq_start_begin:entry_start_begin]
+
+    # Extract clear_inflight_sync body
+    fn_begin = source.find('def clear_inflight_sync():')
+    fn_end = source.find('\n        def ', fn_begin + 1)
+    assert fn_begin != -1 and fn_end != -1
+    clear_body = source[fn_begin:fn_end]
+
+    # All four pipeline-stage valid signals that irq_start checks must be cleared on flush.
+    for signal in ('decode_valid', 'execute_valid', 'memory.valid', 'retire.valid'):
+        assert f'~{signal}' in irq_start_block, f'irq_start missing check for {signal}'
+        assert f'{signal}.eq(0)' in clear_body, f'clear_inflight_sync missing zero of {signal}'
+
+
+def test_squashed_ssr_does_not_write_cpu_control_on_load_redirect(pipelined_core_config) -> None:
+    observed = run_program_words(
+        [
+            encode_ls_reg('LOAD', 0, 3, 15),
+            encode_gp_rr('SSR', 1, 2),
+            encode_gp_imm('STOP', 0, 0),
+        ],
+        config=pipelined_core_config,
+        initial_registers={
+            1: 0,
+            2: 0,
+            3: 0x40,
+        },
+        initial_special_registers={'cpu_control': CPU_CONTROL_INT_ENABLE},
+        initial_data_memory={
+            0x40: 0x04,
+            0x41: 0x00,
+            0x42: 0x00,
+            0x43: 0x00,
+            0x44: 0x00,
+            0x45: 0x00,
+            0x46: 0x00,
+            0x47: 0x00,
+        },
+        max_cycles=64,
+    )
+
+    assert observed['halted'] == 1
+    assert observed['locked_up'] == 0
+    assert observed['commit_count'] == 1
+    assert observed['special_registers']['cpu_control'] == CPU_CONTROL_INT_ENABLE
+
+
+def test_lower_numbered_exception_preempts_active_exception_and_preserves_trap_cause(shared_core_config) -> None:
     handler_addr = 0x40
     vector_base = 0x100
     outer_exception = TrapVector.SYSCALL_FROM_SUPERVISOR
@@ -644,6 +881,7 @@ def test_lower_numbered_exception_preempts_active_exception_and_preserves_trap_c
 
     observed = run_program_words(
         [],
+        config=shared_core_config,
         initial_registers={15: 1},
         initial_special_registers={
             'cpu_control': outer_cpu_control,
@@ -664,12 +902,13 @@ def test_lower_numbered_exception_preempts_active_exception_and_preserves_trap_c
     assert ((observed['special_registers']['cpu_control'] >> CPU_CONTROL_CUR_INT_SHIFT) & 0x7F) == TrapVector.EXEC_ALIGN
 
 
-def test_exception_that_cannot_preempt_active_exception_enters_lockup() -> None:
+def test_exception_that_cannot_preempt_active_exception_enters_lockup(shared_core_config) -> None:
     active_exception = TrapVector.EXEC_ALIGN
     active_cpu_control = CPU_CONTROL_IN_INTERRUPT | (active_exception << CPU_CONTROL_CUR_INT_SHIFT)
 
     observed = run_program_source(
         'SYSCALL',
+        config=shared_core_config,
         initial_special_registers={
             'cpu_control': active_cpu_control,
             'trap_cause': active_exception,
