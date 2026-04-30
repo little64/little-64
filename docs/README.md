@@ -54,7 +54,10 @@ Alternative entry points:
   - Builds the default ext4 image from `target/linux_port/rootfs/init.S`.
 - Canonical direct-boot helper: `little64 boot run`
 	- The helper targets the LiteX machine profile only, and default mode is `smoke`.
-	- `--machine=litex` builds a matching LiteX DTB, bootrom stage-0 image, and SD card image, then boots the LiteX kernel profile through the emulator's `litex-bootrom` flow.
+	- When no explicit kernel path is provided, it prefers `target/linux_port/build-litex/vmlinux` and falls back to `target/linux_port/build-litex/arch/little64/boot/vmlinuz`.
+	- Default launch is `--launch=direct`, which preloads stage-0-equivalent handoff state (`R1` DTB pointer, `R13` stack reserve, and kernel entry) derived from the generated LiteX DTB and kernel image, without running the stage-0 SD boot path.
+	- In direct launch mode, the helper now mirrors stage-0 placement: it uses the kernel PT_LOAD virtual base only when that image window already fits in LiteX RAM; otherwise it falls back to `0x40000000`. Override with `LITTLE64_DIRECT_KERNEL_PHYSICAL_BASE` when needed.
+	- `--launch=bootrom` switches to the full stage-0 SD boot path through the emulator's `litex-bootrom` flow.
 	- The canonical Little64 LiteX helper contract now keeps the SD-capable CSR windows fixed at `sdcard_block2mem=0xF0000800`, `sdcard_core=0xF0001000`, `sdcard_irq=0xF0001800`, `sdcard_mem2block=0xF0002000`, `sdcard_phy=0xF0002800`, `sdram=0xF0003000`, optional `spiflash_core=0xF0003800`, and `uart=0xF0004000`.
 	- The default LiteX path also regenerates a minimal ext4 rootfs from `target/linux_port/rootfs/init.S` for SD partition 2 unless `--rootfs PATH` or `--no-rootfs` overrides it.
 	- The LiteX machine path also verifies that the selected kernel's adjacent `.config` enables `CONFIG_MMC_LITEX=y`, FAT/MSDOS boot-partition support, and `CONFIG_EXT4_FS=y` for the SD rootfs path, unless `LITTLE64_SKIP_LITEX_KERNEL_CONFIG_CHECK=1` is set.

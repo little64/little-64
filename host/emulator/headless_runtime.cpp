@@ -189,9 +189,31 @@ bool loadRuntimeImageFromPath(IEmulatorRuntime& runtime,
     uint16_t e_type = read_u16(bytes, 0x10);
     if (e_type == 2 || e_type == 3) {
         const bool use_direct = (options.boot_mode == HeadlessBootMode::Direct);
+
+        std::vector<uint8_t> direct_dtb_bytes;
+        const std::vector<uint8_t>* direct_dtb_override = nullptr;
+        if (use_direct && !options.direct_dtb_path.empty()) {
+            std::ifstream dtb_file(options.direct_dtb_path, std::ios::binary);
+            if (!dtb_file.is_open()) {
+                error = "Error: cannot open direct-boot DTB '" + options.direct_dtb_path + "'";
+                return false;
+            }
+            direct_dtb_bytes.assign(
+                std::istreambuf_iterator<char>(dtb_file),
+                std::istreambuf_iterator<char>());
+            if (direct_dtb_bytes.empty()) {
+                error = "Error: direct-boot DTB is empty";
+                return false;
+            }
+            direct_dtb_override = &direct_dtb_bytes;
+        }
+
         const bool loaded = use_direct
             ? runtime.loadProgramElfDirectPaged(bytes,
-                                               options.direct_kernel_physical_base)
+                                               options.direct_kernel_physical_base,
+                                               0xFFFFFFC000000000ULL,
+                                               direct_dtb_override,
+                                               options.direct_stack_reserve_bytes)
             : runtime.loadProgramElf(bytes);
         if (!loaded) {
             error = "Error: failed to load ELF executable";

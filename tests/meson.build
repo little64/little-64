@@ -250,6 +250,15 @@ test('boot-direct-physical-run',
   timeout : 60,
 )
 
+test('boot-direct-stage0-state-run',
+  python3,
+  args : [
+    meson.project_source_root() / 'tests/host/boot/test_direct_boot_stage0_state.py',
+  ],
+  suite : ['boot', 'integration', 'direct'],
+  timeout : 60,
+)
+
 test('boot-litex-bootrom-run',
   python3,
   args : [

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from math import log2
 
-from amaranth import Array, Const, Elaboratable, Module, Mux, Signal
+from amaranth import Array, Const, Elaboratable, Memory, Module, Mux, Signal
 
 from ..wishbone import WishboneMasterInterface
 from ..v3.frontend import DEFAULT_BUS_TIMEOUT_CYCLES, FETCH_LINE_MASK
@@ -35,6 +35,7 @@ class Little64V4FetchFrontend(Elaboratable):
         self.index_bits = 0 if entries == 1 else int(log2(entries))
         self.line_offset_bits = 3
         self.line_number_width = address_width - self.line_offset_bits
+        self.tag_width = self.line_number_width - self.index_bits
 
         self.i_bus = WishboneMasterInterface(
             data_width=data_width,
@@ -63,14 +64,20 @@ class Little64V4FetchFrontend(Elaboratable):
     def elaborate(self, platform):
         m = Module()
 
-        valid_bits = [Signal(name=f'ife_valid_{index}') for index in range(self.entries)]
-        tags = [Signal(self.line_number_width, name=f'ife_tag_{index}') for index in range(self.entries)]
-        line_data = [Signal(64, name=f'ife_data_{index}') for index in range(self.entries)]
+        valid_bits = Signal(self.entries, name='ife_valid_bits')
+        tag_mem = Memory(width=self.tag_width, depth=self.entries, name='ife_tag_mem')
+        data_mem = Memory(width=64, depth=self.entries, name='ife_data_mem')
+        m.submodules.lookup_tag_rp = lookup_tag_rp = tag_mem.read_port(domain='comb')
+        m.submodules.next_tag_rp = next_tag_rp = tag_mem.read_port(domain='comb')
+        m.submodules.lookup_data_rp = lookup_data_rp = data_mem.read_port(domain='comb')
+        m.submodules.tag_wp = tag_wp = tag_mem.write_port()
+        m.submodules.data_wp = data_wp = data_mem.write_port()
 
         line_base_requested = Signal(64)
         lookup_line = Signal(self.line_number_width)
         lookup_index = Signal(max(1, self.index_bits))
         lookup_tag = Signal(self.line_number_width)
+        lookup_tag_comp = Signal(self.tag_width)
         line_hit = Signal()
         hit_data = Signal(64)
         selected_line_data = Signal(64)
@@ -81,6 +88,7 @@ class Little64V4FetchFrontend(Elaboratable):
         request_line_number = Signal(self.line_number_width)
         request_index = Signal(max(1, self.index_bits))
         request_tag = Signal(self.line_number_width)
+        request_tag_comp = Signal(self.tag_width)
         request_is_prefetch = Signal()
 
         prefetch_valid = Signal()
@@ -92,8 +100,14 @@ class Little64V4FetchFrontend(Elaboratable):
         next_lookup_line = Signal(self.line_number_width)
         next_lookup_index = Signal(max(1, self.index_bits))
         next_lookup_tag = Signal(self.line_number_width)
+        next_lookup_tag_comp = Signal(self.tag_width)
         next_line_hit = Signal()
         prefetch_needed = Signal()
+        cache_write_valid = Signal()
+        cache_write_addr = Signal(max(1, self.index_bits))
+        cache_write_tag = Signal(self.line_number_width)
+        cache_write_tag_comp = Signal(self.tag_width)
+        cache_write_data = Signal(64)
 
         bus_request_base = Signal(64)
         slot_index = Signal(2)
@@ -107,17 +121,23 @@ class Little64V4FetchFrontend(Elaboratable):
             lookup_line.eq(line_base_requested[self.line_offset_bits:]),
             lookup_index.eq(0 if self.index_bits == 0 else lookup_line[:self.index_bits]),
             lookup_tag.eq(lookup_line),
+            lookup_tag_comp.eq(lookup_line[self.index_bits:]),
             next_line_base.eq(line_base_requested + 8),
             next_lookup_line.eq(next_line_base[self.line_offset_bits:]),
             next_lookup_index.eq(0 if self.index_bits == 0 else next_lookup_line[:self.index_bits]),
             next_lookup_tag.eq(next_lookup_line),
+            next_lookup_tag_comp.eq(next_lookup_line[self.index_bits:]),
             request_line_number.eq(request_line_base[self.line_offset_bits:]),
             request_index.eq(0 if self.index_bits == 0 else request_line_number[:self.index_bits]),
             request_tag.eq(request_line_number),
-            line_hit.eq(Array(valid_bits)[lookup_index] & (Array(tags)[lookup_index] == lookup_tag)),
-            next_line_hit.eq(Array(valid_bits)[next_lookup_index] & (Array(tags)[next_lookup_index] == next_lookup_tag)),
+            request_tag_comp.eq(request_line_number[self.index_bits:]),
+            lookup_tag_rp.addr.eq(lookup_index),
+            next_tag_rp.addr.eq(next_lookup_index),
+            lookup_data_rp.addr.eq(lookup_index),
+            line_hit.eq(valid_bits.bit_select(lookup_index, 1) & (lookup_tag_rp.data == lookup_tag_comp)),
+            next_line_hit.eq(valid_bits.bit_select(next_lookup_index, 1) & (next_tag_rp.data == next_lookup_tag_comp)),
             prefetch_hit.eq(prefetch_valid & (prefetch_base == line_base_requested)),
-            hit_data.eq(Array(line_data)[lookup_index]),
+            hit_data.eq(lookup_data_rp.data),
             selected_line_data.eq(Mux(prefetch_hit, prefetch_data, hit_data)),
             bus_request_base.eq(request_line_base),
             slot_index.eq(self.pc[1:3]),
@@ -143,6 +163,20 @@ class Little64V4FetchFrontend(Elaboratable):
             self.i_bus.we.eq(0),
             self.i_bus.cti.eq(0),
             self.i_bus.bte.eq(0),
+            tag_wp.en.eq(cache_write_valid),
+            tag_wp.addr.eq(cache_write_addr),
+            tag_wp.data.eq(cache_write_tag_comp),
+            data_wp.en.eq(cache_write_valid),
+            data_wp.addr.eq(cache_write_addr),
+            data_wp.data.eq(cache_write_data),
+        ]
+
+        m.d.comb += [
+            cache_write_valid.eq(0),
+            cache_write_addr.eq(lookup_index),
+            cache_write_tag.eq(lookup_tag),
+            cache_write_tag_comp.eq(lookup_tag_comp),
+            cache_write_data.eq(selected_line_data),
         ]
 
         if self.bus_timeout_cycles > 0:
@@ -158,23 +192,22 @@ class Little64V4FetchFrontend(Elaboratable):
         with m.If(self.invalidate):
             # Conservative behavior: keep correctness by dropping all cached lines
             # on pipeline invalidation/redirect events.
-            for valid_bit in valid_bits:
-                m.d.sync += valid_bit.eq(0)
             m.d.sync += [
+                valid_bits.eq(0),
                 request_cancelled.eq(request_valid),
                 prefetch_valid.eq(0),
             ]
 
         # Promote prefetched data into the main cache when first used.
         with m.If(~self.invalidate & prefetch_hit & ~line_hit):
-            with m.Switch(lookup_index):
-                for index in range(self.entries):
-                    with m.Case(index):
-                        m.d.sync += [
-                            valid_bits[index].eq(1),
-                            tags[index].eq(lookup_tag),
-                            line_data[index].eq(prefetch_data),
-                        ]
+            m.d.comb += [
+                cache_write_valid.eq(1),
+                cache_write_addr.eq(lookup_index),
+                cache_write_tag.eq(lookup_tag),
+                cache_write_tag_comp.eq(lookup_tag_comp),
+                cache_write_data.eq(prefetch_data),
+            ]
+            m.d.sync += valid_bits.eq(valid_bits | (Const(1, self.entries) << lookup_index))
 
         with m.If(request_valid & (self.i_bus.ack | effective_err)):
             m.d.sync += [
@@ -190,20 +223,23 @@ class Little64V4FetchFrontend(Elaboratable):
                         prefetch_data.eq(self.i_bus.dat_r),
                     ]
                 with m.Else():
-                    with m.Switch(request_index):
-                        for index in range(self.entries):
-                            with m.Case(index):
-                                m.d.sync += [
-                                    valid_bits[index].eq(1),
-                                    tags[index].eq(request_tag),
-                                    line_data[index].eq(self.i_bus.dat_r),
-                                ]
+                    m.d.comb += [
+                        cache_write_valid.eq(1),
+                        cache_write_addr.eq(request_index),
+                        cache_write_tag.eq(request_tag),
+                        cache_write_tag_comp.eq(request_tag_comp),
+                        cache_write_data.eq(self.i_bus.dat_r),
+                    ]
+                    m.d.sync += valid_bits.eq(valid_bits | (Const(1, self.entries) << request_index))
 
         with m.If(~self.invalidate & self.update_line_valid & line_hit):
-            with m.Switch(lookup_index):
-                for index in range(self.entries):
-                    with m.Case(index):
-                        m.d.sync += line_data[index].eq(self.update_line_data)
+            m.d.comb += [
+                cache_write_valid.eq(1),
+                cache_write_addr.eq(lookup_index),
+                cache_write_tag.eq(lookup_tag),
+                cache_write_tag_comp.eq(lookup_tag_comp),
+                cache_write_data.eq(self.update_line_data),
+            ]
 
         with m.If(~self.invalidate & ~(line_hit | prefetch_hit) & ~request_valid):
             # Demand misses take priority over speculative prefetch requests.

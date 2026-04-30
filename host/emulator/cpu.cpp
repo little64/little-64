@@ -1302,7 +1302,9 @@ void Little64CPU::loadProgram(const std::vector<uint16_t>& words, uint64_t base,
 
 bool Little64CPU::loadProgramElfDirectPaged(const std::vector<uint8_t>& elf_bytes,
                                             uint64_t kernel_physical_base,
-                                            uint64_t direct_map_virtual_base) {
+                                            uint64_t direct_map_virtual_base,
+                                            const std::vector<uint8_t>* dtb_override,
+                                            uint64_t stack_top_reserve_bytes) {
     (void)direct_map_virtual_base;
     _boot_event_head = 0;
     _boot_event_wrapped = false;
@@ -1402,7 +1404,12 @@ bool Little64CPU::loadProgramElfDirectPaged(const std::vector<uint8_t>& elf_byte
     const uint64_t early_pt_scratch_bytes = EARLY_PT_SCRATCH_PAGES * PAGE;
     const uint64_t dtb_offset = (image_span + early_pt_scratch_bytes + 0xFFFULL) & ~0xFFFULL;
     const uint64_t dtb_phys = kernel_physical_base + dtb_offset;
+    std::vector<uint8_t> dtb_fallback;
     auto dtb_span = DTBLoader::getEmbeddedDTB();
+    if (dtb_override != nullptr) {
+        dtb_fallback = *dtb_override;
+        dtb_span = std::span<const uint8_t>(dtb_fallback.data(), dtb_fallback.size());
+    }
     if (!dtb_span.empty() && dtb_phys + dtb_span.size() <= kernel_physical_base + total_ram) {
         for (size_t i = 0; i < dtb_span.size(); ++i) {
             _bus.write8(dtb_phys + i, dtb_span[i]);
@@ -1431,8 +1438,11 @@ bool Little64CPU::loadProgramElfDirectPaged(const std::vector<uint8_t>& elf_byte
     //   Paging OFF, interrupts disabled, supervisor mode
     //
     // The kernel's head.S will set up page tables and enable paging.
+    if (stack_top_reserve_bytes > total_ram) {
+        return false;
+    }
     registers.regs[1]  = dtb_phys;
-    registers.regs[13] = kernel_physical_base + total_ram - 8;
+    registers.regs[13] = kernel_physical_base + total_ram - stack_top_reserve_bytes - 8;
     registers.regs[15] = entry_physical;
     registers.boot_info_frame_physical = dtb_phys;  // SR12: for compatibility
     isRunning = true;

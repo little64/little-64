@@ -53,12 +53,15 @@ void dumpFinalRegisters(EmulatorSession& runtime, const char* reason) {
 
 static void printUsage(const char* argv0) {
     std::cerr << "Usage: " << argv0
-              << " [-h | --help] [--boot-mode=auto|bios|direct|litex-bootrom|litex-flash] [--disk=PATH] [--disk-readonly] [--max-cycles=N] [--trace-mmio] [--trace-control-flow] [--boot-events] [--boot-events-file=PATH] [--boot-events-max-mb=N] [--trace-start-cycle=N] [--trace-end-cycle=N] [--final-registers]"
+              << " [-h | --help] [--boot-mode=auto|bios|direct|litex-bootrom|litex-flash] [--disk=PATH] [--disk-readonly] [--direct-kernel-physical-base=ADDR] [--direct-dtb=PATH] [--direct-stack-reserve-bytes=N] [--max-cycles=N] [--trace-mmio] [--trace-control-flow] [--boot-events] [--boot-events-file=PATH] [--boot-events-max-mb=N] [--trace-start-cycle=N] [--trace-end-cycle=N] [--final-registers]"
               << " <binary.bin|object.o>\n"
               << "  Runs the assembled binary/ELF object and prints any serial (UART) output to stdout.\n"
               << "  --boot-mode=direct uses the LiteX-compatible direct-entry Linux loader and DTB contract.\n"
               << "  --boot-mode=litex-bootrom expects a raw LiteX bootrom image and boots it with the LiteX bootrom/UART map.\n"
               << "  --boot-mode=litex-flash expects a raw LiteX SPI flash image and boots it with the LiteX flash/UART map.\n"
+              << "  --direct-kernel-physical-base=ADDR  Physical load base for --boot-mode=direct (default 0x40000000).\n"
+              << "  --direct-dtb=PATH  Use PATH DTB bytes for --boot-mode=direct instead of the embedded DTB.\n"
+              << "  --direct-stack-reserve-bytes=N  Reserve N bytes below RAM top for SP in --boot-mode=direct.\n"
               << "  --max-cycles=N   Stop after N cycles and dump boot event log.\n"
               << "  --disk=PATH      Attach PATH as the emulated root disk image.\n"
               << "  --disk-readonly  Expose the attached disk as read-only.\n"
@@ -119,6 +122,38 @@ int main(int argc, char* argv[]) {
             }
             boot_events = true;  // always dump events when a cycle limit is set
             final_registers = true; // emit final state on forced stop paths
+            continue;
+        }
+        if (arg.rfind("--direct-kernel-physical-base=", 0) == 0) {
+            try {
+                load_options.direct_kernel_physical_base = std::stoull(
+                    arg.substr(std::string("--direct-kernel-physical-base=").size()),
+                    nullptr,
+                    0);
+            } catch (...) {
+                std::cerr << "Error: invalid --direct-kernel-physical-base value\n";
+                return 1;
+            }
+            continue;
+        }
+        if (arg.rfind("--direct-dtb=", 0) == 0) {
+            load_options.direct_dtb_path = arg.substr(std::string("--direct-dtb=").size());
+            if (load_options.direct_dtb_path.empty()) {
+                std::cerr << "Error: --direct-dtb requires a non-empty path\n";
+                return 1;
+            }
+            continue;
+        }
+        if (arg.rfind("--direct-stack-reserve-bytes=", 0) == 0) {
+            try {
+                load_options.direct_stack_reserve_bytes = std::stoull(
+                    arg.substr(std::string("--direct-stack-reserve-bytes=").size()),
+                    nullptr,
+                    0);
+            } catch (...) {
+                std::cerr << "Error: invalid --direct-stack-reserve-bytes value\n";
+                return 1;
+            }
             continue;
         }
         if (arg.rfind("--disk=", 0) == 0) {

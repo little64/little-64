@@ -44,12 +44,14 @@ This file documents practical update paths and maintenance rules for common proj
   - `LITTLE64_CLANG_MAX_VMEM_KB` sets per-clang virtual memory cap in KB (default `10485760`, ~10 GB).
   - `LITTLE64_CLANG_GUARD_LOG_DIR` sets log directory (default `/tmp/little64-clang-guard`).
 - Direct ELF boot helper for first Linux bring-up exists at `little64 boot run`:
-  - Default image path: `target/linux_port/build-litex/arch/little64/boot/vmlinuz` when present, otherwise `target/linux_port/build-litex/vmlinux`.
+  - Default image path: `target/linux_port/build-litex/vmlinux` (falls back to `target/linux_port/build-litex/arch/little64/boot/vmlinuz` when needed).
   - Default rootfs path: `target/linux_port/rootfs/build/rootfs.ext4`.
-  - Usage: `little64 boot run [--machine litex] [--mode trace|smoke|rsp] [--rootfs PATH | --no-rootfs] [--max-cycles N] [--port N] [optional-path-to-kernel-elf]`.
+  - Usage: `little64 boot run [--machine litex] [--mode trace|smoke|rsp] [--launch direct|bootrom] [--rootfs PATH | --no-rootfs] [--max-cycles N] [--port N] [optional-path-to-kernel-elf]`.
   - Targets the LiteX machine profile only.
   - Default mode `smoke` launches the lower-overhead direct boot flow without boot-event capture.
-  - The `litex` profile generates a bootrom-first LiteX image and launches emulator `--boot-mode=litex-bootrom` so the default path matches the SDRAM-backed hardware-oriented SoC layout.
+  - `--launch=direct` (default) uses emulator direct boot with stage-0-equivalent handoff state (kernel image placement, DTB pointer, and stack reserve), while skipping SD/FAT stage-0 operations.
+  - Direct mode now mirrors stage-0 kernel placement rules: it uses the PT_LOAD virtual base only when that image window already fits in RAM, otherwise it falls back to the canonical `0x40000000` physical base (override with `LITTLE64_DIRECT_KERNEL_PHYSICAL_BASE`).
+  - `--launch=bootrom` runs through the full stage-0 SD boot path.
   - The `litex` profile regenerates a minimal ext4 rootfs from `target/linux_port/rootfs/init.S` for SD partition 2 unless `--rootfs PATH` or `--no-rootfs` overrides it.
   - In `trace` mode it streams full boot events to `/tmp/little64_boot_events.l64t` via `--boot-events-file`.
   - Default file size cap: 500 MB (override with `LITTLE64_BOOT_EVENTS_MAX_MB`).

@@ -117,10 +117,12 @@ def existing_boot_kernel_path(
         boot_kernel_path(defconfig_name, repo=repo),
         kernel_path(defconfig_name, repo=repo),
     ]
-    for candidate in candidates:
-        if candidate.is_file():
-            return candidate
-    return None
+    existing = [candidate for candidate in candidates if candidate.is_file()]
+    if not existing:
+        return None
+    if len(existing) == 1:
+        return existing[0]
+    return max(existing, key=lambda path: path.stat().st_mtime_ns)
 
 
 def symbol_cache_path(

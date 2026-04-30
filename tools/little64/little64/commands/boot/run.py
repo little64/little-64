@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import struct
 import subprocess
 import sys
 from pathlib import Path
@@ -31,10 +32,10 @@ from little64.tooling_support import little64_command, resolve_python_bin
 
 DEFAULT_MODE = "smoke"
 DEFAULT_MACHINE = "litex"
-
-
-def _default_kernel_for_machine(machine: str) -> Path:
-    return default_kernel_for_machine(machine)
+DEFAULT_LAUNCH = "direct"
+DEFAULT_STAGE0_STACK_RESERVE_BYTES = 512
+DEFAULT_DIRECT_KERNEL_PHYSICAL_BASE = 0x40000000
+DEFAULT_DIRECT_RAM_SIZE = 0x10000000
 
 
 def _ensure_litex_kernel_support(kernel_path: Path) -> None:
@@ -87,6 +88,74 @@ def _append_common_runtime_args(args: list[str], *, max_cycles: Optional[int], a
         args.append("--disk-readonly")
 
 
+def _infer_direct_kernel_physical_base(kernel_elf: Path) -> Optional[int]:
+    """Infer direct-load physical base using stage-0-equivalent rules.
+
+    Stage-0 loads into ``L64_KERNEL_PHYSICAL_BASE`` unless the PT_LOAD virtual
+    window itself already fits in RAM, in which case it preserves that virtual
+    base as the physical load address. Mirror that behavior here so direct mode
+    and bootrom stage-0 launch the kernel from equivalent physical placement.
+    """
+    try:
+        elf_bytes = kernel_elf.read_bytes()
+    except OSError:
+        return None
+
+    # ELF64 header.
+    if len(elf_bytes) < 64:
+        return None
+    if elf_bytes[0:4] != b"\x7fELF":
+        return None
+    if elf_bytes[4] != 2 or elf_bytes[5] != 1:  # ELFCLASS64 + ELFDATA2LSB
+        return None
+
+    try:
+        ehdr = struct.unpack_from("<16sHHIQQQIHHHHHH", elf_bytes, 0)
+    except struct.error:
+        return None
+
+    phoff = ehdr[5]
+    phentsize = ehdr[9]
+    phnum = ehdr[10]
+    if phentsize < 56:
+        return None
+
+    min_vaddr: Optional[int] = None
+    max_vaddr = 0
+    for i in range(phnum):
+        phdr_off = phoff + (i * phentsize)
+        if phdr_off + 56 > len(elf_bytes):
+            return None
+        try:
+            p_type, _p_flags, _p_offset, p_vaddr, _p_paddr, _p_filesz, p_memsz, _p_align = struct.unpack_from(
+                "<IIQQQQQQ", elf_bytes, phdr_off
+            )
+        except struct.error:
+            return None
+        if p_type != 1:  # PT_LOAD
+            continue
+        if min_vaddr is None or p_vaddr < min_vaddr:
+            min_vaddr = p_vaddr
+        if p_vaddr + p_memsz > max_vaddr:
+            max_vaddr = p_vaddr + p_memsz
+
+    if min_vaddr is None or max_vaddr <= min_vaddr:
+        return None
+
+    page = 4096
+    virt_base = min_vaddr & ~(page - 1)
+    image_span = ((max_vaddr - virt_base + page - 1) // page) * page
+    virt_end = virt_base + image_span
+    ram_end = DEFAULT_DIRECT_KERNEL_PHYSICAL_BASE + DEFAULT_DIRECT_RAM_SIZE
+
+    # Keep virtual base only when it already denotes a valid physical RAM
+    # window (stage-0 image_window_fits_ram equivalent).
+    if virt_base >= DEFAULT_DIRECT_KERNEL_PHYSICAL_BASE and virt_end <= ram_end:
+        return virt_base
+
+    return DEFAULT_DIRECT_KERNEL_PHYSICAL_BASE
+
+
 def run(argv: List[str]) -> int:
     parser = argparse.ArgumentParser(
         prog="little64 boot run",
@@ -94,6 +163,12 @@ def run(argv: List[str]) -> int:
     )
     parser.add_argument("--machine", default=DEFAULT_MACHINE, choices=["litex"])
     parser.add_argument("--mode", default=DEFAULT_MODE, choices=["trace", "smoke", "rsp"])
+    parser.add_argument(
+        "--launch",
+        default=DEFAULT_LAUNCH,
+        choices=["direct", "bootrom"],
+        help="Launch flow: direct preloads state equivalent to post-stage-0 handoff (default); bootrom runs through the full stage-0 SD path.",
+    )
     rootfs_group = parser.add_mutually_exclusive_group()
     rootfs_group.add_argument("--rootfs", default=None, help="Rootfs image path to mount as read-only SD partition 2.")
     rootfs_group.add_argument("--no-rootfs", action="store_true", help="Leave the LiteX SD rootfs partition empty.")
@@ -148,7 +223,7 @@ def run(argv: List[str]) -> int:
             print(f"hint: build it first with: little64 kernel build --machine {args.machine} vmlinux -j1", file=sys.stderr)
             return 1
     else:
-        kernel_elf = _default_kernel_for_machine(args.machine)
+        kernel_elf = default_kernel_for_machine(args.machine)
 
     if args.machine == "litex":
         _ensure_litex_kernel_support(kernel_elf)
@@ -215,6 +290,7 @@ def run(argv: List[str]) -> int:
 
     print(f"[little64] machine    : {args.machine}")
     print(f"[little64] mode       : {args.mode}")
+    print(f"[little64] launch     : {args.launch}{'  (post-stage0 state)' if args.launch == 'direct' else '  (full stage-0 SD boot)'}")
     print(f"[little64] kernel ELF : {kernel_elf}")
     print(f"[little64] DT source  : {artifacts['dts']}")
     print(f"[little64] stage0     : {artifacts['bootrom']}")
@@ -233,20 +309,42 @@ def run(argv: List[str]) -> int:
     boot_log = os.environ.get("LITTLE64_BOOT_LOG", "/tmp/little64_boot.log")
     events_max_mb = os.environ.get("LITTLE64_BOOT_EVENTS_MAX_MB", "500")
 
+    extra_direct_args: list[str] = []
+    if args.launch == "direct":
+        direct_kernel_physical_base = os.environ.get("LITTLE64_DIRECT_KERNEL_PHYSICAL_BASE")
+        if direct_kernel_physical_base is None:
+            inferred_base = _infer_direct_kernel_physical_base(kernel_elf)
+            if inferred_base is None:
+                inferred_base = DEFAULT_DIRECT_KERNEL_PHYSICAL_BASE
+            direct_kernel_physical_base = f"0x{inferred_base:x}"
+
+        emu_boot_mode = "direct"
+        emu_image = kernel_elf
+        extra_direct_args = [
+            f"--direct-dtb={artifacts['dtb']}",
+            f"--direct-stack-reserve-bytes={os.environ.get('LITTLE64_DIRECT_STACK_RESERVE_BYTES', str(DEFAULT_STAGE0_STACK_RESERVE_BYTES))}",
+            f"--direct-kernel-physical-base={direct_kernel_physical_base}",
+        ]
+        print(f"[little64] direct phys: {direct_kernel_physical_base}")
+    else:
+        emu_boot_mode = "litex-bootrom"
+        emu_image = artifacts["bootrom"]
+
     if args.mode == "trace":
         emu_args = [
             str(emulator),
             "--trace-mmio", "--boot-events", "--trace-control-flow",
             f"--boot-events-file={boot_events_file}",
             f"--boot-events-max-mb={events_max_mb}",
-            "--boot-mode=litex-bootrom",
+            f"--boot-mode={emu_boot_mode}",
         ]
+        emu_args.extend(extra_direct_args)
         if os.environ.get("LITTLE64_TRACE_START_CYCLE"):
             emu_args.append(f"--trace-start-cycle={os.environ['LITTLE64_TRACE_START_CYCLE']}")
         if os.environ.get("LITTLE64_TRACE_END_CYCLE"):
             emu_args.append(f"--trace-end-cycle={os.environ['LITTLE64_TRACE_END_CYCLE']}")
         _append_common_runtime_args(emu_args, max_cycles=args.max_cycles, attach_rootfs=attach_rootfs, sd_image=artifacts["sd"])
-        emu_args.append(str(artifacts["bootrom"]))
+        emu_args.append(str(emu_image))
         try:
             with open(boot_log, "w") as log:
                 proc = subprocess.run(emu_args, stderr=log)
@@ -258,17 +356,19 @@ def run(argv: List[str]) -> int:
         return rc
 
     if args.mode == "smoke":
-        emu_args = [str(emulator), "--boot-mode=litex-bootrom"]
+        emu_args = [str(emulator), f"--boot-mode={emu_boot_mode}"]
+        emu_args.extend(extra_direct_args)
         _append_common_runtime_args(emu_args, max_cycles=args.max_cycles, attach_rootfs=attach_rootfs, sd_image=artifacts["sd"])
-        emu_args.append(str(artifacts["bootrom"]))
+        emu_args.append(str(emu_image))
         os.execv(emu_args[0], emu_args)
         return 0  # unreachable
 
     if args.mode == "rsp":
-        emu_args = [str(emulator_debug), "--boot-mode=litex-bootrom"]
+        emu_args = [str(emulator_debug), f"--boot-mode={emu_boot_mode}"]
+        emu_args.extend(extra_direct_args)
         _append_common_runtime_args(emu_args, max_cycles=args.max_cycles, attach_rootfs=attach_rootfs, sd_image=artifacts["sd"])
         emu_args.append(str(args.port))
-        emu_args.append(str(artifacts["bootrom"]))
+        emu_args.append(str(emu_image))
         print(f"[little64] rsp        : 127.0.0.1:{args.port}")
         try:
             proc = subprocess.run(emu_args)

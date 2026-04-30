@@ -12,8 +12,15 @@ bool EmulatorSession::loadProgramElf(const std::vector<uint8_t>& elf_bytes, uint
 
 bool EmulatorSession::loadProgramElfDirectPaged(const std::vector<uint8_t>& elf_bytes,
                                                 uint64_t kernel_physical_base,
-                                                uint64_t direct_map_virtual_base) {
-    return _cpu.loadProgramElfDirectPaged(elf_bytes, kernel_physical_base, direct_map_virtual_base);
+                                                uint64_t direct_map_virtual_base,
+                                                const std::vector<uint8_t>* dtb_override,
+                                                uint64_t stack_top_reserve_bytes) {
+    return _cpu.loadProgramElfDirectPaged(
+        elf_bytes,
+        kernel_physical_base,
+        direct_map_virtual_base,
+        dtb_override,
+        stack_top_reserve_bytes);
 }
 
 bool EmulatorSession::loadProgramLiteXBootRomImage(const std::vector<uint8_t>& bootrom_bytes) {

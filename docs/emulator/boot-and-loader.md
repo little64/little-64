@@ -112,6 +112,14 @@ The loader:
 6. resolves the entry point to a physical address,
 7. enters the kernel with paging disabled.
 
+For targeted Linux bring-up and stage-0 parity debugging, the direct loader also supports optional runtime overrides:
+
+1. `--direct-dtb=PATH` to load DTB bytes from a file instead of the embedded DTB,
+2. `--direct-stack-reserve-bytes=N` to reserve a fixed scratch window below RAM top before setting `R13`,
+3. `--direct-kernel-physical-base=ADDR` to override the direct-load physical base.
+
+The `little64 boot run --launch=direct` helper path uses these direct-loader overrides to mimic the post-stage-0 Linux handoff state while skipping SD/FAT loading operations. By default, it mirrors stage-0 placement rules: it keeps the PT_LOAD virtual base only when that image window already fits in LiteX RAM, otherwise it falls back to `0x40000000`; set `LITTLE64_DIRECT_KERNEL_PHYSICAL_BASE` to force a different base.
+
 ### Entry register contract
 
 | Register / state | Value |

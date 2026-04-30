@@ -16,7 +16,9 @@ public:
     bool loadProgramElf(const std::vector<uint8_t>& elf_bytes, uint64_t base = 0) override;
     bool loadProgramElfDirectPaged(const std::vector<uint8_t>& elf_bytes,
                                    uint64_t kernel_physical_base = 0x40000000,
-                                   uint64_t direct_map_virtual_base = 0xFFFFFFC000000000ULL) override;
+                                   uint64_t direct_map_virtual_base = 0xFFFFFFC000000000ULL,
+                                   const std::vector<uint8_t>* dtb_override = nullptr,
+                                   uint64_t stack_top_reserve_bytes = 0) override;
     bool loadProgramLiteXBootRomImage(const std::vector<uint8_t>& bootrom_bytes) override;
     bool loadProgramLiteXFlashImage(const std::vector<uint8_t>& flash_bytes) override;
     void cycle() override;

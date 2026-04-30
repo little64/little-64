@@ -97,6 +97,8 @@ def _compose_arty_bootargs(*, uart_origin: int | None, include_rootfs: bool) -> 
     bootargs: list[str] = []
     if uart_origin is not None:
         bootargs.append(f'console=liteuart0 earlycon=liteuart,0x{uart_origin:x} ignore_loglevel loglevel=8')
+    if include_rootfs:
+        bootargs.append('root=/dev/mmcblk0p2 rootwait init=/init')
     return ' '.join(bootargs) if bootargs else None
 
 

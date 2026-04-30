@@ -90,11 +90,22 @@ def ensure_litex_python_env(python_bin: str) -> None:
 
 def default_kernel_for_machine(machine: str) -> Path:
     defconfig = default_defconfig_for_machine(machine)
-    existing = paths.existing_boot_kernel_path(defconfig)
-    if existing is not None:
-        return existing
+    # Prefer uncompressed vmlinux for faster bring-up iteration in emulator
+    # runs where host-side load size is less important than guest-side
+    # decompression overhead.
+    vmlinux = paths.kernel_path(defconfig)
+    if vmlinux.is_file():
+        return vmlinux
 
-    path = paths.boot_kernel_path(defconfig)
+    vmlinux_unstripped = paths.kernel_path(defconfig, unstripped=True)
+    if vmlinux_unstripped.is_file():
+        return vmlinux_unstripped
+
+    vmlinuz = paths.boot_kernel_path(defconfig)
+    if vmlinuz.is_file():
+        return vmlinuz
+
+    path = vmlinux
     raise LitexBootError(
         f"kernel ELF not found at {path}",
         hints=(
