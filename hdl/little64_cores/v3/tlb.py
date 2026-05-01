@@ -6,17 +6,31 @@ from amaranth import Array, Const, Elaboratable, Module, Mux, Signal
 
 
 class Little64V3TLB(Elaboratable):
-    def __init__(self, *, entries: int = 64, address_width: int = 64, generation_bits: int = 8) -> None:
+    def __init__(
+        self,
+        *,
+        entries: int = 64,
+        address_width: int = 64,
+        generation_bits: int = 8,
+        virtual_address_bits: int | None = None,
+    ) -> None:
         if entries < 2 or entries & (entries - 1):
             raise ValueError('Little64V3TLB entries must be a power of two and at least 2')
         if generation_bits < 1:
             raise ValueError('Little64V3TLB generation_bits must be at least 1')
+        if virtual_address_bits is None:
+            virtual_address_bits = address_width
+        if virtual_address_bits <= 12:
+            raise ValueError('Little64V3TLB virtual_address_bits must be greater than page offset bits')
+        if virtual_address_bits > address_width:
+            raise ValueError('Little64V3TLB virtual_address_bits cannot exceed address_width')
 
         self.entries = entries
         self.address_width = address_width
+        self.virtual_address_bits = virtual_address_bits
         self.generation_bits = generation_bits
         self.page_offset_bits = 12
-        self.page_number_width = address_width - self.page_offset_bits
+        self.page_number_width = virtual_address_bits - self.page_offset_bits
         self.index_bits = int(log2(entries))
 
         self.lookup_vaddr = Signal(address_width)

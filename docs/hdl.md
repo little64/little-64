@@ -168,7 +168,7 @@ LiteX wrapper hierarchy.
 Current limitation:
 
 - Kernel-side SPI-SD integration is still separate from stage-0. The bootrom can now load the kernel and DTB from SPI-mode SD on Arty builds, but the generated Linux DT path does not yet describe the SPI-SD storage path as a kernel rootfs device. The native 4-bit Arty path reuses the standard LiteX MMC/DTS contract instead.
-- The native Arty bootrom path currently forces filesystem block reads back to 1-bit mode after SD init. Hardware bring-up confirmed that card init, SCR reads, and bus-width switching work, but the current 4-bit bulk-read path can return shifted block payload bytes during FAT/kernel/DTB reads.
+- The native Arty bootrom path currently forces filesystem block reads back to 1-bit mode after SD init. Hardware bring-up confirmed that card init, SCR reads, and bus-width switching work, but the current 4-bit bulk-read path can return shifted block payload bytes during FAT/kernel/DTB reads. Stage-0 restores the SD PHY width setting to 4-bit again before handing off to Linux.
 - The simulation/emulator bootrom-first flow still uses the native LiteSDCard backend from the same source file.
 
 For repeated hardware testing against an already partitioned SD card, use `little64 sd update --device /dev/sdX` after regenerating the staged Arty SD image under `builddir/hdl-litex-arty/boot/`. That rewrites only the boot partition by default, and rewrites the rootfs partition only when `--update-rootfs` or `--rootfs-image PATH` is requested.

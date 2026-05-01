@@ -1869,6 +1869,16 @@ static void load_kernel_and_handoff(const Stage0FileInfo* kernel_file, const Sta
         fail_hard("dtb ram verification failed");
     }
 
+#if defined(L64_SDCARD_INTERFACE_NATIVE)
+    /*
+     * Keep stage0 filesystem traffic on the known-stable 1-bit path, then
+     * restore the PHY to 4-bit before Linux takes over so kernel-side ACMD6
+     * and SCR probing start from the expected host width state.
+     */
+    sdcard_set_data_width(SDCARD_PHY_WIDTH_4BIT);
+    spin_delay(256U);
+#endif
+
     serial_puts("stage0: handing off to kernel");
     serial_put_labeled_hex64(" entry=", entry_physical);
     serial_put_labeled_hex64(" dtb=", dtb_physical);

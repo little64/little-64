@@ -71,7 +71,7 @@ Alternative entry points:
 	- `--vivado-stop-after synthesis|implementation|bitstream` can stop the Vivado flow after synthesis, after route/checkpoint generation, or after full bitstream emission.
 	- The staged SD bootrom now comes from the shared `target/c_boot/litex_sd_boot.c` source, which builds either the native LiteSDCard or SPI-mode SD backend depending on the selected LiteX CSR layout.
 	- The Arty helper now defaults to the native Adafruit 4-bit SDIO breakout preset on `IO34..40` in the breakout's physical header order `CLK, D0, CMD, D3, D1, D2, DET`, and still supports the older SPI Arduino preset on `IO30..33` plus PMOD mappings via `--sdcard-mode spi`.
-	- Current native Arty bootrom limitation: stage-0 now forces filesystem block reads back to 1-bit mode after card init because the current 4-bit bulk-read path can return shifted payload bytes on hardware. SD init and capability switching still exercise the native path before that fallback.
+	- Current native Arty bootrom limitation: stage-0 now forces filesystem block reads back to 1-bit mode after card init because the current 4-bit bulk-read path can return shifted payload bytes on hardware. SD init and capability switching still exercise the native path before that fallback, and stage-0 restores the PHY width setting to 4-bit again right before Linux handoff.
 	- The Arty helper preloads the backend-matched stage-0 build into the integrated boot ROM; Linux-side SPI-SD rootfs integration is still separate work.
 - LiteX Linux flash-image builder: `./.venv/bin/little64 hdl flash-image`
 - SD boot artifact builder used by LiteX smoke and emulator LiteX boots: `./.venv/bin/little64 sd build`

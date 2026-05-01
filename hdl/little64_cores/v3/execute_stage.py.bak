@@ -109,17 +109,27 @@ class Little64V3ExecuteStage(Elaboratable):
             Const(0, 1) if amount in (0, 64) else (((self.operand_a >> (amount - 1)) & 1) != 0)
             for amount in range(65)
         ])
-        slli_result = Signal(64)
-        slli_carry = Signal()
-        srli_result = Signal(64)
-        srli_carry = Signal()
-        srai_result = Signal(64)
-        srai_carry = Signal()
-        slli_imm_carries = Array([
+        slli_results = Array([
+            self.operand_a if amount == 0 else (self.operand_a << amount)[:64]
+            for amount in range(16)
+        ])
+        slli_carries = Array([
             Const(0, 1) if amount == 0 else ((self.operand_a >> (64 - amount)) != 0)
             for amount in range(16)
         ])
-        srx_imm_carries = Array([
+        srli_results = Array([
+            self.operand_a if amount == 0 else self.operand_a >> amount
+            for amount in range(16)
+        ])
+        srli_carries = Array([
+            Const(0, 1) if amount == 0 else (((self.operand_a >> (amount - 1)) & 1) != 0)
+            for amount in range(16)
+        ])
+        srai_results = Array([
+            self.operand_a if amount == 0 else (self.operand_a.as_signed() >> amount).as_unsigned()
+            for amount in range(16)
+        ])
+        srai_carries = Array([
             Const(0, 1) if amount == 0 else (((self.operand_a >> (amount - 1)) & 1) != 0)
             for amount in range(16)
         ])
@@ -141,12 +151,6 @@ class Little64V3ExecuteStage(Elaboratable):
             execute_ls_pc_push_addr.eq(self.operand_a - 8),
             execute_ls_jump_taken.eq(ls_condition(self.flags, execute_ls_opcode)),
             shift_index.eq(Mux(self.operand_b >= 64, 64, self.operand_b[:7])),
-            slli_result.eq(Mux(execute_imm4 == 0, self.operand_a, (self.operand_a << execute_imm4)[:64])),
-            slli_carry.eq(slli_imm_carries[execute_imm4]),
-            srli_result.eq(Mux(execute_imm4 == 0, self.operand_a, self.operand_a >> execute_imm4)),
-            srli_carry.eq(srx_imm_carries[execute_imm4]),
-            srai_result.eq(Mux(execute_imm4 == 0, self.operand_a, (self.operand_a.as_signed() >> execute_imm4).as_unsigned())),
-            srai_carry.eq(srx_imm_carries[execute_imm4]),
             sum_value.eq(self.operand_a + self.operand_b),
             sub_value.eq(self.operand_a - self.operand_b),
             sign_extended_ldi.eq(sign_extend(Cat(Const(0, 24), execute_ldi_imm8), 32, 64)),
@@ -390,23 +394,23 @@ class Little64V3ExecuteStage(Elaboratable):
                             with m.Case(GPOpcode.SLLI):
                                 m.d.comb += [
                                     self.outputs.reg_write.eq(1),
-                                    self.outputs.reg_value.eq(slli_result),
+                                    self.outputs.reg_value.eq(slli_results[execute_imm4]),
                                     self.outputs.flags_write.eq(1),
-                                    self.outputs.flags_value.eq(flag_value(slli_result, slli_carry)),
+                                    self.outputs.flags_value.eq(flag_value(slli_results[execute_imm4], slli_carries[execute_imm4])),
                                 ]
                             with m.Case(GPOpcode.SRLI):
                                 m.d.comb += [
                                     self.outputs.reg_write.eq(1),
-                                    self.outputs.reg_value.eq(srli_result),
+                                    self.outputs.reg_value.eq(srli_results[execute_imm4]),
                                     self.outputs.flags_write.eq(1),
-                                    self.outputs.flags_value.eq(flag_value(srli_result, srli_carry)),
+                                    self.outputs.flags_value.eq(flag_value(srli_results[execute_imm4], srli_carries[execute_imm4])),
                                 ]
                             with m.Case(GPOpcode.SRAI):
                                 m.d.comb += [
                                     self.outputs.reg_write.eq(1),
-                                    self.outputs.reg_value.eq(srai_result),
+                                    self.outputs.reg_value.eq(srai_results[execute_imm4]),
                                     self.outputs.flags_write.eq(1),
-                                    self.outputs.flags_value.eq(flag_value(srai_result, srai_carry)),
+                                    self.outputs.flags_value.eq(flag_value(srai_results[execute_imm4], srai_carries[execute_imm4])),
                                 ]
                             with m.Case(GPOpcode.LSR):
                                 with m.If(self.special_read_access_fault):

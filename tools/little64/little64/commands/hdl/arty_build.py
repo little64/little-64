@@ -133,12 +133,6 @@ _VENDOR_PRIMITIVE_INPUT_DEFAULTS: dict[str, dict[str, str]] = {
         'SHIFTIN1': "1'd0",
         'SHIFTIN2': "1'd0",
     },
-    'IDELAYE2': {
-        'CINVCTRL': "1'd0",
-        'CNTVALUEIN': "5'd0",
-        'DATAIN': "1'd0",
-        'REGRST': "1'd0",
-    },
     'IOBUFDS': {},
     'PLLE2_ADV': {
         'CLKIN2': "1'd0",
@@ -166,7 +160,6 @@ _VENDOR_PRIMITIVE_OUTPUT_WIDTHS: dict[str, dict[str, int]] = {
         'SHIFTOUT1': 1,
         'SHIFTOUT2': 1,
     },
-    'IDELAYE2': {'CNTVALUEOUT': 5},
     'IOBUFDS': {'O': 1},
     'PLLE2_ADV': {
         'CLKOUT4': 1,

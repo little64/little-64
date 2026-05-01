@@ -108,7 +108,16 @@ class Little64V4Core(Elaboratable):
                 address_width=self.config.address_width,
             )
         self.special_regs = Little64V3SpecialRegisterFile(self.config)
-        self.tlb = Little64V3TLB(entries=self.config.tlb_entries) if self.config.enable_tlb else None
+        self.tlb = (
+            Little64V3TLB(
+                entries=self.config.tlb_entries,
+                address_width=self.config.address_width,
+                virtual_address_bits=39,
+                generation_bits=1,
+            )
+            if self.config.enable_tlb
+            else None
+        )
 
         self.i_bus = self.frontend.i_bus
         self.d_bus = self.lsu.bus

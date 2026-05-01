@@ -789,15 +789,6 @@ def test_arty_build_script_patches_vendor_primitive_ports(tmp_path) -> None:
             '\t.Q7      (),',
             '\t.Q8      ()',
             ');',
-            'IDELAYE2 #( .IDELAY_TYPE("VARIABLE") ) IDELAYE2 (',
-            '\t.C        (clk),',
-            '\t.CE       (1\'d0),',
-            '\t.IDATAIN  (1\'d0),',
-            '\t.INC      (1\'d0),',
-            '\t.LD       (1\'d0),',
-            '\t.LDPIPEEN (1\'d0),',
-            '\t.DATAOUT  ()',
-            ');',
             'IOBUFDS IOBUFDS(',
             '\t.I   (1\'d0),',
             '\t.T   (1\'d0),',
@@ -831,7 +822,6 @@ def test_arty_build_script_patches_vendor_primitive_ports(tmp_path) -> None:
     assert re.search(r"\.TBYTEIN\s+\(1'd0\)", patched)
     assert 'wire little64_vendor_unused_oserdese2_oserdese2_shiftout1;' in patched
     assert re.search(r"\.CE2\s+\(1'd0\)", patched)
-    assert 'wire [4:0] little64_vendor_unused_idelaye2_idelaye2_cntvalueout;' in patched
     assert 'wire little64_vendor_unused_iobufds_iobufds_o;' in patched
     assert re.search(r"\.CLKINSEL\s+\(1'd1\)", patched)
     assert 'wire [15:0] little64_vendor_unused_plle2_adv_plle2_adv_do;' in patched
@@ -1698,6 +1688,7 @@ def test_litex_sim_soc_generates_linux_dts_with_sdcard(tmp_path) -> None:
     assert 'clocks = <&sys_clk>;' in dts_text
     assert 'vmmc-supply = <&vreg_mmc>;' in dts_text
     assert 'bus-width = <4>;' in dts_text
+    assert 'non-removable;' in dts_text
     assert 'interrupts = <67>;' in dts_text
 
 

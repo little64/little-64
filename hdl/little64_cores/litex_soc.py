@@ -808,6 +808,7 @@ def generate_linux_dts(
             '            clocks = <&sys_clk>;',
             '            vmmc-supply = <&vreg_mmc>;',
             '            bus-width = <4>;',
+            '            non-removable;',
         ])
         if sdcard_irq is not None:
             lines.extend([

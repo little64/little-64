@@ -77,6 +77,7 @@ The embedded DTB currently describes:
 - LiteUART at `0xF0004000`, IRQ 65
 - timer at `0x08001000`, IRQ 66
 - LiteSDCard at IRQ 67 with its five LiteX CSR windows
+- the LiteSDCard slot as `non-removable` for the default boot profile
 
 The `chosen` node sets:
 
