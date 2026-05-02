@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 import re
 
-from amaranth import Elaboratable, Module, Signal
+from amaranth import Const, Elaboratable, Module, Signal
 from amaranth.back import verilog
 
 from .config import Little64CoreConfig
@@ -28,7 +28,7 @@ LITTLE64_LINUX_TIMER_BASE = 0x0800_1000
 LITTLE64_LITEX_FLASH_BOOT_MAGIC = 0x4C3634464C415348
 LITTLE64_LITEX_FLASH_BOOT_HEADER_OFFSET = 0x0000_2000
 LITTLE64_LITEX_FLASH_BOOT_ABI_VERSION = 1
-LITTLE64_LITEX_BOOTROM_SIZE = 0x0000_8000
+LITTLE64_LITEX_BOOTROM_SIZE = 0x0002_0000
 LITTLE64_LITEX_BOOTROM_MAIN_RAM_BASE = LITTLE64_LITEX_MEM_MAP['main_ram']
 LITTLE64_LITEX_BOOT_SOURCE_BOOTROM = 'bootrom'
 LITTLE64_LITEX_BOOT_SOURCE_SPIFLASH = 'spiflash'
@@ -56,7 +56,7 @@ class Little64LiteXProfile:
     gcc_triple: str = 'little64-unknown-elf'
     clang_triple: str = 'little64-unknown-elf'
     linker_output_format: str = 'elf64little64'
-    nop: str = 'nop'
+    nop: str = 'MOVE R0, R0'
     data_width: int = 64
     instruction_width: int = 64
     irq_count: int = 63
@@ -170,10 +170,30 @@ class Little64LiteXShim(Elaboratable):
         self.irq_lines = self.core.irq_lines
         self.halted = self.core.halted
         self.locked_up = self.core.locked_up
+        self.debug_cpu_ie = Signal()
+        self.debug_irq_pending_latched = Signal()
+        self.debug_irq_pending_masked = Signal()
+        self.debug_trap_cause = Signal(8)
+        self.debug_lockup_reason = Signal(8)
 
     def elaborate(self, platform):
         m = Module()
         m.submodules.core = self.core
+
+        special_regs = getattr(self.core, 'special_regs', None)
+        interrupt_states_high = getattr(special_regs, 'interrupt_states_high', Const(0, 64))
+        interrupt_mask_high = getattr(special_regs, 'interrupt_mask_high', Const(0, 64))
+        trap_cause = getattr(special_regs, 'trap_cause', Const(0, 64))
+        cpu_control = getattr(special_regs, 'cpu_control', Const(0, 64))
+
+        m.d.comb += [
+            self.debug_cpu_ie.eq(cpu_control[0]),
+            self.debug_irq_pending_latched.eq(interrupt_states_high[1:] != 0),
+            self.debug_irq_pending_masked.eq((interrupt_states_high & interrupt_mask_high)[1:] != 0),
+            self.debug_trap_cause.eq(trap_cause[:8]),
+            self.debug_lockup_reason.eq(getattr(self.core, 'debug_lockup_reason', Const(0, 8))),
+        ]
+
         return m
 
 
@@ -216,6 +236,11 @@ class Little64LiteXTop(Elaboratable):
 
         self.halted = Signal()
         self.locked_up = Signal()
+        self.debug_cpu_ie = Signal()
+        self.debug_irq_pending_latched = Signal()
+        self.debug_irq_pending_masked = Signal()
+        self.debug_trap_cause = Signal(8)
+        self.debug_lockup_reason = Signal(8)
 
     def ports(self) -> list[Signal]:
         return [
@@ -246,6 +271,11 @@ class Little64LiteXTop(Elaboratable):
             self.d_bus_bte,
             self.halted,
             self.locked_up,
+            self.debug_cpu_ie,
+            self.debug_irq_pending_latched,
+            self.debug_irq_pending_masked,
+            self.debug_trap_cause,
+            self.debug_lockup_reason,
         ]
 
     def elaborate(self, platform):
@@ -280,6 +310,11 @@ class Little64LiteXTop(Elaboratable):
             self.d_bus_bte.eq(self.shim.dbus.bte),
             self.halted.eq(self.shim.halted),
             self.locked_up.eq(self.shim.locked_up),
+            self.debug_cpu_ie.eq(self.shim.debug_cpu_ie),
+            self.debug_irq_pending_latched.eq(self.shim.debug_irq_pending_latched),
+            self.debug_irq_pending_masked.eq(self.shim.debug_irq_pending_masked),
+            self.debug_trap_cause.eq(self.shim.debug_trap_cause),
+            self.debug_lockup_reason.eq(self.shim.debug_lockup_reason),
         ]
 
         return m

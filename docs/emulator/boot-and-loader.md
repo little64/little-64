@@ -236,7 +236,7 @@ generated LiteDRAM initialization sequence under functional emulation before
 continuing to a small stage-0 SDRAM read/write sanity test and then on to SD
 or kernel handoff logic.
 
-The Linux helper `little64 boot run` now generates this bootrom image shape by default for `--machine=litex`, along with a DTS/DTB and SD image derived from the Arty A7-35T LiteX target contract. That default helper path now assumes SDRAM at `0x40000000` with a `0x10000000` RAM window so the emulator, stage-0 metadata, and runtime DT agree on the board-sized memory map.
+The Linux helper `little64 boot run` now defaults to a bootrom-first LiteX BIOS image for `--machine=litex`, along with a DTS/DTB and BIOS-compatible SD image derived from the Arty A7-35T LiteX target contract. Pass `--integrated-rom=stage0` when you explicitly need the legacy shared stage-0 image shape instead. The default helper path still assumes SDRAM at `0x40000000` with a `0x10000000` RAM window so the emulator, boot metadata, and runtime DT agree on the board-sized memory map.
 
 ## ELF Loader Expectations
 

@@ -128,6 +128,7 @@ class Little64V4Core(Elaboratable):
         self.irq_lines = Signal(self.config.irq_input_count)
         self.halted = Signal()
         self.locked_up = Signal()
+        self.debug_lockup_reason = Signal(8)
         # Exposed pipeline PCs for observability (mirrors V3 interface)
         self.fetch_pc = Signal(64, init=self.config.reset_vector)
         self.fetch_phys_addr = Signal(64, init=self.config.reset_vector)
@@ -1286,6 +1287,7 @@ class Little64V4Core(Elaboratable):
             m.d.sync += [
                 self.regs[1].eq(self.boot_r1),
                 self.regs[13].eq(self.boot_r13),
+                self.debug_lockup_reason.eq(0),
                 reset_pending.eq(0),
             ]
 
@@ -1315,7 +1317,10 @@ class Little64V4Core(Elaboratable):
                     self.regs[15].eq(retire.next_pc),
                 ]
             with m.If(retire_stage.lockup_request):
-                m.d.sync += self.locked_up.eq(1)
+                m.d.sync += [
+                    self.locked_up.eq(1),
+                    self.debug_lockup_reason.eq(1),
+                ]
 
             # ================================================================
             # 2. Pipeline advancement — independent per-latch blocks.
@@ -1788,6 +1793,7 @@ class Little64V4Core(Elaboratable):
                     vector_load_epc.eq(0),
                     vector_load_flags.eq(0),
                     self.locked_up.eq(1),
+                    self.debug_lockup_reason.eq(2),
                 ]
 
             # Walk bus error → lockup.
@@ -1797,6 +1803,7 @@ class Little64V4Core(Elaboratable):
                     walk_processing.eq(0),
                     walk_started.eq(0),
                     self.locked_up.eq(1),
+                    self.debug_lockup_reason.eq(3),
                 ]
 
             # Lockup from vector translate error or walk fault in vector context.
@@ -1813,6 +1820,7 @@ class Little64V4Core(Elaboratable):
                     vector_load_epc.eq(0),
                     vector_load_flags.eq(0),
                     self.locked_up.eq(1),
+                    self.debug_lockup_reason.eq(4),
                 ]
 
             # Trap preempt escalation → lockup.
@@ -1822,6 +1830,7 @@ class Little64V4Core(Elaboratable):
                     walk_processing.eq(0),
                     walk_started.eq(0),
                     self.locked_up.eq(1),
+                    self.debug_lockup_reason.eq(5),
                 ]
 
             # Fetch or memory bus error / paging without MMU → lockup.
@@ -1831,6 +1840,7 @@ class Little64V4Core(Elaboratable):
                     walk_processing.eq(0),
                     walk_started.eq(0),
                     self.locked_up.eq(1),
+                    self.debug_lockup_reason.eq(6),
                     sb0_valid.eq(0),
                     sb0_started.eq(0),
                     sb1_valid.eq(0),

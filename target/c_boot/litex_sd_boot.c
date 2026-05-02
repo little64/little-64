@@ -37,12 +37,12 @@
 #define SDCARD_CTRL_RESPONSE_LONG 2U
 #define SDCARD_CTRL_RESPONSE_SHORT_BUSY 3U
 /*
- * Arty native SD bring-up currently has a 4-bit bulk-read framing issue: init,
- * SCR reads, and capability switching work, but filesystem block reads can
- * return shifted payload bytes in 4-bit mode. Keep stage0 filesystem I/O on the
- * stable 1-bit path until the hardware-side read path is fixed.
+ * Enable 4-bit filesystem reads for testing.  The earlier framing issue
+ * (shifted payload bytes on 512-byte CMD17 reads) is believed to be resolved
+ * with the upstream litesdcard cmd_done-flag fix (PR #54 / 2025.12 release);
+ * set to 1U to fall back to the stable 1-bit path if the problem recurs.
  */
-#define SDCARD_NATIVE_FORCE_1BIT_FILESYSTEM_IO 1U
+#define SDCARD_NATIVE_FORCE_1BIT_FILESYSTEM_IO 0U
 
 #if defined(L64_SDCARD_INTERFACE_SPI)
 #define SDCARD_SPI_R1_IDLE 0x01U
@@ -1110,7 +1110,6 @@ static void sdcard_initialize_or_fail(void) {
     u32 use_four_bit = 1U;
 
     serial_puts("stage0: initializing sdcard\n");
-    sdcard_set_data_width(SDCARD_PHY_WIDTH_1BIT);
     sdcard_set_clk_freq(400000U);
     /* Power-on settle: match the SPI path's >=1ms margin before SD traffic. */
     spin_delay(200000U);
@@ -1149,6 +1148,9 @@ static void sdcard_initialize_or_fail(void) {
         fail_hard("sdcard CMD8 failed");
     }
 
+    sdcard_set_clk_freq(10000000U);
+    spin_delay(1024U);
+
     timeout = 1000U;
     while (timeout != 0U) {
         if (sdcard_send_command(0U, 55U, SDCARD_CTRL_RESPONSE_SHORT, SDCARD_CTRL_DATA_TRANSFER_NONE) != SD_OK) {
@@ -1183,18 +1185,6 @@ static void sdcard_initialize_or_fail(void) {
     if (sdcard_send_command((u32)rca << 16U, 7U, SDCARD_CTRL_RESPONSE_SHORT_BUSY, SDCARD_CTRL_DATA_TRANSFER_NONE) != SD_OK) {
         fail_hard("sdcard CMD7 failed");
     }
-    if (sdcard_send_command((u32)rca << 16U, 55U, SDCARD_CTRL_RESPONSE_SHORT, SDCARD_CTRL_DATA_TRANSFER_NONE) != SD_OK) {
-        fail_hard("sdcard CMD55 for ACMD51 failed");
-    }
-    *sdcard_core_block_length = 8U;
-    *sdcard_core_block_count = 1U;
-    if (sdcard_send_command(0U, 51U, SDCARD_CTRL_RESPONSE_SHORT, SDCARD_CTRL_DATA_TRANSFER_READ) != SD_OK) {
-        fail_hard("sdcard ACMD51 failed");
-    }
-    if (sdcard_wait_data_done() != SD_OK) {
-        sdcard_log_last_data_state("acmd51-data-failed");
-        fail_hard("sdcard ACMD51 data failed");
-    }
 
     if (sdcard_send_command((u32)rca << 16U, 55U, SDCARD_CTRL_RESPONSE_SHORT, SDCARD_CTRL_DATA_TRANSFER_NONE) != SD_OK) {
         fail_hard("sdcard CMD55 for ACMD6 failed");
@@ -1202,7 +1192,6 @@ static void sdcard_initialize_or_fail(void) {
     if (sdcard_send_command(2U, 6U, SDCARD_CTRL_RESPONSE_SHORT, SDCARD_CTRL_DATA_TRANSFER_NONE) != SD_OK) {
         fail_hard("sdcard ACMD6 failed");
     }
-    sdcard_set_data_width(SDCARD_PHY_WIDTH_4BIT);
 
     *sdcard_core_block_length = 64U;
     *sdcard_core_block_count = 1U;
@@ -1229,6 +1218,19 @@ static void sdcard_initialize_or_fail(void) {
         }
     }
 
+    if (sdcard_send_command((u32)rca << 16U, 55U, SDCARD_CTRL_RESPONSE_SHORT, SDCARD_CTRL_DATA_TRANSFER_NONE) != SD_OK) {
+        fail_hard("sdcard CMD55 for ACMD51 failed");
+    }
+    *sdcard_core_block_length = 8U;
+    *sdcard_core_block_count = 1U;
+    if (sdcard_send_command(0U, 51U, SDCARD_CTRL_RESPONSE_SHORT, SDCARD_CTRL_DATA_TRANSFER_READ) != SD_OK) {
+        fail_hard("sdcard ACMD51 failed");
+    }
+    if (sdcard_wait_data_done() != SD_OK) {
+        sdcard_log_last_data_state("acmd51-data-failed");
+        fail_hard("sdcard ACMD51 data failed");
+    }
+
     if (use_four_bit == 0U) {
         serial_puts("stage0: sdcard native continuing in 1-bit mode\n");
     }
@@ -1250,9 +1252,6 @@ static void sdcard_initialize_or_fail(void) {
         use_four_bit = 0U;
     }
 #endif
-
-    sdcard_set_clk_freq(10000000U);
-    spin_delay(1024U);
 
     serial_puts("stage0: sdcard ready\n");
 #elif defined(L64_SDCARD_INTERFACE_SPI)
@@ -1871,9 +1870,11 @@ static void load_kernel_and_handoff(const Stage0FileInfo* kernel_file, const Sta
 
 #if defined(L64_SDCARD_INTERFACE_NATIVE)
     /*
-     * Keep stage0 filesystem traffic on the known-stable 1-bit path, then
-     * restore the PHY to 4-bit before Linux takes over so kernel-side ACMD6
-     * and SCR probing start from the expected host width state.
+     * Ensure the PHY is in 4-bit mode at handoff regardless of whether the
+     * stage-0 filesystem path used 1-bit or 4-bit.  The SD card bus width is
+     * handled independently: the Linux litex_mmc driver always sends ACMD6
+     * with MMC_BUS_WIDTH_4 before its first data transfer, so any transient
+     * PHY/card mismatch here is resolved before the kernel touches the bus.
      */
     sdcard_set_data_width(SDCARD_PHY_WIDTH_4BIT);
     spin_delay(256U);

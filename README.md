@@ -104,8 +104,8 @@ point after `pip install -e tools/little64` into the project `.venv`. Run
 | `little64 rsp` | Start/stop/check the BIOS and Linux direct-boot RSP debug servers |
 | `little64 lldb` | Launch an LLDB TUI against a Little64 RSP server |
 | `little64 kernel` | Build the Linux kernel, resolve PCs to source, analyze boot-lockup traces |
-| `little64 boot` | Direct-boot a Little64 kernel ELF; sample and cluster fast-boot outcomes |
-| `little64 sd` | Build the bootrom stage-0 and SD card image used by the LiteX flows, or update only the partitions of an existing SD card |
+| `little64 boot` | Boot a Little64 kernel ELF through the LiteX helper flow or direct handoff; sample and cluster fast-boot outcomes |
+| `little64 sd` | Build the LiteX bootrom and SD card image used by the LiteX flows, or update only the partitions of an existing SD card |
 | `little64 rootfs` | Build minimal init-based or mlibc-based ext4 rootfs images |
 | `little64 bios` | Build and run the C-BIOS ELF under the emulator |
 | `little64 dev` | Developer scaffolding (e.g. new MMIO device skeletons) |
@@ -114,11 +114,11 @@ point after `pip install -e tools/little64` into the project `.venv`. Run
 Legacy shell wrappers under `target/` and `host/tools/` have been retired;
 `tests/host/test_no_shell_wrappers.py` enforces that they do not return.
 
-## Linux Direct Boot
+## Linux Boot
 
 The Linux bring-up flow lives under `target/linux_port/` and is intentionally outside the Meson graph.
 
-Typical direct-boot flow with the LiteX SD-capable machine:
+Typical LiteX boot flow with the SD-capable machine:
 
 ```bash
 ./.venv/bin/little64 kernel build vmlinuz -j1
@@ -126,12 +126,13 @@ little64 rootfs build
 little64 boot run
 ```
 
-The default direct-boot rootfs image is `target/linux_port/rootfs/build/rootfs.ext4`.
+The default boot helper rootfs image is `target/linux_port/rootfs/build/rootfs.ext4`.
 For the LiteX machine, `little64 boot run` regenerates a minimal ext4 SD rootfs from `target/linux_port/rootfs/init.S` unless you override it with `--rootfs PATH` or disable it with `--no-rootfs`.
 The boot helper prefers `target/linux_port/build-litex/arch/little64/boot/vmlinuz` when it exists and falls back to `target/linux_port/build-litex/vmlinux`; symbol-oriented helpers still use `vmlinux`.
+`little64 boot run` now defaults to `--launch=bootrom --integrated-rom=litex-bios`, so the emulator follows the LiteX BIOS bootrom path with a BIOS-compatible SD image by default. Use `--launch=direct` when you explicitly want to skip firmware and preload the Linux handoff state instead.
 Use `little64 boot run --no-rootfs` to boot the selected machine profile without attaching a rootfs image.
 Use `little64 boot run --mode=smoke` for the lower-overhead no-event-capture smoke path.
-Use `little64 boot run --mode=rsp` to launch the direct-boot RSP debug server.
+Use `little64 boot run --mode=rsp` to launch the bootrom-first RSP debug server.
 
 The Linux build helper defaults to `little64_litex_sim_defconfig`. To switch away from that default,
 use `--defconfig <name>` or `LITTLE64_LINUX_DEFCONFIG=<name>`, for example:
@@ -150,7 +151,7 @@ Explicit defconfigs build into `target/linux_port/build-<defconfig>/` by default
 
 ## LiteX Linux Boot Helpers
 
-The LiteX-oriented Linux boot helpers are exposed as `little64` CLI subcommands; stage-0 C sources live under `target/c_boot/`.
+The LiteX-oriented Linux boot helpers are exposed as `little64` CLI subcommands; stage-0 C sources live under `target/c_boot/`, and the repo-local LiteX BIOS port lives under `hdl/little64_cores/litex_software/`.
 The current flow is:
 
 ```bash
@@ -180,7 +181,7 @@ normal Little64 Linux physical-entry contract.
 The SD boot helper at `little64 sd build` now supports two modes.
 Machine-aware mode:
 `./.venv/bin/little64 sd build --machine litex --output-dir builddir/boot-direct-litex`
-This resolves the default LiteX kernel from `target/linux_port/build-litex/`, generates matching DTS and DTB artifacts internally, chooses the stage-0 image shape from the selected boot source, and writes the stage-0 plus SD image into the output directory.
+This resolves the default LiteX kernel from `target/linux_port/build-litex/`, generates matching DTS and DTB artifacts internally, and writes the bootrom plus SD image into the output directory. Bootrom-backed machine builds now default to the LiteX BIOS and a BIOS-compatible FAT boot partition containing `boot.bin`, `boot.dtb`, and `boot.json` as the primary long filenames, with FAT short aliases retained for compatibility; pass `--no-use-litex-bios` to keep the legacy shared stage-0 image shape instead.
 Explicit mode:
 pass `--kernel-elf`, `--dtb`, and explicit output paths when you need full control over the inputs or want to build a non-default target shape.
 Both modes regenerate the minimal ext4 rootfs from `target/linux_port/rootfs/init.S` unless `--no-rootfs` or `--rootfs-image PATH` is used.
@@ -251,11 +252,12 @@ existing artifacts under `builddir/hdl-litex-arty/gateware/`.
 
 Each non-`--program-only` Arty build now also removes stale LiteX `gateware/`,
 `software/`, and `boot/` outputs and regenerates the staged SD boot assets
-under `builddir/hdl-litex-arty/boot/`, including the SD bootrom built from
-`target/c_boot/litex_sd_boot.c`. That same source now builds both the native
-LiteSDCard stage-0 used by the simulator/emulator flows and the SPI-mode SD
-stage-0 used by the current Arty hardware path, and the Arty helper preloads
-the backend-matched build into the integrated boot ROM.
+under `builddir/hdl-litex-arty/boot/`. By default the integrated boot ROM is
+built from the repo-local LiteX BIOS port and the staged SD image uses the
+LiteX BIOS `boot.bin` / `boot.dtb` / `boot.json` layout, with FAT short aliases
+retained for compatibility. Pass
+`--no-use-litex-bios` to stage the legacy shared `target/c_boot/litex_sd_boot.c`
+loader instead.
 
 The default Arty SD wiring now targets the Adafruit 4-bit SDIO breakout on
 Arduino pins `IO34..40` in the breakout's physical header order `CLK, D0, CMD,

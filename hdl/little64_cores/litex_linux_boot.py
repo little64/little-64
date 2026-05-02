@@ -24,6 +24,12 @@ DEFAULT_SD_BOOT_PARTITION_SIZE_MB = 256
 BOOT_CHECKSUM_MAGIC = 0x4C36434B
 BOOT_CHECKSUM_VERSION = 1
 BOOT_CHECKSUM_STRUCT = struct.Struct('<8I')
+LITTLE64_SD_BOOT_FORMAT_STAGE0 = 'stage0'
+LITTLE64_SD_BOOT_FORMAT_LITEX_BIOS = 'litex-bios'
+LITTLE64_SD_BOOT_FORMATS = (
+    LITTLE64_SD_BOOT_FORMAT_STAGE0,
+    LITTLE64_SD_BOOT_FORMAT_LITEX_BIOS,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,10 +74,14 @@ class Little64SDCardImageLayout:
     boot_partition_sector_count: int
     root_partition_lba: int
     root_partition_sector_count: int
+    boot_format: str
     kernel_file: Little64SDCardFileLayout
     dtb_file: Little64SDCardFileLayout
-    checksums_file: Little64SDCardFileLayout
-    checksums: Little64SDCardBootChecksums
+    checksums_file: Little64SDCardFileLayout | None
+    boot_json_file: Little64SDCardFileLayout | None
+    checksums: Little64SDCardBootChecksums | None
+    kernel_entry_physical: int | None = None
+    dtb_physical_address: int | None = None
 
 
 def _align_up(value: int, alignment: int) -> int:
@@ -96,6 +106,14 @@ def _fat32_short_name(name: str) -> bytes:
     return stem.ljust(8).encode('ascii') + extension.ljust(3).encode('ascii')
 
 
+def _fat32_short_name_text(short_name: bytes) -> str:
+    if len(short_name) != 11:
+        raise ValueError('FAT32 short names must be exactly 11 bytes')
+    stem = short_name[:8].decode('ascii').rstrip()
+    extension = short_name[8:11].decode('ascii').rstrip()
+    return stem if not extension else f'{stem}.{extension}'
+
+
 def _write_u16_le(buffer: bytearray, offset: int, value: int) -> None:
     buffer[offset:offset + 2] = struct.pack('<H', value)
 
@@ -113,6 +131,158 @@ def _partition_entry(start_lba: int, sector_count: int, partition_type: int) -> 
     _write_u32_le(entry, 8, start_lba)
     _write_u32_le(entry, 12, sector_count)
     return bytes(entry)
+
+
+def _fat32_lfn_checksum(short_name: bytes) -> int:
+    checksum = 0
+    for value in short_name:
+        checksum = (((checksum & 1) << 7) + (checksum >> 1) + value) & 0xFF
+    return checksum
+
+
+def _build_fat32_lfn_entries(long_name: str, short_name: bytes) -> list[bytes]:
+    if not long_name:
+        raise ValueError('long_name must not be empty')
+    utf16_units = [ord(character) for character in long_name]
+    if any(unit > 0xFFFF for unit in utf16_units):
+        raise ValueError('FAT32 LFN builder only supports BMP characters')
+    utf16_units.append(0x0000)
+    while len(utf16_units) % 13 != 0:
+        utf16_units.append(0xFFFF)
+
+    chunks = [utf16_units[index:index + 13] for index in range(0, len(utf16_units), 13)]
+    checksum = _fat32_lfn_checksum(short_name)
+    entries: list[bytes] = []
+    for reverse_index, chunk in enumerate(reversed(chunks)):
+        sequence = len(chunks) - reverse_index
+        if reverse_index == 0:
+            sequence |= 0x40
+
+        entry = bytearray(32)
+        entry[0] = sequence
+        entry[11] = 0x0F
+        entry[12] = 0x00
+        entry[13] = checksum
+
+        positions = (
+            (1, 5),
+            (14, 6),
+            (28, 2),
+        )
+        chunk_index = 0
+        for offset, count in positions:
+            for _ in range(count):
+                unit = chunk[chunk_index]
+                entry[offset:offset + 2] = struct.pack('<H', unit)
+                offset += 2
+                chunk_index += 1
+
+        entries.append(bytes(entry))
+    return entries
+
+
+def _build_fat32_file_dir_entry(file_layout: Little64SDCardFileLayout) -> bytes:
+    entry = bytearray(32)
+    entry[0:11] = file_layout.short_name
+    entry[11] = 0x20
+    _write_u16_le(entry, 20, (file_layout.first_cluster >> 16) & 0xFFFF)
+    _write_u16_le(entry, 26, file_layout.first_cluster & 0xFFFF)
+    _write_u32_le(entry, 28, file_layout.size)
+    return bytes(entry)
+
+
+def _build_litex_bios_boot_json(
+    *,
+    kernel_name: str,
+    dtb_name: str,
+    kernel_physical_base: int,
+    dtb_physical_address: int,
+    kernel_entry_physical: int,
+    kernel_boot_stack_top: int,
+) -> bytes:
+    return (
+        '{\n'
+        f'  "{kernel_name}": "0x{kernel_physical_base:x}",\n'
+        f'  "{dtb_name}": "0x{dtb_physical_address:x}",\n'
+        f'  "r1": "0x{dtb_physical_address:x}",\n'
+        f'  "r2": "0x{kernel_boot_stack_top:x}",\n'
+        f'  "addr": "0x{kernel_entry_physical:x}"\n'
+        '}\n'
+    ).encode('ascii')
+
+
+def _parse_little64_elf_load_segments(
+    elf_bytes: bytes,
+) -> tuple[memoryview, int, list[tuple[int, int, int, int]], int, int]:
+    if len(elf_bytes) < 64:
+        raise ValueError('ELF image is too small')
+
+    elf_view = memoryview(elf_bytes)
+
+    if bytes(elf_view[:4]) != b'\x7fELF':
+        raise ValueError('ELF image is missing the ELF magic')
+    if elf_view[4] != 2 or elf_view[5] != 1:
+        raise ValueError('ELF image must be ELF64 little-endian')
+
+    (
+        _,
+        _,
+        machine,
+        _,
+        entry,
+        phoff,
+        _,
+        _,
+        _,
+        phentsize,
+        phnum,
+        _,
+        _,
+        _,
+    ) = struct.unpack_from('<16sHHIQQQIHHHHHH', elf_view, 0)
+    if machine != EM_LITTLE64:
+        raise ValueError(f'ELF machine does not match Little64: 0x{machine:x}')
+    if phoff + phnum * phentsize > len(elf_view):
+        raise ValueError('ELF program headers extend beyond the file')
+
+    load_segments: list[tuple[int, int, int, int]] = []
+    min_vaddr = None
+    max_vaddr = 0
+    for index in range(phnum):
+        p_type, _, p_offset, p_vaddr, _, p_filesz, p_memsz, _ = struct.unpack_from(
+            '<IIQQQQQQ',
+            elf_view,
+            phoff + index * phentsize,
+        )
+        if p_type != PT_LOAD:
+            continue
+        if p_offset + p_filesz > len(elf_view):
+            raise ValueError('ELF PT_LOAD segment extends beyond the file')
+        min_vaddr = p_vaddr if min_vaddr is None else min(min_vaddr, p_vaddr)
+        max_vaddr = max(max_vaddr, p_vaddr + p_memsz)
+        load_segments.append((p_offset, p_vaddr, p_filesz, p_memsz))
+
+    if not load_segments or min_vaddr is None:
+        raise ValueError('ELF image does not contain any PT_LOAD segments')
+
+    return elf_view, entry, load_segments, min_vaddr, max_vaddr
+
+
+def infer_little64_linux_kernel_physical_base(
+    elf_bytes: bytes,
+    *,
+    ram_base: int = LITTLE64_LINUX_RAM_BASE,
+    ram_size: int = 0x0400_0000,
+    default_kernel_physical_base: int = LITTLE64_LINUX_RAM_BASE,
+) -> tuple[int, bool]:
+    _elf_view, _entry, _load_segments, min_vaddr, max_vaddr = _parse_little64_elf_load_segments(elf_bytes)
+    virtual_base = (min_vaddr // PAGE_SIZE) * PAGE_SIZE
+    image_span = _align_up(max_vaddr - virtual_base, PAGE_SIZE)
+    ram_end = ram_base + ram_size
+    preserves_input_load_address = ram_base <= virtual_base and virtual_base + image_span <= ram_end
+    if preserves_input_load_address:
+        return virtual_base, True
+    return default_kernel_physical_base, False
 
 
 def _crc32_zeros(initial_crc: int, size: int, *, chunk_size: int = 4096) -> int:
@@ -189,23 +359,24 @@ def _build_fat32_boot_partition(
     boot_partition_sector_count: int,
     sectors_per_cluster: int,
     volume_label: bytes,
+    boot_format: str = LITTLE64_SD_BOOT_FORMAT_STAGE0,
+    ram_base: int = LITTLE64_LINUX_RAM_BASE,
+    ram_size: int = 0x0400_0000,
+    kernel_physical_base: int = LITTLE64_LINUX_RAM_BASE,
 ) -> tuple[
     bytearray,
     Little64SDCardFileLayout,
     Little64SDCardFileLayout,
-    Little64SDCardFileLayout,
-    Little64SDCardBootChecksums,
+    Little64SDCardFileLayout | None,
+    Little64SDCardFileLayout | None,
+    Little64SDCardBootChecksums | None,
+    int | None,
+    int | None,
 ]:
     if sectors_per_cluster < 1:
         raise ValueError('sectors_per_cluster must be positive')
     if len(volume_label) != 11:
         raise ValueError('volume_label must be exactly 11 bytes')
-
-    kernel_name = _fat32_short_name('VMLINUX')
-    dtb_name = _fat32_short_name('BOOT.DTB')
-    checksums_name = _fat32_short_name('BOOT.CRC')
-    checksums = _build_sd_boot_checksums(kernel_elf_bytes=kernel_elf_bytes, dtb_bytes=dtb_bytes)
-    checksums_bytes = _serialize_sd_boot_checksums(checksums)
 
     reserved_sectors = 32
     num_fats = 2
@@ -220,34 +391,103 @@ def _build_fat32_boot_partition(
 
     cluster_size = sectors_per_cluster * SECTOR_SIZE
     root_dir_cluster = 2
-    kernel_clusters = max(1, _ceil_div(len(kernel_elf_bytes), cluster_size))
-    dtb_clusters = max(1, _ceil_div(len(dtb_bytes), cluster_size))
-    checksums_clusters = max(1, _ceil_div(len(checksums_bytes), cluster_size))
-    used_cluster_count = 1 + kernel_clusters + dtb_clusters + checksums_clusters
+
+    file_payloads: list[tuple[bytes, bytes, str | None]]
+    checksums_file: Little64SDCardFileLayout | None = None
+    boot_json_file: Little64SDCardFileLayout | None = None
+    checksums: Little64SDCardBootChecksums | None = None
+    kernel_entry_physical: int | None = None
+    dtb_physical_address: int | None = None
+
+    if boot_format == LITTLE64_SD_BOOT_FORMAT_STAGE0:
+        kernel_name = _fat32_short_name('VMLINUX')
+        dtb_name = _fat32_short_name('BOOT.DTB')
+        checksums_name = _fat32_short_name('BOOT.CRC')
+        checksums = _build_sd_boot_checksums(kernel_elf_bytes=kernel_elf_bytes, dtb_bytes=dtb_bytes)
+        checksums_bytes = _serialize_sd_boot_checksums(checksums)
+        file_payloads = [
+            (kernel_name, kernel_elf_bytes, None),
+            (dtb_name, dtb_bytes, None),
+            (checksums_name, checksums_bytes, None),
+        ]
+    elif boot_format == LITTLE64_SD_BOOT_FORMAT_LITEX_BIOS:
+        effective_kernel_physical_base, preserves_input_load_address = infer_little64_linux_kernel_physical_base(
+            kernel_elf_bytes,
+            ram_base=ram_base,
+            ram_size=ram_size,
+            default_kernel_physical_base=kernel_physical_base,
+        )
+        kernel_image = flatten_little64_linux_elf_image(
+            kernel_elf_bytes,
+            kernel_physical_base=effective_kernel_physical_base,
+        )
+        ram_end = ram_base + ram_size
+        boot_stack_top = ram_end - 8
+        dtb_physical_address = effective_kernel_physical_base + _align_up(
+            kernel_image.image_span + EARLY_PT_SCRATCH_PAGES * PAGE_SIZE,
+            PAGE_SIZE,
+        )
+        kernel_end = effective_kernel_physical_base + kernel_image.image_span
+        dtb_end = dtb_physical_address + len(dtb_bytes)
+        if effective_kernel_physical_base < ram_base or kernel_end > ram_end or dtb_end > ram_end:
+            raise ValueError('kernel image or DTB does not fit inside the configured RAM window')
+        if boot_stack_top <= dtb_end:
+            raise ValueError('kernel boot stack overlaps the BIOS DTB placement window')
+
+        kernel_name = _fat32_short_name('BOOT.BIN')
+        dtb_name = _fat32_short_name('BOOT.DTB')
+        boot_json_name = _fat32_short_name('BOOTJSN.JSN')
+        kernel_entry_physical = kernel_image.entry_physical
+        boot_json_bytes = _build_litex_bios_boot_json(
+            kernel_name='boot.bin',
+            dtb_name='boot.dtb',
+            kernel_physical_base=effective_kernel_physical_base,
+            dtb_physical_address=dtb_physical_address,
+            kernel_entry_physical=kernel_entry_physical,
+            kernel_boot_stack_top=boot_stack_top,
+        )
+        file_payloads = [
+            (kernel_name, kernel_image.image, 'boot.bin'),
+            (dtb_name, dtb_bytes, 'boot.dtb'),
+            (boot_json_name, boot_json_bytes, 'boot.json'),
+        ]
+    else:
+        raise ValueError(f'Unsupported SD boot format: {boot_format}')
+
+    file_specs: list[tuple[Little64SDCardFileLayout, bytes, str | None, int]] = []
+    next_cluster = root_dir_cluster + 1
+    for short_name, payload, long_name in file_payloads:
+        clusters = max(1, _ceil_div(len(payload), cluster_size))
+        layout = Little64SDCardFileLayout(
+            short_name=short_name,
+            first_cluster=next_cluster,
+            size=len(payload),
+        )
+        file_specs.append((layout, payload, long_name, clusters))
+        next_cluster += clusters
+
+    kernel_file = file_specs[0][0]
+    dtb_file = file_specs[1][0]
+    if boot_format == LITTLE64_SD_BOOT_FORMAT_STAGE0:
+        checksums_file = file_specs[2][0]
+    else:
+        boot_json_file = file_specs[2][0]
+
+    used_cluster_count = 1 + sum(clusters for _, _, _, clusters in file_specs)
     if used_cluster_count + 2 > cluster_count:
-        raise ValueError('kernel and DTB do not fit in the FAT32 boot partition')
+        raise ValueError('boot files do not fit in the FAT32 boot partition')
 
     first_fat_sector = reserved_sectors
     first_data_sector = reserved_sectors + num_fats * fat_sectors
-
-    kernel_first_cluster = root_dir_cluster + 1
-    dtb_first_cluster = kernel_first_cluster + kernel_clusters
-    checksums_first_cluster = dtb_first_cluster + dtb_clusters
 
     fat_entries = [0 for _ in range(cluster_count + 2)]
     fat_entries[0] = 0x0FFFFFF8
     fat_entries[1] = 0xFFFFFFFF
     fat_entries[root_dir_cluster] = 0x0FFFFFFF
-
-    for index in range(kernel_clusters):
-        cluster = kernel_first_cluster + index
-        fat_entries[cluster] = 0x0FFFFFFF if index == kernel_clusters - 1 else cluster + 1
-    for index in range(dtb_clusters):
-        cluster = dtb_first_cluster + index
-        fat_entries[cluster] = 0x0FFFFFFF if index == dtb_clusters - 1 else cluster + 1
-    for index in range(checksums_clusters):
-        cluster = checksums_first_cluster + index
-        fat_entries[cluster] = 0x0FFFFFFF if index == checksums_clusters - 1 else cluster + 1
+    for file_layout, _payload, _long_name, cluster_count_for_file in file_specs:
+        for index in range(cluster_count_for_file):
+            cluster = file_layout.first_cluster + index
+            fat_entries[cluster] = 0x0FFFFFFF if index == cluster_count_for_file - 1 else cluster + 1
 
     fat_bytes = bytearray(fat_sectors * SECTOR_SIZE)
     for index, value in enumerate(fat_entries):
@@ -287,7 +527,7 @@ def _build_fat32_boot_partition(
     fsinfo[0:4] = b'RRaA'
     fsinfo[484:488] = b'rrAa'
     _write_u32_le(fsinfo, 488, cluster_count - used_cluster_count)
-    _write_u32_le(fsinfo, 492, dtb_first_cluster + dtb_clusters)
+    _write_u32_le(fsinfo, 492, next_cluster)
     fsinfo[510:512] = b'\x55\xaa'
 
     backup_boot_sector_offset = 6 * SECTOR_SIZE
@@ -301,36 +541,15 @@ def _build_fat32_boot_partition(
     root_dir_offset = first_data_sector * SECTOR_SIZE
     root_dir = partition_view[root_dir_offset:root_dir_offset + cluster_size]
 
-    def write_dir_entry(entry_index: int, short_name: bytes, first_cluster: int, size: int) -> None:
-        entry = bytearray(32)
-        entry[0:11] = short_name
-        entry[11] = 0x20
-        _write_u16_le(entry, 20, (first_cluster >> 16) & 0xFFFF)
-        _write_u16_le(entry, 26, first_cluster & 0xFFFF)
-        _write_u32_le(entry, 28, size)
-        start = entry_index * 32
-        root_dir[start:start + 32] = entry
-
-    kernel_file = Little64SDCardFileLayout(
-        short_name=kernel_name,
-        first_cluster=kernel_first_cluster,
-        size=len(kernel_elf_bytes),
-    )
-    dtb_file = Little64SDCardFileLayout(
-        short_name=dtb_name,
-        first_cluster=dtb_first_cluster,
-        size=len(dtb_bytes),
-    )
-    checksums_file = Little64SDCardFileLayout(
-        short_name=checksums_name,
-        first_cluster=checksums_first_cluster,
-        size=len(checksums_bytes),
-    )
-
-    write_dir_entry(0, kernel_file.short_name, kernel_file.first_cluster, kernel_file.size)
-    write_dir_entry(1, dtb_file.short_name, dtb_file.first_cluster, dtb_file.size)
-    write_dir_entry(2, checksums_file.short_name, checksums_file.first_cluster, checksums_file.size)
-    root_dir[96] = 0x00
+    dir_offset = 0
+    for file_layout, _payload, long_name, _clusters in file_specs:
+        if long_name is not None:
+            for lfn_entry in _build_fat32_lfn_entries(long_name, file_layout.short_name):
+                root_dir[dir_offset:dir_offset + 32] = lfn_entry
+                dir_offset += 32
+        root_dir[dir_offset:dir_offset + 32] = _build_fat32_file_dir_entry(file_layout)
+        dir_offset += 32
+    root_dir[dir_offset] = 0x00
 
     def write_file(first_cluster: int, payload: bytes) -> None:
         payload_view = memoryview(payload)
@@ -349,11 +568,19 @@ def _build_fat32_boot_partition(
             if cluster >= 0x0FFFFFF8:
                 raise ValueError('unexpected end of FAT cluster chain while writing file')
 
-    write_file(kernel_file.first_cluster, kernel_elf_bytes)
-    write_file(dtb_file.first_cluster, dtb_bytes)
-    write_file(checksums_file.first_cluster, checksums_bytes)
+    for file_layout, payload, _long_name, _clusters in file_specs:
+        write_file(file_layout.first_cluster, payload)
 
-    return partition, kernel_file, dtb_file, checksums_file, checksums
+    return (
+        partition,
+        kernel_file,
+        dtb_file,
+        checksums_file,
+        boot_json_file,
+        checksums,
+        kernel_entry_physical,
+        dtb_physical_address,
+    )
 
 
 def _compose_sd_card_image(
@@ -363,10 +590,14 @@ def _compose_sd_card_image(
     boot_partition_lba: int,
     boot_partition_sector_count: int,
     root_partition_sector_count: int,
+    boot_format: str,
     kernel_file: Little64SDCardFileLayout,
     dtb_file: Little64SDCardFileLayout,
-    checksums_file: Little64SDCardFileLayout,
-    checksums: Little64SDCardBootChecksums,
+    checksums_file: Little64SDCardFileLayout | None,
+    boot_json_file: Little64SDCardFileLayout | None,
+    checksums: Little64SDCardBootChecksums | None,
+    kernel_entry_physical: int | None,
+    dtb_physical_address: int | None,
     include_disk_image: bool,
 ) -> tuple[Little64SDCardImageLayout, bytes, int]:
     root_partition_lba = boot_partition_lba + boot_partition_sector_count
@@ -396,10 +627,14 @@ def _compose_sd_card_image(
             boot_partition_sector_count=boot_partition_sector_count,
             root_partition_lba=root_partition_lba,
             root_partition_sector_count=root_partition_sector_count,
+            boot_format=boot_format,
             kernel_file=kernel_file,
             dtb_file=dtb_file,
             checksums_file=checksums_file,
+            boot_json_file=boot_json_file,
             checksums=checksums,
+            kernel_entry_physical=kernel_entry_physical,
+            dtb_physical_address=dtb_physical_address,
         ),
         bytes(mbr),
         root_partition_lba * SECTOR_SIZE,
@@ -416,6 +651,10 @@ def build_litex_sd_card_image(
     root_partition_size_mb: int = 16,
     sectors_per_cluster: int = 1,
     volume_label: bytes = b'L64BOOT    ',
+    boot_format: str = LITTLE64_SD_BOOT_FORMAT_STAGE0,
+    ram_base: int = LITTLE64_LINUX_RAM_BASE,
+    ram_size: int = 0x0400_0000,
+    kernel_physical_base: int = LITTLE64_LINUX_RAM_BASE,
 ) -> Little64SDCardImageLayout:
     rootfs_payload = rootfs_bytes or b''
 
@@ -430,13 +669,17 @@ def build_litex_sd_card_image(
     if _ceil_div(len(rootfs_payload), SECTOR_SIZE) > root_partition_sector_count:
         raise ValueError('rootfs payload does not fit in the configured root partition')
 
-    boot_partition, kernel_file, dtb_file, checksums_file, checksums = _build_fat32_boot_partition(
+    boot_partition, kernel_file, dtb_file, checksums_file, boot_json_file, checksums, kernel_entry_physical, dtb_physical_address = _build_fat32_boot_partition(
         kernel_elf_bytes=kernel_elf_bytes,
         dtb_bytes=dtb_bytes,
         boot_partition_lba=boot_partition_lba,
         boot_partition_sector_count=boot_partition_sector_count,
         sectors_per_cluster=sectors_per_cluster,
         volume_label=volume_label,
+        boot_format=boot_format,
+        ram_base=ram_base,
+        ram_size=ram_size,
+        kernel_physical_base=kernel_physical_base,
     )
     layout, _, _ = _compose_sd_card_image(
         boot_partition=boot_partition,
@@ -444,10 +687,14 @@ def build_litex_sd_card_image(
         boot_partition_lba=boot_partition_lba,
         boot_partition_sector_count=boot_partition_sector_count,
         root_partition_sector_count=root_partition_sector_count,
+        boot_format=boot_format,
         kernel_file=kernel_file,
         dtb_file=dtb_file,
         checksums_file=checksums_file,
+        boot_json_file=boot_json_file,
         checksums=checksums,
+        kernel_entry_physical=kernel_entry_physical,
+        dtb_physical_address=dtb_physical_address,
         include_disk_image=True,
     )
     return layout
@@ -464,6 +711,10 @@ def write_litex_sd_card_image(
     boot_partition_size_mb: int = DEFAULT_SD_BOOT_PARTITION_SIZE_MB,
     sectors_per_cluster: int = 1,
     volume_label: bytes = b'L64BOOT    ',
+    boot_format: str = LITTLE64_SD_BOOT_FORMAT_STAGE0,
+    ram_base: int = LITTLE64_LINUX_RAM_BASE,
+    ram_size: int = 0x0400_0000,
+    kernel_physical_base: int = LITTLE64_LINUX_RAM_BASE,
 ) -> Little64SDCardImageLayout:
     rootfs_payload = rootfs_bytes or b''
     boot_partition_sector_count = max(
@@ -478,13 +729,17 @@ def write_litex_sd_card_image(
     if _ceil_div(len(rootfs_payload), SECTOR_SIZE) > root_partition_sector_count:
         raise ValueError('rootfs payload does not fit in the configured root partition')
 
-    boot_partition, kernel_file, dtb_file, checksums_file, checksums = _build_fat32_boot_partition(
+    boot_partition, kernel_file, dtb_file, checksums_file, boot_json_file, checksums, kernel_entry_physical, dtb_physical_address = _build_fat32_boot_partition(
         kernel_elf_bytes=kernel_elf_bytes,
         dtb_bytes=dtb_bytes,
         boot_partition_lba=boot_partition_lba,
         boot_partition_sector_count=boot_partition_sector_count,
         sectors_per_cluster=sectors_per_cluster,
         volume_label=volume_label,
+        boot_format=boot_format,
+        ram_base=ram_base,
+        ram_size=ram_size,
+        kernel_physical_base=kernel_physical_base,
     )
     layout, mbr, root_partition_offset = _compose_sd_card_image(
         boot_partition=boot_partition,
@@ -492,10 +747,14 @@ def write_litex_sd_card_image(
         boot_partition_lba=boot_partition_lba,
         boot_partition_sector_count=boot_partition_sector_count,
         root_partition_sector_count=root_partition_sector_count,
+        boot_format=boot_format,
         kernel_file=kernel_file,
         dtb_file=dtb_file,
         checksums_file=checksums_file,
+        boot_json_file=boot_json_file,
         checksums=checksums,
+        kernel_entry_physical=kernel_entry_physical,
+        dtb_physical_address=dtb_physical_address,
         include_disk_image=False,
     )
 
@@ -519,59 +778,10 @@ def flatten_little64_linux_elf_image(
     *,
     kernel_physical_base: int = LITTLE64_LINUX_RAM_BASE,
 ) -> Little64LinuxElfImage:
-    if len(elf_bytes) < 64:
-        raise ValueError('ELF image is too small')
-
     # Go through a memoryview so the caller's buffer is never copied for slicing.
     # This also lets read-only callers (e.g. SD-image checksum computation) keep
     # zero-copy semantics on large kernel payloads.
-    elf_view = memoryview(elf_bytes)
-
-    if bytes(elf_view[:4]) != b'\x7fELF':
-        raise ValueError('ELF image is missing the ELF magic')
-    if elf_view[4] != 2 or elf_view[5] != 1:
-        raise ValueError('ELF image must be ELF64 little-endian')
-
-    (
-        _,
-        _,
-        machine,
-        _,
-        entry,
-        phoff,
-        _,
-        _,
-        _,
-        phentsize,
-        phnum,
-        _,
-        _,
-        _,
-    ) = struct.unpack_from('<16sHHIQQQIHHHHHH', elf_view, 0)
-    if machine != EM_LITTLE64:
-        raise ValueError(f'ELF machine does not match Little64: 0x{machine:x}')
-    if phoff + phnum * phentsize > len(elf_view):
-        raise ValueError('ELF program headers extend beyond the file')
-
-    load_segments: list[tuple[int, int, int, int]] = []
-    min_vaddr = None
-    max_vaddr = 0
-    for index in range(phnum):
-        p_type, _, p_offset, p_vaddr, _, p_filesz, p_memsz, _ = struct.unpack_from(
-            '<IIQQQQQQ',
-            elf_view,
-            phoff + index * phentsize,
-        )
-        if p_type != PT_LOAD:
-            continue
-        if p_offset + p_filesz > len(elf_view):
-            raise ValueError('ELF PT_LOAD segment extends beyond the file')
-        min_vaddr = p_vaddr if min_vaddr is None else min(min_vaddr, p_vaddr)
-        max_vaddr = max(max_vaddr, p_vaddr + p_memsz)
-        load_segments.append((p_offset, p_vaddr, p_filesz, p_memsz))
-
-    if not load_segments or min_vaddr is None:
-        raise ValueError('ELF image does not contain any PT_LOAD segments')
+    elf_view, entry, load_segments, min_vaddr, max_vaddr = _parse_little64_elf_load_segments(elf_bytes)
 
     virtual_base = (min_vaddr // PAGE_SIZE) * PAGE_SIZE
     image_span = _align_up(max_vaddr - virtual_base, PAGE_SIZE)

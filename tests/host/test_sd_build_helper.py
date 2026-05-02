@@ -174,6 +174,16 @@ def main() -> int:
         return result.returncode
 
     result = _run_python(
+        'import little64.commands.boot.run as boot_run\n'
+        'assert boot_run.DEFAULT_LAUNCH == "bootrom"\n'
+        'assert boot_run.DEFAULT_INTEGRATED_ROM == "litex-bios"\n'
+        'print("ok")\n'
+    )
+    if result.returncode != 0:
+        sys.stderr.write(result.stdout + result.stderr)
+        return result.returncode
+
+    result = _run_python(
         'from pathlib import Path\n'
         'import little64.commands.boot.run as boot_run\n'
         'captured = {}\n'
@@ -186,6 +196,7 @@ def main() -> int:
         '    ram_size="0x2000000",\n'
         '    attach_rootfs=False,\n'
         '    rootfs_image=None,\n'
+        '    integrated_rom="litex-bios",\n'
         '    python_bin="/usr/bin/python3",\n'
         ')\n'
         'command = captured["command"]\n'
@@ -196,13 +207,14 @@ def main() -> int:
         'assert "--cpu-variant" in command and command[command.index("--cpu-variant") + 1] == "standard-v3"\n'
         'assert "--litex-target" in command and command[command.index("--litex-target") + 1] == "sim-bootrom"\n'
         'assert "--boot-source" in command and command[command.index("--boot-source") + 1] == "bootrom"\n'
+        'assert "--use-litex-bios" in command\n'
         'assert "--with-sdram" in command\n'
         'assert "--ram-size" in command and command[command.index("--ram-size") + 1] == "0x2000000"\n'
         'assert "--no-rootfs" in command\n'
         'assert "--dtb" not in command\n'
         'assert artifacts["dts"] == Path("/tmp/little64-boot-run-out/little64-litex-sim.dts")\n'
         'assert artifacts["dtb"] == Path("/tmp/little64-boot-run-out/little64-litex-sim.dtb")\n'
-        'assert artifacts["bootrom"] == Path("/tmp/little64-boot-run-out/little64-sd-stage0-bootrom.bin")\n'
+        'assert artifacts["bootrom"] == Path("/tmp/little64-boot-run-out/little64-litex-bios.bin")\n'
         'assert artifacts["sd"] == Path("/tmp/little64-boot-run-out/little64-linux-sdcard.img")\n'
     )
     if result.returncode != 0:

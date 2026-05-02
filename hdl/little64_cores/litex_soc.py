@@ -8,6 +8,7 @@ from migen.fhdl import tracer as migen_tracer
 
 from litex.build.generic_platform import Pins, Subsignal
 from litex.build.sim import SimPlatform
+from litex.soc.cores.timer import Timer
 from litex.soc.cores.spi import SPIMaster
 from litex.soc.integration.common import get_mem_data
 from litex.soc.integration.soc import SoCRegion
@@ -289,6 +290,7 @@ class Little64LiteXSoC(SoCCore):
         boot_source: str | None = None,
         boot_r1: int = 0,
         boot_stack_address: int | None = None,
+        with_bios: bool = False,
         with_timer: bool = False,
         **kwargs,
     ) -> None:
@@ -361,6 +363,11 @@ class Little64LiteXSoC(SoCCore):
             with_ctrl=False,
             **kwargs,
         )
+
+        if with_bios:
+            timer0 = Timer()
+            self.add_module(name='timer0', module=timer0)
+            self.timer0.add_uptime()
 
         if with_timer:
             self.linux_timer = Little64LinuxTimer(sys_clk_freq=self.sys_clk_freq)

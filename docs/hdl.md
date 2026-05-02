@@ -153,7 +153,21 @@ bring-up status without requiring any software support:
 - RGB LED 1 red = pulse-stretched native SD CMD output transitions
 - RGB LED 1 green = pulse-stretched native SD CMD output-enable transitions
 - RGB LED 1 blue = pulse-stretched native SD CMD input transitions observed while CMD is released
-- remaining RGB LEDs are held off for deterministic behavior
+- RGB LED 2 red = pulse-stretched CPU interrupt-enable bit (`cpu_control[0]`)
+- RGB LED 2 green = pulse-stretched latched high-bank interrupt-pending state
+- RGB LED 2 blue = pulse-stretched latched high-bank pending masked by interrupt mask
+- RGB LED 3 red = lockup reason bit 0 (LSB)
+- RGB LED 3 green = lockup reason bit 1
+- RGB LED 3 blue = lockup reason bit 2
+
+Current lockup reason encoding (RGB LED 3 as binary):
+
+- `001` = retire-stage lockup request (`execute.outputs.lockup` path)
+- `010` = vector load response error or null handler PC
+- `011` = MMU walk bus error
+- `100` = vector-translation lockup or vector-context walk fault lockup
+- `101` = trap preemption escalation lockup
+- `110` = fetch/memory/storebuf bus error or paging enabled without MMU
 
 The current Arty wiring drives the RGB channels as active-high. If the mono
 LEDs behave correctly but the RGB LEDs all come up bright or the "off" LEDs
@@ -168,10 +182,13 @@ LiteX wrapper hierarchy.
 Current limitation:
 
 - Kernel-side SPI-SD integration is still separate from stage-0. The bootrom can now load the kernel and DTB from SPI-mode SD on Arty builds, but the generated Linux DT path does not yet describe the SPI-SD storage path as a kernel rootfs device. The native 4-bit Arty path reuses the standard LiteX MMC/DTS contract instead.
-- The native Arty bootrom path currently forces filesystem block reads back to 1-bit mode after SD init. Hardware bring-up confirmed that card init, SCR reads, and bus-width switching work, but the current 4-bit bulk-read path can return shifted block payload bytes during FAT/kernel/DTB reads. Stage-0 restores the SD PHY width setting to 4-bit again before handing off to Linux.
+- The native Arty bootrom path now keeps filesystem traffic on the 4-bit LiteSDCard path by default. If the earlier framing issue reappears on hardware, stage-0 can still be forced back to the older 1-bit path with the `SDCARD_NATIVE_FORCE_1BIT_FILESYSTEM_IO` fallback in `target/c_boot/litex_sd_boot.c`.
+- The current native LiteSDCard BIOS path also still has a software-level DMA/cache coherency limitation. The immediate BIOS workaround is to DMA SD sectors into a dedicated aligned bounce buffer and then copy them into the FatFs-owned buffer with CPU stores. That avoids the observed stale-buffer failure during `f_mount`, but it is not the long-term design. The proper architectural fix is still pending and likely needs an explicit cache-maintenance contract, a coherent/uncached DMA-visible memory region, or both so future firmware does not depend on per-driver bounce buffers.
 - The simulation/emulator bootrom-first flow still uses the native LiteSDCard backend from the same source file.
 
 For repeated hardware testing against an already partitioned SD card, use `little64 sd update --device /dev/sdX` after regenerating the staged Arty SD image under `builddir/hdl-litex-arty/boot/`. That rewrites only the boot partition by default, and rewrites the rootfs partition only when `--update-rootfs` or `--rootfs-image PATH` is requested.
+
+`little64 hdl arty-build` now defaults to the repo-local LiteX BIOS port for the integrated boot ROM and regenerates a BIOS-compatible SD image alongside the bitstream artifacts. Pass `--no-use-litex-bios` when you explicitly need the legacy shared `target/c_boot/litex_sd_boot.c` loader instead.
 
 Typical usage:
 
@@ -208,7 +225,7 @@ Arduino-style header:
 - `D3` on `IO37` -> `U17`
 - `D1` on `IO38` -> `T18`
 - `D2` on `IO39` -> `R18`
-- `DET` on `IO40` -> `P18` (reserved for card-detect; omitted from the active LiteSDCard pad contract when unused)
+- `DET` on `IO40` -> `P18` (reserved for card-detect, treated as active-low by default on the Arty native presets, and omitted from the active LiteSDCard pad contract when unused)
 
 That ordering matches the Adafruit breakout's mixed SPI/SDIO header
 silkscreen, where the SDIO-capable pins appear physically as `CLK, D0, CMD,
@@ -226,7 +243,7 @@ The explicit Arduino SPI preset remains available when you select
 Use `--sdcard-*-pin` overrides when you need an explicit custom wiring instead
 of the built-in Arduino or PMOD conventions. Native mode accepts
 `--sdcard-cmd-pin`, `--sdcard-d0-pin`, `--sdcard-d1-pin`, `--sdcard-d2-pin`,
-`--sdcard-d3-pin`, and `--sdcard-det-pin`; SPI mode keeps the existing
+`--sdcard-d3-pin`, `--sdcard-det-pin`, and `--[no-]sdcard-det-active-low`; SPI mode keeps the existing
 `--sdcard-mosi-pin`, `--sdcard-miso-pin`, and `--sdcard-cs-pin` overrides.
 
 The V2 path now executes the shared ALU, jump, and LSU subsets, including register-form and PC-relative loads/stores, stack push/pop paths, load-linked/store-conditional sequencing, and split unaligned accesses on the 64-bit Wishbone bus. It now also performs privileged trap entry, Sv39-style page walking for fetch/data/vector accesses, and data-side cache-line reuse behind the `none` / `unified` / `split` cache-topology surface. The LiteX-facing delivery path now exposes those choices through CPU variants, and the Linux boot export/smoke helpers can select non-default V2 configurations. The V2 HDL regression matrix now covers same-line instruction invalidation, paged interrupt-vector fetch, and core trap/MMU fault cases in addition to the shared ISA and memory subsets.
@@ -413,7 +430,7 @@ Or, for an explicit low-level artifact build:
 	--sd-output builddir/little64-linux-sdcard.img
 ```
 
-The machine-aware form resolves the default LiteX boot kernel from `target/linux_port/build-litex/arch/little64/boot/vmlinuz` when available and falls back to `target/linux_port/build-litex/vmlinux`, generates a matching DTS and DTB internally, chooses the default LiteX target contract, and emits the generated DTS, DTB, stage-0 image, and SD image together under the selected output directory.
+The machine-aware form resolves the default LiteX boot kernel from `target/linux_port/build-litex/arch/little64/boot/vmlinuz` when available and falls back to `target/linux_port/build-litex/vmlinux`, generates a matching DTS and DTB internally, chooses the default LiteX target contract, and emits the generated DTS, DTB, bootrom image, and SD image together under the selected output directory. Bootrom-backed machine builds now default to the LiteX BIOS and a FAT boot partition containing `boot.bin`, `boot.dtb`, and `boot.json` as the primary long filenames, with FAT short aliases retained for compatibility; pass `--no-use-litex-bios` to keep the legacy shared stage-0 path instead.
 Native LiteX-targeted SD builds now keep the stage-0 UART base aligned with the generated LiteX CSR layout by default. Use `--emulator-bootrom-uart-layout` only when you are generating artifacts for the emulator's shifted bootrom UART contract rather than for a raw LiteX simulation or hardware SoC.
 
 ### LiteX Stage-0 Entry

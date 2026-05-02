@@ -46,12 +46,13 @@ This file documents practical update paths and maintenance rules for common proj
 - Direct ELF boot helper for first Linux bring-up exists at `little64 boot run`:
   - Default image path: `target/linux_port/build-litex/vmlinux` (falls back to `target/linux_port/build-litex/arch/little64/boot/vmlinuz` when needed).
   - Default rootfs path: `target/linux_port/rootfs/build/rootfs.ext4`.
-  - Usage: `little64 boot run [--machine litex] [--mode trace|smoke|rsp] [--launch direct|bootrom] [--rootfs PATH | --no-rootfs] [--max-cycles N] [--port N] [optional-path-to-kernel-elf]`.
+  - Usage: `little64 boot run [--machine litex] [--mode trace|smoke|rsp] [--launch direct|bootrom] [--integrated-rom litex-bios|stage0] [--rootfs PATH | --no-rootfs] [--max-cycles N] [--port N] [optional-path-to-kernel-elf]`.
   - Targets the LiteX machine profile only.
-  - Default mode `smoke` launches the lower-overhead direct boot flow without boot-event capture.
-  - `--launch=direct` (default) uses emulator direct boot with stage-0-equivalent handoff state (kernel image placement, DTB pointer, and stack reserve), while skipping SD/FAT stage-0 operations.
+  - Default mode `smoke` launches the lower-overhead bootrom-first flow without boot-event capture.
+  - `--launch=bootrom --integrated-rom=litex-bios` (default) uses the repo-local LiteX BIOS port plus a BIOS-compatible SD image.
   - Direct mode now mirrors stage-0 kernel placement rules: it uses the PT_LOAD virtual base only when that image window already fits in RAM, otherwise it falls back to the canonical `0x40000000` physical base (override with `LITTLE64_DIRECT_KERNEL_PHYSICAL_BASE`).
-  - `--launch=bootrom` runs through the full stage-0 SD boot path.
+  - `--launch=direct` skips firmware and preloads stage-0-equivalent Linux handoff state.
+  - `--integrated-rom=stage0` restores the legacy shared SD loader when you explicitly need it.
   - The `litex` profile regenerates a minimal ext4 rootfs from `target/linux_port/rootfs/init.S` for SD partition 2 unless `--rootfs PATH` or `--no-rootfs` overrides it.
   - In `trace` mode it streams full boot events to `/tmp/little64_boot_events.l64t` via `--boot-events-file`.
   - Default file size cap: 500 MB (override with `LITTLE64_BOOT_EVENTS_MAX_MB`).
@@ -105,11 +106,13 @@ This file documents practical update paths and maintenance rules for common proj
   - Supports `--vivado-stop-after synthesis|implementation|bitstream` to stop after the synth checkpoint, after routed implementation reports/checkpoints, or after full bitstream generation.
   - Uses the repo's Arty wrapper around `litex-boards` and now defaults to the Adafruit native 4-bit SDIO breakout header order on `ck_io34..40` (`CLK, D0, CMD, D3, D1, D2, DET`), while still supporting the older SPI Arduino preset on `ck_io30..33` and PMOD mappings through `--sdcard-mode spi`.
   - Each non-`--program-only` build also cleans stale `gateware/`, `software/`, and `boot/` outputs and regenerates staged SD boot artifacts under `builddir/hdl-litex-arty/boot/`.
-  - The staged SD bootrom is built from `target/c_boot/litex_sd_boot.c`, which now supports both the native LiteSDCard and SPI-mode SD backends from the same C source via generated register-header selection.
-  - The Arty hardware path now preloads the backend-matched build of that stage-0 into the integrated boot ROM. Linux DT/rootfs support for SPI-mode SD remains separate follow-up work.
+  - The default staged bootrom is built from the repo-local LiteX BIOS port, and the staged SD image uses the LiteX BIOS `boot.bin` / `boot.dtb` / `boot.json` layout with FAT short aliases retained for compatibility.
+  - Pass `--no-use-litex-bios` to fall back to the shared `target/c_boot/litex_sd_boot.c` loader, which still supports both the native LiteSDCard and SPI-mode SD backends via generated register-header selection.
+  - The Arty hardware path now preloads the selected bootrom build into the integrated boot ROM. Linux DT/rootfs support for SPI-mode SD remains separate follow-up work.
 - Little64 SD boot artifact helper: `little64 sd build`
-  - Builds the bootrom stage-0 image plus the SD card image used by the emulator's `--machine=litex` path and by the bootrom-first LiteX smoke flows.
-  - `little64 sd build --machine litex --output-dir <path>` auto-resolves the default LiteX kernel from `target/linux_port/build-litex/`, generates DTS/DTB internally, and emits the generated stage-0 plus SD image under `<path>`.
+  - Builds the bootrom image plus the SD card image used by the emulator's `--machine=litex` path and by the bootrom-first LiteX smoke flows.
+  - `little64 sd build --machine litex --output-dir <path>` auto-resolves the default LiteX kernel from `target/linux_port/build-litex/`, generates DTS/DTB internally, and emits the generated bootrom plus SD image under `<path>`.
+  - Bootrom-backed machine builds now default to the LiteX BIOS and a FAT boot partition containing `boot.bin`, `boot.dtb`, and `boot.json` as the primary long filenames, with FAT short aliases retained for compatibility; pass `--no-use-litex-bios` to keep the legacy shared stage-0 loader instead.
   - The canonical Little64 LiteX helper contract uses fixed CSR slots: `sdcard_block2mem=0xF0000800`, `sdcard_core=0xF0001000`, `sdcard_irq=0xF0001800`, `sdcard_mem2block=0xF0002000`, `sdcard_phy=0xF0002800`, `sdram=0xF0003000`, optional `spiflash_core=0xF0003800`, and `uart=0xF0004000`.
   - Treat those fixed locations as shared contract across `hdl/little64_cores/litex_soc.py`, generated DTS files, SD stage-0 headers, and the emulator's default `--machine=litex` bootrom-first path. If you intentionally move one, update all of those surfaces in the same change.
   - The explicit manual emulator compatibility path `--boot-mode=litex-flash --disk` is a separate legacy layout and still uses LiteUART at `0xF0003800`; do not copy that compatibility address back into the canonical helper flow.

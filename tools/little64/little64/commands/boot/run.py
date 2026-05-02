@@ -32,7 +32,8 @@ from little64.tooling_support import little64_command, resolve_python_bin
 
 DEFAULT_MODE = "smoke"
 DEFAULT_MACHINE = "litex"
-DEFAULT_LAUNCH = "direct"
+DEFAULT_LAUNCH = "bootrom"
+DEFAULT_INTEGRATED_ROM = "litex-bios"
 DEFAULT_STAGE0_STACK_RESERVE_BYTES = 512
 DEFAULT_DIRECT_KERNEL_PHYSICAL_BASE = 0x40000000
 DEFAULT_DIRECT_RAM_SIZE = 0x10000000
@@ -51,12 +52,17 @@ def _prepare_litex_artifacts(
     ram_size: Optional[str],
     attach_rootfs: bool,
     rootfs_image: Optional[Path],
+    integrated_rom: str,
     python_bin: str,
 ) -> dict:
     output_dir.mkdir(parents=True, exist_ok=True)
     dts_path = output_dir / "little64-litex-sim.dts"
     dtb_path = output_dir / "little64-litex-sim.dtb"
-    bootrom_path = output_dir / "little64-sd-stage0-bootrom.bin"
+    bootrom_path = (
+        output_dir / "little64-litex-bios.bin"
+        if integrated_rom == "litex-bios"
+        else output_dir / "little64-sd-stage0-bootrom.bin"
+    )
     sd_path = output_dir / "little64-linux-sdcard.img"
 
     builder_cmd = [
@@ -69,6 +75,7 @@ def _prepare_litex_artifacts(
         "--boot-source", "bootrom",
         "--with-sdram",
     ]
+    builder_cmd.append("--use-litex-bios" if integrated_rom == "litex-bios" else "--no-use-litex-bios")
     if ram_size:
         builder_cmd += ["--ram-size", ram_size]
     if not attach_rootfs:
@@ -159,7 +166,7 @@ def _infer_direct_kernel_physical_base(kernel_elf: Path) -> Optional[int]:
 def run(argv: List[str]) -> int:
     parser = argparse.ArgumentParser(
         prog="little64 boot run",
-        description="Direct-boot a Little64 kernel ELF (LiteX machine profile).",
+        description="Boot a Little64 kernel ELF under the LiteX machine profile.",
     )
     parser.add_argument("--machine", default=DEFAULT_MACHINE, choices=["litex"])
     parser.add_argument("--mode", default=DEFAULT_MODE, choices=["trace", "smoke", "rsp"])
@@ -167,7 +174,13 @@ def run(argv: List[str]) -> int:
         "--launch",
         default=DEFAULT_LAUNCH,
         choices=["direct", "bootrom"],
-        help="Launch flow: direct preloads state equivalent to post-stage-0 handoff (default); bootrom runs through the full stage-0 SD path.",
+        help="Launch flow: bootrom runs through the full LiteX boot flow (default); direct preloads the Linux handoff state and skips firmware.",
+    )
+    parser.add_argument(
+        "--integrated-rom",
+        default=DEFAULT_INTEGRATED_ROM,
+        choices=["litex-bios", "stage0"],
+        help="Integrated ROM payload to build for LiteX bootrom launches. Defaults to the LiteX BIOS; use stage0 to keep the legacy repo-local SD loader.",
     )
     rootfs_group = parser.add_mutually_exclusive_group()
     rootfs_group.add_argument("--rootfs", default=None, help="Rootfs image path to mount as read-only SD partition 2.")
@@ -285,15 +298,17 @@ def run(argv: List[str]) -> int:
         ram_size=ram_size,
         attach_rootfs=attach_rootfs,
         rootfs_image=rootfs_image,
+        integrated_rom=args.integrated_rom,
         python_bin=python_bin,
     )
 
     print(f"[little64] machine    : {args.machine}")
     print(f"[little64] mode       : {args.mode}")
-    print(f"[little64] launch     : {args.launch}{'  (post-stage0 state)' if args.launch == 'direct' else '  (full stage-0 SD boot)'}")
+    launch_detail = '  (direct kernel handoff)' if args.launch == 'direct' else f'  (full {args.integrated_rom} bootrom flow)'
+    print(f"[little64] launch     : {args.launch}{launch_detail}")
     print(f"[little64] kernel ELF : {kernel_elf}")
     print(f"[little64] DT source  : {artifacts['dts']}")
-    print(f"[little64] stage0     : {artifacts['bootrom']}")
+    print(f"[little64] bootrom    : {artifacts['bootrom']}")
     print(f"[little64] sd image   : {artifacts['sd']}")
     if attach_rootfs:
         if rootfs_image is not None:

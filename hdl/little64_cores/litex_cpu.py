@@ -65,6 +65,13 @@ def ensure_litex_llvm_toolchain_wrappers(output_dir: str | Path | None = None) -
     return wrapper_bin
 
 
+def _litex_software_sysroot_flags() -> str:
+    sysroot = _repo_root() / 'target' / 'sysroot'
+    include_dir = sysroot / 'usr' / 'include'
+    lib_dir = sysroot / 'usr' / 'lib'
+    return f'--sysroot={sysroot} -I{include_dir} -L{lib_dir}'
+
+
 class Little64WishboneDataBridge(Module):
     def __init__(self) -> None:
         self.bus = wishbone.Interface(data_width=64, address_width=64, addressing='word')
@@ -237,11 +244,11 @@ class Little64(CPU):
     io_regions = profile.io_regions
     mem_map = profile.mem_map
     first_irq_vector = profile.first_irq_vector
-    use_rom = False
+    use_rom = True
 
     @property
     def gcc_flags(self) -> str:
-        return ''
+        return _litex_software_sysroot_flags()
 
     @property
     def gcc_triple(self) -> str:
@@ -250,7 +257,7 @@ class Little64(CPU):
 
     @property
     def clang_flags(self) -> str:
-        return ''
+        return _litex_software_sysroot_flags()
 
     @property
     def clang_triple(self) -> str:
@@ -272,6 +279,11 @@ class Little64(CPU):
         self.boot_r13 = Signal(64)
         self.halted = Signal()
         self.locked_up = Signal()
+        self.debug_cpu_ie = Signal()
+        self.debug_irq_pending_latched = Signal()
+        self.debug_irq_pending_masked = Signal()
+        self.debug_trap_cause = Signal(8)
+        self.debug_lockup_reason = Signal(8)
 
         self.ibus = wishbone.Interface(data_width=64, address_width=64, addressing='byte')
         self.dbus_bridge = Little64WishboneDataBridge()
@@ -315,6 +327,11 @@ class Little64(CPU):
             o_d_bus_bte=self.dbus_bridge.cpu_bte,
             o_halted=self.halted,
             o_locked_up=self.locked_up,
+            o_debug_cpu_ie=self.debug_cpu_ie,
+            o_debug_irq_pending_latched=self.debug_irq_pending_latched,
+            o_debug_irq_pending_masked=self.debug_irq_pending_masked,
+            o_debug_trap_cause=self.debug_trap_cause,
+            o_debug_lockup_reason=self.debug_lockup_reason,
         )
 
     def set_reset_address(self, reset_address: int) -> None:

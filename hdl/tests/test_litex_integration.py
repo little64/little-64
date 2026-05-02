@@ -38,6 +38,7 @@ from little64_cores.litex_arty import (
     Little64ArtyNativeSDCardMapping,
     Little64ArtySPISDCardMapping,
     Little64LiteXArtySoC,
+    _Little64ArtyEdgeStartSDPHYR,
     _little64_sd_output_enable_bus,
     arty_native_sdcard_extension,
     arty_spi_sdcard_extension,
@@ -45,6 +46,7 @@ from little64_cores.litex_arty import (
     resolve_arty_spi_sdcard_mapping,
 )
 from little64_cores.litex_linux_boot import (
+    LITTLE64_SD_BOOT_FORMAT_LITEX_BIOS,
     BOOT_CHECKSUM_MAGIC,
     BOOT_CHECKSUM_STRUCT,
     BOOT_CHECKSUM_VERSION,
@@ -52,6 +54,7 @@ from little64_cores.litex_linux_boot import (
     build_litex_flash_image,
     build_litex_sd_card_image,
     flatten_little64_linux_elf_image,
+    infer_little64_linux_kernel_physical_base,
     write_litex_sd_card_image,
 )
 from little64_cores.litex_soc import Little64LinuxTimer, Little64LiteXSimSoC, _load_spi_flash_init, generate_linux_dts
@@ -116,6 +119,54 @@ def _make_test_elf64(payload: bytes, *, entry_offset: int = 0) -> bytes:
         5,
         payload_offset,
         virtual_base,
+        0,
+        len(payload),
+        len(payload),
+        0x1000,
+    )
+
+    image = bytearray(payload_offset + len(payload))
+    image[:len(elf_header)] = elf_header
+    image[phoff:phoff + len(program_header)] = program_header
+    image[payload_offset:payload_offset + len(payload)] = payload
+    return bytes(image)
+
+
+def _make_low_load_test_elf64(
+    payload: bytes,
+    *,
+    load_base: int = 0x48000000,
+    entry_offset: int = 0,
+) -> bytes:
+    phoff = 64
+    phentsize = 56
+    phnum = 1
+    payload_offset = 0x100
+    entry = load_base + entry_offset
+
+    elf_header = struct.pack(
+        '<16sHHIQQQIHHHHHH',
+        b'\x7fELF' + bytes([2, 1, 1, 0]) + bytes(8),
+        2,
+        0x4C36,
+        1,
+        entry,
+        phoff,
+        0,
+        0,
+        64,
+        phentsize,
+        phnum,
+        0,
+        0,
+        0,
+    )
+    program_header = struct.pack(
+        '<IIQQQQQQ',
+        1,
+        5,
+        payload_offset,
+        load_base,
         0,
         len(payload),
         len(payload),
@@ -210,6 +261,35 @@ def test_arty_bitstream_parse_args_accepts_native_sdcard_mode(monkeypatch: pytes
 
     assert args.sdcard_mode == ARTY_SDCARD_MODE_NATIVE
     assert args.sdcard_det_pin == 'R1'
+
+
+def test_arty_bitstream_parse_args_accepts_native_sdcard_detect_polarity_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        sys,
+        'argv',
+        ['build_litex_arty_bitstream.py', '--sdcard-mode', 'native', '--no-sdcard-det-active-low'],
+    )
+
+    args = _BUILD_ARTY_BITSTREAM.parse_args()
+
+    assert args.sdcard_mode == ARTY_SDCARD_MODE_NATIVE
+    assert args.sdcard_det_active_low is False
+
+
+def test_arty_bitstream_parse_args_defaults_to_litex_bios(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, 'argv', ['build_litex_arty_bitstream.py'])
+
+    args = _BUILD_ARTY_BITSTREAM.parse_args()
+
+    assert args.use_litex_bios is True
+
+
+def test_arty_bitstream_parse_args_accepts_no_use_litex_bios(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, 'argv', ['build_litex_arty_bitstream.py', '--no-use-litex-bios'])
+
+    args = _BUILD_ARTY_BITSTREAM.parse_args()
+
+    assert args.use_litex_bios is False
 
 
 def test_arty_bitstream_render_stage_tcl_truncates_after_synthesis(tmp_path: Path) -> None:
@@ -314,6 +394,7 @@ def test_arty_native_sdcard_mapping_overrides_selected_preset() -> None:
         data2='X5',
         data3='X6',
         det='X7',
+        det_active_low=False,
     )
 
     assert mapping.clk == 'X1'
@@ -323,6 +404,14 @@ def test_arty_native_sdcard_mapping_overrides_selected_preset() -> None:
     assert mapping.data2 == 'X5'
     assert mapping.data3 == 'X6'
     assert mapping.det == 'X7'
+    assert mapping.det_active_low is False
+
+
+def test_arty_native_sdcard_mapping_defaults_card_detect_to_active_low_for_arduino_preset() -> None:
+    mapping = resolve_arty_native_sdcard_mapping(connector='arduino')
+
+    assert mapping.det == 'P18'
+    assert mapping.det_active_low is True
 
 
 def test_arty_spi_sdcard_extension_uses_mapping_pins() -> None:
@@ -359,6 +448,7 @@ def test_arty_native_sdcard_extension_uses_mapping_pins() -> None:
             data2='D2PIN',
             data3='D3PIN',
             det='DETPIN',
+            det_active_low=True,
         )
     )
 
@@ -414,6 +504,43 @@ def test_native_sd_output_enable_broadcasts_shared_enable() -> None:
     assert 'assign output_enable_bus = {4{output_enable}};' in generated.main_source
 
 
+def test_arty_native_sdphyr_matches_upstream_when_start_bit_is_preceded_by_lane_skew() -> None:
+    from migen.sim import run_simulation
+    from litesdcard.phy import SDPHYR as UpstreamSDPHYR, _sdpads_layout
+
+    samples = [0b1111, 0b1110, 0b0000, 0b0001, 0b0010, 0b0011, 0b0100]
+
+    def collect_bytes(sdphyr_cls) -> list[int]:
+        dut = sdphyr_cls(_sdpads_layout(4), data=True, data_width=4, skip_start_bit=True)
+        captured: list[int] = []
+        total_cycles = len(samples) + 4
+
+        def driver():
+            yield dut.source.ready.eq(1)
+            for sample in samples:
+                yield dut.pads_in.valid.eq(1)
+                yield dut.pads_in.data.i.eq(sample)
+                yield
+            yield dut.pads_in.valid.eq(0)
+            for _ in range(4):
+                yield
+
+        def monitor():
+            for _ in range(total_cycles):
+                if (yield dut.source.valid):
+                    captured.append((yield dut.source.data))
+                yield
+
+        run_simulation(dut, [driver(), monitor()])
+        return captured
+
+    upstream_bytes = collect_bytes(UpstreamSDPHYR)
+    arty_bytes = collect_bytes(_Little64ArtyEdgeStartSDPHYR)
+
+    assert upstream_bytes
+    assert arty_bytes == upstream_bytes
+
+
 def test_arty_bitstream_rejects_native_pin_overrides_in_spi_mode() -> None:
     args = argparse.Namespace(
         with_sdcard=True,
@@ -430,6 +557,7 @@ def test_arty_bitstream_rejects_native_pin_overrides_in_spi_mode() -> None:
         sdcard_d2_pin=None,
         sdcard_d3_pin=None,
         sdcard_det_pin=None,
+        sdcard_det_active_low=None,
     )
 
     with pytest.raises(SystemExit, match='require --sdcard-mode native'):
@@ -452,10 +580,60 @@ def test_arty_bitstream_rejects_spi_pin_overrides_in_native_mode() -> None:
         sdcard_d2_pin=None,
         sdcard_d3_pin=None,
         sdcard_det_pin=None,
+        sdcard_det_active_low=None,
     )
 
     with pytest.raises(SystemExit, match='require --sdcard-mode spi'):
         _BUILD_ARTY_BITSTREAM._resolve_sdcard_mapping(args)
+
+
+def test_arty_bitstream_rejects_native_sdcard_detect_polarity_override_in_spi_mode() -> None:
+    args = argparse.Namespace(
+        with_sdcard=True,
+        sdcard_mode=ARTY_SDCARD_MODE_SPI,
+        sdcard_connector='arduino',
+        sdcard_adapter='digilent',
+        sdcard_clk_pin=None,
+        sdcard_mosi_pin=None,
+        sdcard_miso_pin=None,
+        sdcard_cs_pin=None,
+        sdcard_cmd_pin=None,
+        sdcard_d0_pin=None,
+        sdcard_d1_pin=None,
+        sdcard_d2_pin=None,
+        sdcard_d3_pin=None,
+        sdcard_det_pin=None,
+        sdcard_det_active_low=False,
+    )
+
+    with pytest.raises(SystemExit, match='require --sdcard-mode native'):
+        _BUILD_ARTY_BITSTREAM._resolve_sdcard_mapping(args)
+
+
+def test_arty_bitstream_resolve_sdcard_mapping_preserves_native_sdcard_detect_polarity_override() -> None:
+    args = argparse.Namespace(
+        with_sdcard=True,
+        sdcard_mode=ARTY_SDCARD_MODE_NATIVE,
+        sdcard_connector='arduino',
+        sdcard_adapter='digilent',
+        sdcard_clk_pin=None,
+        sdcard_mosi_pin=None,
+        sdcard_miso_pin=None,
+        sdcard_cs_pin=None,
+        sdcard_cmd_pin=None,
+        sdcard_d0_pin=None,
+        sdcard_d1_pin=None,
+        sdcard_d2_pin=None,
+        sdcard_d3_pin=None,
+        sdcard_det_pin=None,
+        sdcard_det_active_low=False,
+    )
+
+    mapping = _BUILD_ARTY_BITSTREAM._resolve_sdcard_mapping(args)
+
+    assert isinstance(mapping, Little64ArtyNativeSDCardMapping)
+    assert mapping.det == 'P18'
+    assert mapping.det_active_low is False
 
 
 def test_create_arty_platform_reports_missing_litex_boards(monkeypatch) -> None:
@@ -908,6 +1086,190 @@ def test_build_sd_boot_artifacts_pads_bootrom_image(tmp_path, monkeypatch) -> No
     assert captured['path'] == sd_output
 
 
+def test_build_litex_bios_boot_artifacts_generates_outputs_without_full_builder_build(tmp_path, monkeypatch) -> None:
+    kernel_elf = tmp_path / 'vmlinux'
+    dtb = tmp_path / 'system.dtb'
+    bootrom_output = tmp_path / 'bootrom.bin'
+    sd_output = tmp_path / 'sdcard.img'
+    bios_build_dir = tmp_path / 'bios-build'
+    kernel_elf.write_bytes(b'kernel')
+    dtb.write_bytes(b'dtb')
+    observed: dict[str, object] = {}
+
+    class FakeSoC:
+        boot_source = 'bootrom'
+        litex_target = type('FakeTarget', (), {'integrated_rom_size': 0x80})()
+
+        def __init__(self) -> None:
+            self.finalized = False
+
+        def finalize(self) -> None:
+            observed['finalized'] = True
+            self.finalized = True
+
+        def check_bios_requirements(self) -> None:
+            observed['checked_bios_requirements'] = True
+
+    class FakeBuilder:
+        def __init__(self, soc, *, output_dir, compile_software, compile_gateware, **kwargs) -> None:
+            observed['builder_init'] = {
+                'output_dir': output_dir,
+                'compile_software': compile_software,
+                'compile_gateware': compile_gateware,
+            }
+            self.soc = soc
+            self.output_dir = output_dir
+            self.software_dir = str(Path(output_dir) / 'software')
+            self.include_dir = str(Path(self.software_dir) / 'include')
+            self.generated_dir = str(Path(self.include_dir) / 'generated')
+            self.software_packages: list[tuple[str, str]] = []
+
+        def add_software_package(self, name, src_dir=None):
+            observed['added_package'] = name
+            self.software_packages.append((name, src_dir or name))
+
+        def build(self, *args, **kwargs):
+            raise AssertionError('unexpected full Builder.build() call')
+
+        def _generate_includes(self, *, with_bios=True):
+            observed['generated_includes'] = with_bios
+            Path(self.generated_dir).mkdir(parents=True, exist_ok=True)
+
+        def _check_meson(self):
+            observed['checked_meson'] = True
+
+        def _prepare_rom_software(self):
+            observed['prepared_rom_software'] = True
+            (Path(self.software_dir) / 'bios').mkdir(parents=True, exist_ok=True)
+
+        def _generate_rom_software(self, compile_bios=True):
+            observed['generated_rom_software'] = compile_bios
+            bios_path = Path(self.software_dir) / 'bios' / 'bios.bin'
+            bios_path.write_bytes(b'\x01\x02\x03\x04')
+
+    def fake_write_sd_card_image(path, **kwargs):
+        observed['sd_path'] = path
+        observed['sd_kwargs'] = kwargs
+
+    monkeypatch.setattr(_BUILD_SD_BOOT_ARTIFACTS, 'Builder', FakeBuilder)
+    monkeypatch.setattr(_BUILD_SD_BOOT_ARTIFACTS, '_override_litex_bios_packages', lambda builder: observed.setdefault('overrode_packages', True))
+    monkeypatch.setattr(_BUILD_SD_BOOT_ARTIFACTS, 'ensure_litex_llvm_toolchain_wrappers', lambda output_dir: observed.setdefault('wrapper_dir', output_dir))
+    monkeypatch.setattr(_BUILD_SD_BOOT_ARTIFACTS, 'write_litex_sd_card_image', fake_write_sd_card_image)
+
+    bootrom_image = _BUILD_SD_BOOT_ARTIFACTS.build_litex_bios_boot_artifacts(
+        soc=FakeSoC(),
+        kernel_elf=kernel_elf,
+        dtb=dtb,
+        bootrom_output=bootrom_output,
+        sd_output=sd_output,
+        ram_base=0x40000000,
+        ram_size=0x1000,
+        kernel_physical_base=0x40000000,
+        bios_build_dir=bios_build_dir,
+        no_rootfs=True,
+    )
+
+    assert observed['builder_init'] == {
+        'output_dir': str(bios_build_dir),
+        'compile_software': True,
+        'compile_gateware': False,
+    }
+    assert observed['added_package'] == 'bios'
+    assert observed['wrapper_dir'] == bios_build_dir
+    assert observed['finalized'] is True
+    assert observed['checked_bios_requirements'] is True
+    assert observed['generated_includes'] is True
+    assert observed['checked_meson'] is True
+    assert observed['prepared_rom_software'] is True
+    assert observed['generated_rom_software'] is True
+    assert bootrom_output.read_bytes()[:4] == b'\x01\x02\x03\x04'
+    assert len(bootrom_output.read_bytes()) == 0x1000
+    assert bootrom_image == bootrom_output.read_bytes()
+    assert observed['sd_path'] == sd_output
+
+
+def test_build_sd_boot_artifacts_uses_litex_bios_when_requested(tmp_path, monkeypatch) -> None:
+    kernel_elf = tmp_path / 'vmlinux'
+    kernel_elf.write_bytes(b'kernel')
+    observed: dict[str, object] = {}
+
+    class FakeRegion:
+        def __init__(self, origin: int, size: int) -> None:
+            self.origin = origin
+            self.size = size
+
+    class FakePlatform:
+        def __init__(self) -> None:
+            self.output_dir = ''
+
+    class FakeSoC:
+        def __init__(self, **kwargs) -> None:
+            observed['soc_kwargs'] = kwargs
+            self.platform = FakePlatform()
+            self.csr = type('CSR', (), {'regions': {'uart': FakeRegion(0xF0004000, 0x100)}})()
+            self.bus = type('BUS', (), {'regions': {'main_ram': FakeRegion(0x40000000, 0x08000000)}, 'data_width': 32})()
+
+        def finalize(self) -> None:
+            return None
+
+    def fake_build_litex_bios_boot_artifacts(**kwargs):
+        observed['build_kwargs'] = kwargs
+        return b'\x01\x02\x03\x04'
+
+    def fake_pack_litex_memory_words(data, *, data_width, endianness):
+        observed['pack'] = (data, data_width, endianness)
+        return [0x04030201]
+
+    monkeypatch.setattr(_BUILD_ARTY_BITSTREAM, 'Little64LiteXArtySoC', FakeSoC)
+    monkeypatch.setattr(_BUILD_ARTY_BITSTREAM.shutil, 'which', lambda tool: '/usr/bin/dtc' if tool == 'dtc' else None)
+    monkeypatch.setattr(_BUILD_ARTY_BITSTREAM, 'compile_dts_to_dtb', lambda dts_path, *, dtb_path=None: dtb_path.write_bytes(b'dtb'))
+    monkeypatch.setattr(_BUILD_ARTY_BITSTREAM, 'generate_linux_dts', lambda soc, bootargs=None: '/dts-v1/;\n')
+    monkeypatch.setattr(_BUILD_ARTY_BITSTREAM._BUILD_SD_BOOT_ARTIFACTS, 'build_litex_bios_boot_artifacts', fake_build_litex_bios_boot_artifacts)
+    monkeypatch.setattr(_BUILD_ARTY_BITSTREAM._BUILD_SD_BOOT_ARTIFACTS, 'pack_litex_memory_words', fake_pack_litex_memory_words)
+
+    args = argparse.Namespace(
+        with_sdcard=True,
+        sys_clk_freq=100_000_000,
+        cpu_variant='standard-v3',
+        with_sdram=True,
+        integrated_main_ram_size=0x8000,
+        with_spi_flash=False,
+        use_litex_bios=True,
+        with_timer=True,
+        sdcard_mode=ARTY_SDCARD_MODE_NATIVE,
+        sdcard_connector='arduino',
+        sdcard_adapter='digilent',
+        sdcard_clk_pin=None,
+        sdcard_mosi_pin=None,
+        sdcard_miso_pin=None,
+        sdcard_cs_pin=None,
+        sdcard_cmd_pin=None,
+        sdcard_d0_pin=None,
+        sdcard_d1_pin=None,
+        sdcard_d2_pin=None,
+        sdcard_d3_pin=None,
+        sdcard_det_pin=None,
+        sdcard_det_active_low=None,
+        toolchain='vivado',
+        no_rootfs=True,
+        rootfs_image=None,
+        kernel_elf=kernel_elf,
+        build_name='little64_arty_a7_35',
+        sd_bootrom_source=Path('target/c_boot/litex_sd_boot.c'),
+        sd_bootrom_linker=Path('target/c_boot/linker_litex_bootrom.ld'),
+    )
+
+    bootrom_init = _BUILD_ARTY_BITSTREAM._rebuild_sd_boot_artifacts(args=args, output_dir=tmp_path)
+
+    assert bootrom_init == [0x04030201]
+    assert observed['soc_kwargs']['with_bios'] is True
+    assert observed['build_kwargs']['kernel_elf'] == kernel_elf
+    assert observed['build_kwargs']['bootrom_output'] == tmp_path / 'boot' / 'little64_arty_a7_35_sd_bootrom.bin'
+    assert observed['build_kwargs']['sd_output'] == tmp_path / 'boot' / 'little64_arty_a7_35_sdcard.img'
+    assert observed['build_kwargs']['bios_build_dir'] == tmp_path / 'software'
+    assert observed['pack'] == (b'\x01\x02\x03\x04', 32, 'little')
+
+
 def test_sd_build_machine_mode_resolves_default_kernel_and_generates_dtb(tmp_path, monkeypatch) -> None:
     kernel_elf = tmp_path / 'vmlinux'
     kernel_elf.write_bytes(b'kernel')
@@ -939,7 +1301,7 @@ def test_sd_build_machine_mode_resolves_default_kernel_and_generates_dtb(tmp_pat
     monkeypatch.setattr(_BUILD_SD_BOOT_ARTIFACTS, 'recorded_defconfig_for_machine', lambda machine: 'little64_litex_sim_defconfig')
     monkeypatch.setattr(_BUILD_SD_BOOT_ARTIFACTS, '_write_generated_dts', fake_write_generated_dts)
     monkeypatch.setattr(_BUILD_SD_BOOT_ARTIFACTS, 'compile_dts_to_dtb', fake_compile_dts_to_dtb)
-    monkeypatch.setattr(_BUILD_SD_BOOT_ARTIFACTS, 'build_litex_sd_boot_artifacts', fake_build_artifacts)
+    monkeypatch.setattr(_BUILD_SD_BOOT_ARTIFACTS, 'build_litex_bios_boot_artifacts', fake_build_artifacts)
     monkeypatch.setattr(_BUILD_SD_BOOT_ARTIFACTS, 'Little64LiteXSimSoC', FakeSoC)
 
     assert _BUILD_SD_BOOT_ARTIFACTS.main(['--machine', 'litex', '--output-dir', str(output_dir)]) == 0
@@ -955,9 +1317,10 @@ def test_sd_build_machine_mode_resolves_default_kernel_and_generates_dtb(tmp_pat
     }
     assert captured['soc_kwargs']['litex_target'] == 'arty-a7-35'
     assert captured['soc_kwargs']['boot_source'] == 'bootrom'
+    assert captured['soc_kwargs']['with_bios'] is True
     assert captured['build_kwargs']['kernel_elf'] == kernel_elf
     assert captured['build_kwargs']['dtb'] == output_dir / 'little64-litex-sim.dtb'
-    assert captured['build_kwargs']['bootrom_output'] == output_dir / 'little64-sd-stage0-bootrom.bin'
+    assert captured['build_kwargs']['bootrom_output'] == output_dir / 'little64-litex-bios.bin'
     assert captured['build_kwargs']['sd_output'] == output_dir / 'little64-linux-sdcard.img'
 
 
@@ -991,6 +1354,38 @@ def test_sd_build_machine_mode_uses_spiflash_stage0_defaults(tmp_path, monkeypat
 
     assert captured['build_kwargs']['bootrom_output'] == output_dir / 'little64-sd-stage0-spiflash.bin'
     assert captured['build_kwargs']['stage0_linker'] == Path('target/c_boot/linker_litex_spi_boot.ld')
+
+
+def test_sd_build_machine_mode_can_force_stage0_bootrom(tmp_path, monkeypatch) -> None:
+    kernel_elf = tmp_path / 'vmlinux'
+    kernel_elf.write_bytes(b'kernel')
+    output_dir = tmp_path / 'artifacts'
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(_BUILD_SD_BOOT_ARTIFACTS, 'default_kernel_for_machine', lambda machine: kernel_elf)
+    monkeypatch.setattr(_BUILD_SD_BOOT_ARTIFACTS, 'ensure_litex_kernel_support', lambda path: None)
+    monkeypatch.setattr(_BUILD_SD_BOOT_ARTIFACTS, 'recorded_defconfig_for_machine', lambda machine: 'little64_litex_sim_defconfig')
+    monkeypatch.setattr(
+        _BUILD_SD_BOOT_ARTIFACTS,
+        '_write_generated_dts',
+        lambda **kwargs: (kwargs['output_path'].parent.mkdir(parents=True, exist_ok=True), kwargs['output_path'].write_text('/dts-v1/;\n', encoding='utf-8'), kwargs['output_path'])[-1],
+    )
+    monkeypatch.setattr(
+        _BUILD_SD_BOOT_ARTIFACTS,
+        'compile_dts_to_dtb',
+        lambda dts_path, *, dtb_path=None, only_if_stale=False: (dtb_path.write_bytes(b'dtb'), dtb_path)[1],
+    )
+    monkeypatch.setattr(_BUILD_SD_BOOT_ARTIFACTS, 'Little64LiteXSimSoC', lambda **kwargs: captured.setdefault('soc_kwargs', kwargs) or object())
+    monkeypatch.setattr(_BUILD_SD_BOOT_ARTIFACTS, 'build_litex_sd_boot_artifacts', lambda **kwargs: captured.setdefault('build_kwargs', kwargs))
+
+    assert _BUILD_SD_BOOT_ARTIFACTS.main([
+        '--machine', 'litex',
+        '--output-dir', str(output_dir),
+        '--no-use-litex-bios',
+    ]) == 0
+
+    assert captured['soc_kwargs']['with_bios'] is False
+    assert captured['build_kwargs']['bootrom_output'] == output_dir / 'little64-sd-stage0-bootrom.bin'
 
 
 def test_sd_build_explicit_mode_keeps_legacy_inputs(tmp_path, monkeypatch) -> None:
@@ -1458,6 +1853,23 @@ def test_arty_hardware_soc_generates_verilog_for_native_sdcard_mode(tmp_path) ->
     verilog = soc.platform.get_verilog(soc, name='little64_arty_native_sdcard_test')
 
     assert 'IOBUF' in verilog.main_source
+    assert '~sdcard_cd' in verilog.main_source
+
+
+def test_arty_hardware_soc_can_disable_native_sdcard_detect_inversion(tmp_path) -> None:
+    mapping = resolve_arty_native_sdcard_mapping(
+        connector='arduino',
+        adapter='digilent',
+        det_active_low=False,
+    )
+    soc = Little64LiteXArtySoC(sdcard_mode=ARTY_SDCARD_MODE_NATIVE, sdcard_mapping=mapping)
+    soc.platform.output_dir = str(tmp_path / 'litex-arty-hw-native-verilog-noninv')
+
+    soc.finalize()
+    verilog = soc.platform.get_verilog(soc, name='little64_arty_native_sdcard_test_noninv')
+
+    assert '~sdcard_cd' not in verilog.main_source
+    assert ' = sdcard_cd;' in verilog.main_source
 
 
 def test_stage0_artifact_builder_emits_native_sd_header_for_arty_hardware(tmp_path) -> None:
@@ -1934,6 +2346,113 @@ def test_sd_card_image_builder_does_not_slice_payload_remainders() -> None:
 
     assert layout.kernel_file.size == len(kernel_payload)
     assert layout.dtb_file.size == len(dtb)
+
+
+def test_sd_card_image_builder_emits_litex_bios_boot_partition() -> None:
+    kernel_payload = _make_test_elf64(b'KERNEL')
+    dtb = b'DTB!'
+
+    layout = build_litex_sd_card_image(
+        kernel_elf_bytes=kernel_payload,
+        dtb_bytes=dtb,
+        boot_partition_size_mb=64,
+        root_partition_size_mb=1,
+        boot_format=LITTLE64_SD_BOOT_FORMAT_LITEX_BIOS,
+        ram_size=0x10000000,
+    )
+
+    assert layout.disk_image is not None
+    assert layout.boot_format == LITTLE64_SD_BOOT_FORMAT_LITEX_BIOS
+    assert layout.kernel_file.short_name == b'BOOT    BIN'
+    assert layout.dtb_file.short_name == b'BOOT    DTB'
+    assert layout.checksums is None
+    assert layout.checksums_file is None
+    assert layout.boot_json_file is not None
+    assert layout.kernel_entry_physical is not None
+    assert layout.dtb_physical_address is not None
+
+    disk = layout.disk_image
+    assert disk is not None
+    boot_partition_offset = layout.boot_partition_lba * 512
+    boot_sector = disk[boot_partition_offset:boot_partition_offset + 512]
+    reserved_sectors = struct.unpack_from('<H', boot_sector, 14)[0]
+    fat_count = boot_sector[16]
+    fat_sectors = struct.unpack_from('<I', boot_sector, 36)[0]
+    first_data_sector = reserved_sectors + fat_count * fat_sectors
+    root_dir_offset = boot_partition_offset + first_data_sector * 512
+    root_dir = disk[root_dir_offset:root_dir_offset + 224]
+
+    # LFN entries for boot.bin / boot.dtb / boot.json followed by their 8.3 aliases.
+    assert root_dir[0 + 11] == 0x0F
+    assert root_dir[32:43] == layout.kernel_file.short_name
+    assert root_dir[64 + 11] == 0x0F
+    assert root_dir[96:107] == layout.dtb_file.short_name
+    assert root_dir[128 + 11] == 0x0F
+    assert root_dir[160:171] == layout.boot_json_file.short_name
+
+    boot_json_cluster_offset = (
+        boot_partition_offset
+        + first_data_sector * 512
+        + (layout.boot_json_file.first_cluster - 2) * 512
+    )
+    boot_json_payload = disk[
+        boot_json_cluster_offset:boot_json_cluster_offset + layout.boot_json_file.size
+    ]
+    assert b'"boot.bin": "0x40000000"' in boot_json_payload
+    assert f'"boot.dtb": "0x{layout.dtb_physical_address:x}"'.encode('ascii') in boot_json_payload
+    assert f'"r1": "0x{layout.dtb_physical_address:x}"'.encode('ascii') in boot_json_payload
+    assert b'"r2": "0x4ffffff8"' in boot_json_payload
+    assert f'"addr": "0x{layout.kernel_entry_physical:x}"'.encode('ascii') in boot_json_payload
+
+
+def test_litex_bios_sd_card_image_preserves_low_load_kernel_entry() -> None:
+    kernel_payload = _make_low_load_test_elf64(b'CMPR')
+    dtb = b'DTB!'
+
+    layout = build_litex_sd_card_image(
+        kernel_elf_bytes=kernel_payload,
+        dtb_bytes=dtb,
+        boot_partition_size_mb=64,
+        root_partition_size_mb=1,
+        boot_format=LITTLE64_SD_BOOT_FORMAT_LITEX_BIOS,
+        ram_size=0x10000000,
+    )
+
+    assert layout.boot_json_file is not None
+    assert layout.kernel_entry_physical == 0x48000000
+    assert layout.dtb_physical_address == 0x4801f000
+
+    disk = layout.disk_image
+    assert disk is not None
+    boot_partition_offset = layout.boot_partition_lba * 512
+    boot_sector = disk[boot_partition_offset:boot_partition_offset + 512]
+    reserved_sectors = struct.unpack_from('<H', boot_sector, 14)[0]
+    fat_count = boot_sector[16]
+    fat_sectors = struct.unpack_from('<I', boot_sector, 36)[0]
+    first_data_sector = reserved_sectors + fat_count * fat_sectors
+    boot_json_cluster_offset = (
+        boot_partition_offset
+        + first_data_sector * 512
+        + (layout.boot_json_file.first_cluster - 2) * 512
+    )
+    boot_json_payload = disk[
+        boot_json_cluster_offset:boot_json_cluster_offset + layout.boot_json_file.size
+    ]
+    assert b'"boot.bin": "0x48000000"' in boot_json_payload
+    assert b'"boot.dtb": "0x4801f000"' in boot_json_payload
+    assert b'"r1": "0x4801f000"' in boot_json_payload
+    assert b'"r2": "0x4ffffff8"' in boot_json_payload
+    assert b'"addr": "0x48000000"' in boot_json_payload
+
+
+def test_infer_kernel_physical_base_preserves_low_load_elf() -> None:
+    preserved_base, preserves_load_address = infer_little64_linux_kernel_physical_base(
+        _make_low_load_test_elf64(b'CMPR'),
+        ram_size=0x10000000,
+    )
+
+    assert preserved_base == 0x48000000
+    assert preserves_load_address is True
 
 
 def test_sd_card_image_writer_creates_requested_disk_size_and_partitions(tmp_path) -> None:

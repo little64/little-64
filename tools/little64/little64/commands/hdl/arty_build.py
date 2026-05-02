@@ -48,6 +48,11 @@ if DEFAULT_KERNEL_ELF is None:
 DEFAULT_VIVADO_FLASH_PART = 's25fl128l-spi-x1_x2_x4'
 DEFAULT_SD_BOOTROM_SOURCE = Path('target/c_boot/litex_sd_boot.c')
 DEFAULT_SD_BOOTROM_LINKER = Path('target/c_boot/linker_litex_bootrom.ld')
+DEFAULT_LITEX_BIOS_LIBC_DIR = REPO_ROOT / 'hdl' / 'little64_cores' / 'litex_software' / 'libc'
+DEFAULT_LITEX_BIOS_LIBCOMPILER_RT_DIR = REPO_ROOT / 'hdl' / 'little64_cores' / 'litex_software' / 'libcompiler_rt'
+DEFAULT_LITEX_BIOS_LIBBASE_DIR = REPO_ROOT / 'hdl' / 'little64_cores' / 'litex_software' / 'libbase'
+DEFAULT_LITEX_BIOS_LIBLITEDRAM_DIR = REPO_ROOT / 'hdl' / 'little64_cores' / 'litex_software' / 'liblitedram'
+DEFAULT_LITEX_BIOS_DIR = REPO_ROOT / 'hdl' / 'little64_cores' / 'litex_software' / 'bios'
 BOOT_ARTIFACT_DIRNAME = 'boot'
 PROGRAM_OPERATION_VOLATILE = 'volatile'
 PROGRAM_OPERATION_FLASH = 'flash'
@@ -391,6 +396,7 @@ def _rebuild_sd_boot_artifacts(
         with_sdram=args.with_sdram,
         with_spi_flash=args.with_spi_flash,
         with_sdcard=True,
+        with_bios=args.use_litex_bios,
         with_timer=True,
         sdcard_mode=args.sdcard_mode,
         sdcard_mapping=_resolve_sdcard_mapping(args),
@@ -409,26 +415,47 @@ def _rebuild_sd_boot_artifacts(
 
     bus_regions = cast(dict[str, Any], getattr(soc.bus, 'regions'))
     main_ram_region = bus_regions['main_ram']
-    bootrom_image = _BUILD_SD_BOOT_ARTIFACTS.build_litex_sd_boot_artifacts(
-        soc=soc,
-        kernel_elf=kernel_elf,
-        dtb=artifact_paths['dtb'],
-        bootrom_output=artifact_paths['bootrom'],
-        sd_output=artifact_paths['sd_image'],
-        ram_base=main_ram_region.origin,
-        ram_size=main_ram_region.size,
-        kernel_physical_base=max(main_ram_region.origin, LITTLE64_LINUX_RAM_BASE),
-        rootfs_image=args.rootfs_image,
-        no_rootfs=args.no_rootfs,
-        stage0_source=args.sd_bootrom_source,
-        stage0_linker=args.sd_bootrom_linker,
-    )
+    if args.use_litex_bios:
+        bootrom_image = _BUILD_SD_BOOT_ARTIFACTS.build_litex_bios_boot_artifacts(
+            soc=soc,
+            kernel_elf=kernel_elf,
+            dtb=artifact_paths['dtb'],
+            bootrom_output=artifact_paths['bootrom'],
+            sd_output=artifact_paths['sd_image'],
+            ram_base=main_ram_region.origin,
+            ram_size=main_ram_region.size,
+            kernel_physical_base=max(main_ram_region.origin, LITTLE64_LINUX_RAM_BASE),
+            bios_build_dir=output_dir / 'software',
+            rootfs_image=args.rootfs_image,
+            no_rootfs=args.no_rootfs,
+        )
+    else:
+        bootrom_image = _BUILD_SD_BOOT_ARTIFACTS.build_litex_sd_boot_artifacts(
+            soc=soc,
+            kernel_elf=kernel_elf,
+            dtb=artifact_paths['dtb'],
+            bootrom_output=artifact_paths['bootrom'],
+            sd_output=artifact_paths['sd_image'],
+            ram_base=main_ram_region.origin,
+            ram_size=main_ram_region.size,
+            kernel_physical_base=max(main_ram_region.origin, LITTLE64_LINUX_RAM_BASE),
+            rootfs_image=args.rootfs_image,
+            no_rootfs=args.no_rootfs,
+            stage0_source=args.sd_bootrom_source,
+            stage0_linker=args.sd_bootrom_linker,
+        )
     print(f'Rebuilt SD boot artifacts: {artifact_paths["bootrom"]} and {artifact_paths["sd_image"]}')
     sd_backend = 'native LiteSDCard' if args.sdcard_mode == ARTY_SDCARD_MODE_NATIVE else 'SPI-mode SD'
-    print(
-        'Compiled the staged bootrom from target/c_boot/litex_sd_boot.c '
-        f'against the Arty {sd_backend} CSR layout and will preload it into the integrated boot ROM.'
-    )
+    if args.use_litex_bios:
+        print(
+            'Built the staged LiteX BIOS bootrom '
+            f'against the Arty {sd_backend} CSR layout and regenerated a BIOS-compatible SD image.'
+        )
+    else:
+        print(
+            'Compiled the staged bootrom from target/c_boot/litex_sd_boot.c '
+            f'against the Arty {sd_backend} CSR layout and will preload it into the integrated boot ROM.'
+        )
     return _BUILD_SD_BOOT_ARTIFACTS.pack_litex_memory_words(
         bootrom_image,
         data_width=int(soc.bus.data_width),
@@ -533,6 +560,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument('--sdcard-d2-pin', help='Override the resolved native SD DAT2 pin or connector pin expression. Only valid with --sdcard-mode native.')
     parser.add_argument('--sdcard-d3-pin', help='Override the resolved native SD DAT3 pin or connector pin expression. Only valid with --sdcard-mode native.')
     parser.add_argument('--sdcard-det-pin', help='Override the reserved SD card-detect pin or connector pin expression. Only valid with --sdcard-mode native.')
+    parser.add_argument('--sdcard-det-active-low', action=argparse.BooleanOptionalAction, default=None,
+        help='Override native SD card-detect polarity. The default Arty native presets treat card-detect as active-low.')
     parser.add_argument('--kernel-elf', type=Path, default=DEFAULT_KERNEL_ELF,
         help='Kernel ELF packed into regenerated SD boot artifacts when the SD boot path is enabled.')
     rootfs_group = parser.add_mutually_exclusive_group()
@@ -544,6 +573,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help='SD bootrom stage-0 source file to compile into the integrated boot ROM image.')
     parser.add_argument('--sd-bootrom-linker', type=Path, default=DEFAULT_SD_BOOTROM_LINKER,
         help='Linker script used when compiling the SD bootrom stage-0 image.')
+    parser.add_argument('--use-litex-bios', action=argparse.BooleanOptionalAction, default=True,
+        help='Build the integrated ROM from the upstream LiteX BIOS instead of the repo-local SD stage-0 bootrom.')
     parser.add_argument('--with-ethernet', action='store_true', help='Reserved for future Arty peripheral expansion. Not implemented yet.')
     parser.add_argument('--generate-only', action='store_true', help='Generate the LiteX/Vivado project without invoking Vivado.')
     parser.add_argument('--vivado-stop-after', choices=VIVADO_STOP_AFTER_CHOICES, default=VIVADO_STOP_AFTER_BITSTREAM,
@@ -589,8 +620,8 @@ def _resolve_sdcard_mapping(args: argparse.Namespace) -> Little64ArtySDCardMappi
     if not args.with_sdcard:
         return None
     if args.sdcard_mode == ARTY_SDCARD_MODE_SPI:
-        if any((args.sdcard_cmd_pin, args.sdcard_d0_pin, args.sdcard_d1_pin, args.sdcard_d2_pin, args.sdcard_d3_pin, args.sdcard_det_pin)):
-            raise SystemExit('Native SD pin overrides (--sdcard-cmd-pin/--sdcard-d{0,1,2,3}-pin/--sdcard-det-pin) require --sdcard-mode native')
+        if any((args.sdcard_cmd_pin, args.sdcard_d0_pin, args.sdcard_d1_pin, args.sdcard_d2_pin, args.sdcard_d3_pin, args.sdcard_det_pin, args.sdcard_det_active_low is not None)):
+            raise SystemExit('Native SD overrides (--sdcard-cmd-pin/--sdcard-d{0,1,2,3}-pin/--sdcard-det-pin/--[no-]sdcard-det-active-low) require --sdcard-mode native')
     elif args.sdcard_mode == ARTY_SDCARD_MODE_NATIVE:
         if any((args.sdcard_mosi_pin, args.sdcard_miso_pin, args.sdcard_cs_pin)):
             raise SystemExit('SPI SD pin overrides (--sdcard-mosi-pin/--sdcard-miso-pin/--sdcard-cs-pin) require --sdcard-mode spi')
@@ -608,6 +639,7 @@ def _resolve_sdcard_mapping(args: argparse.Namespace) -> Little64ArtySDCardMappi
         data2=args.sdcard_d2_pin,
         data3=args.sdcard_d3_pin,
         det=args.sdcard_det_pin,
+        det_active_low=args.sdcard_det_active_low,
     )
 
 
@@ -670,6 +702,31 @@ def _print_sdcard_mapping(mapping: Little64ArtySDCardMapping, *, mode: str) -> N
     print(f'  d2:     {mapping.data2}')
     print(f'  d3:     {mapping.data3}')
     print(f'  det:    {mapping.det or "(reserved only)"}')
+    if mapping.det is not None:
+        print(f'  det_polarity: {'active-low' if mapping.det_active_low else 'active-high'}')
+
+
+def _override_litex_bios_packages(builder: Builder) -> None:
+    builder.software_packages = [
+        (
+            name,
+            str(DEFAULT_LITEX_BIOS_LIBC_DIR) if name == 'libc'
+            else str(DEFAULT_LITEX_BIOS_LIBCOMPILER_RT_DIR) if name == 'libcompiler_rt'
+            else str(DEFAULT_LITEX_BIOS_LIBBASE_DIR) if name == 'libbase'
+            else str(DEFAULT_LITEX_BIOS_LIBLITEDRAM_DIR) if name == 'liblitedram'
+            else src_dir,
+        )
+        for name, src_dir in builder.software_packages
+    ]
+
+    original_add_software_package = builder.add_software_package
+
+    def add_software_package(name: str, src_dir: str | None = None) -> None:
+        if name == 'bios' and src_dir is None:
+            src_dir = str(DEFAULT_LITEX_BIOS_DIR)
+        original_add_software_package(name, src_dir)
+
+    builder.add_software_package = add_software_package
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -702,10 +759,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if not args.program_only:
         _clean_litex_output(output_dir)
-        bootrom_init = _rebuild_sd_boot_artifacts(
-            args=args,
-            output_dir=output_dir,
-        )
+        bootrom_init = None
+        if args.with_sdcard:
+            bootrom_init = _rebuild_sd_boot_artifacts(
+                args=args,
+                output_dir=output_dir,
+            )
         soc = Little64LiteXArtySoC(
             sys_clk_freq=int(args.sys_clk_freq),
             integrated_rom_init=[] if bootrom_init is None else bootrom_init,
@@ -713,6 +772,7 @@ def main(argv: list[str] | None = None) -> int:
             with_sdram=args.with_sdram,
             with_spi_flash=args.with_spi_flash,
             with_sdcard=args.with_sdcard,
+            with_bios=args.use_litex_bios,
             with_timer=True,
             cpu_variant=args.cpu_variant,
             sdcard_mode=args.sdcard_mode,
@@ -723,9 +783,11 @@ def main(argv: list[str] | None = None) -> int:
         builder = Builder(
             soc,
             output_dir=str(output_dir),
-            compile_software=False,
+            compile_software=args.use_litex_bios and bootrom_init is None,
             compile_gateware=not args.generate_only,
         )
+        if args.use_litex_bios and bootrom_init is None:
+            _override_litex_bios_packages(builder)
         build_kwargs: dict[str, Any] = {
             'build_name': args.build_name,
             'vivado_max_threads': args.vivado_max_threads,

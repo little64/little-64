@@ -7,10 +7,12 @@ import os
 import shutil
 import sys
 from pathlib import Path
+from typing import Any, cast
 
 import litex
 from litedram.init import get_sdram_phy_c_header
 from litex.soc.integration import export as litex_export
+from litex.soc.integration.builder import Builder
 
 from little64.build_support import Stage0CompileUnit, build_stage0_binary
 from little64.commands.hdl import dts_linux as dts_linux_command
@@ -42,9 +44,12 @@ ensure_hdl_path(REPO_ROOT)
 
 from little64_cores.litex import LITTLE64_LINUX_RAM_BASE, LITTLE64_LITEX_BOOT_SOURCES, LITTLE64_LITEX_TARGET_NAMES
 from little64_cores.litex import normalize_litex_boot_source, resolve_litex_target
+from little64_cores.litex_cpu import ensure_litex_llvm_toolchain_wrappers
 from little64_cores.litex_linux_boot import (
     DEFAULT_SD_BOOT_PARTITION_SIZE_MB,
     DEFAULT_SD_CARD_SIZE_BYTES,
+    LITTLE64_SD_BOOT_FORMAT_LITEX_BIOS,
+    LITTLE64_SD_BOOT_FORMAT_STAGE0,
     write_litex_sd_card_image,
 )
 from little64_cores.litex_soc import Little64LiteXSimSoC, Little64LiteXSoC
@@ -52,6 +57,11 @@ from little64_cores.litex_soc import Little64LiteXSimSoC, Little64LiteXSoC
 
 LITEX_BOOTROM_SD_UART_BASE = 0xF0004000
 DEFAULT_LEGACY_LITEX_TARGET = 'sim-bootrom'
+DEFAULT_LITEX_BIOS_LIBC_DIR = REPO_ROOT / 'hdl' / 'little64_cores' / 'litex_software' / 'libc'
+DEFAULT_LITEX_BIOS_LIBCOMPILER_RT_DIR = REPO_ROOT / 'hdl' / 'little64_cores' / 'litex_software' / 'libcompiler_rt'
+DEFAULT_LITEX_BIOS_LIBBASE_DIR = REPO_ROOT / 'hdl' / 'little64_cores' / 'litex_software' / 'libbase'
+DEFAULT_LITEX_BIOS_LIBLITEDRAM_DIR = REPO_ROOT / 'hdl' / 'little64_cores' / 'litex_software' / 'liblitedram'
+DEFAULT_LITEX_BIOS_DIR = REPO_ROOT / 'hdl' / 'little64_cores' / 'litex_software' / 'bios'
 
 
 
@@ -345,6 +355,99 @@ def _build_stage0(stage0_source: Path, stage0_linker: Path, generated_header_dir
     return build_litex_sd_stage0(stage0_source, stage0_linker, generated_header_dir, work_dir)
 
 
+def _override_litex_bios_packages(builder: Builder) -> None:
+    builder.software_packages = [
+        (
+            name,
+            str(DEFAULT_LITEX_BIOS_LIBC_DIR) if name == 'libc'
+            else str(DEFAULT_LITEX_BIOS_LIBCOMPILER_RT_DIR) if name == 'libcompiler_rt'
+            else str(DEFAULT_LITEX_BIOS_LIBBASE_DIR) if name == 'libbase'
+            else str(DEFAULT_LITEX_BIOS_LIBLITEDRAM_DIR) if name == 'liblitedram'
+            else src_dir,
+        )
+        for name, src_dir in builder.software_packages
+    ]
+
+    original_add_software_package = builder.add_software_package
+
+    def add_software_package(name: str, src_dir: str | None = None) -> None:
+        if name == 'bios' and src_dir is None:
+            src_dir = str(DEFAULT_LITEX_BIOS_DIR)
+        original_add_software_package(name, src_dir)
+
+    builder.add_software_package = add_software_package
+
+
+def build_litex_bios_boot_artifacts(
+    *,
+    soc: Little64LiteXSoC,
+    kernel_elf: Path,
+    dtb: Path,
+    bootrom_output: Path,
+    sd_output: Path,
+    ram_base: int,
+    ram_size: int,
+    kernel_physical_base: int,
+    bios_build_dir: Path,
+    rootfs_image: Path | None = None,
+    no_rootfs: bool = False,
+    sd_card_size_bytes: int = DEFAULT_SD_CARD_SIZE_BYTES,
+    boot_partition_size_mb: int = DEFAULT_SD_BOOT_PARTITION_SIZE_MB,
+) -> bytes:
+    if soc.boot_source != 'bootrom':
+        raise ValueError('LiteX BIOS artifacts require a bootrom-backed SoC')
+
+    bios_build_dir.mkdir(parents=True, exist_ok=True)
+    bootrom_output.parent.mkdir(parents=True, exist_ok=True)
+    if not getattr(soc, 'finalized', False):
+        soc.finalize()
+
+    builder = Builder(
+        soc,
+        output_dir=str(bios_build_dir),
+        compile_software=True,
+        compile_gateware=False,
+    )
+    _override_litex_bios_packages(builder)
+    builder.add_software_package('bios')
+    ensure_litex_llvm_toolchain_wrappers(bios_build_dir)
+    soc.check_bios_requirements()
+    builder._generate_includes(with_bios=True)
+    builder._check_meson()
+    builder._prepare_rom_software()
+    builder._generate_rom_software(compile_bios=True)
+
+    bios_path = bios_build_dir / 'software' / 'bios' / 'bios.bin'
+    if not bios_path.is_file():
+        raise FileNotFoundError(f'LiteX BIOS image was not produced at {bios_path}')
+
+    bios_bytes = bios_path.read_bytes()
+    image_size = max(soc.litex_target.integrated_rom_size, _align_up(len(bios_bytes), 4096))
+    padded_bios = bytearray(image_size)
+    padded_bios[:len(bios_bytes)] = bios_bytes
+    bootrom_image = bytes(padded_bios)
+    bootrom_output.write_bytes(bootrom_image)
+
+    rootfs_bytes = None
+    if not no_rootfs:
+        resolved_rootfs = build_default_rootfs_image(python_bin=sys.executable) if rootfs_image is None else rootfs_image.resolve()
+        rootfs_bytes = resolved_rootfs.read_bytes()
+
+    write_litex_sd_card_image(
+        sd_output,
+        kernel_elf_bytes=kernel_elf.resolve().read_bytes(),
+        dtb_bytes=dtb.resolve().read_bytes(),
+        rootfs_bytes=rootfs_bytes,
+        total_disk_size_bytes=sd_card_size_bytes,
+        boot_partition_size_mb=boot_partition_size_mb,
+        boot_format=LITTLE64_SD_BOOT_FORMAT_LITEX_BIOS,
+        ram_base=ram_base,
+        ram_size=ram_size,
+        kernel_physical_base=kernel_physical_base,
+    )
+    return bootrom_image
+
+
 def build_litex_sd_boot_artifacts(
     *,
     soc: Little64LiteXSoC,
@@ -408,6 +511,10 @@ def build_litex_sd_boot_artifacts(
         rootfs_bytes=rootfs_bytes,
         total_disk_size_bytes=sd_card_size_bytes,
         boot_partition_size_mb=boot_partition_size_mb,
+        boot_format=LITTLE64_SD_BOOT_FORMAT_STAGE0,
+        ram_base=ram_base,
+        ram_size=ram_size,
+        kernel_physical_base=kernel_physical_base,
     )
 
     image_output.parent.mkdir(parents=True, exist_ok=True)
@@ -428,7 +535,9 @@ def _default_output_dir(machine: str | None) -> Path:
     return builddir(REPO_ROOT)
 
 
-def _default_stage0_output_name(boot_source: str) -> str:
+def _default_stage0_output_name(boot_source: str, *, use_litex_bios: bool) -> str:
+    if boot_source == 'bootrom' and use_litex_bios:
+        return 'little64-litex-bios.bin'
     if boot_source == 'spiflash':
         return 'little64-sd-stage0-spiflash.bin'
     return 'little64-sd-stage0-bootrom.bin'
@@ -515,6 +624,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help='Enable the LiteDRAM-backed SDRAM model even for simulation targets that default to integrated RAM.')
     parser.add_argument('--stage0-source', type=Path, default=Path('target/c_boot/litex_sd_boot.c'), help='SD-capable stage-0 C source to compile into the internal boot ROM image.')
     parser.add_argument('--stage0-linker', type=Path, default=Path('target/c_boot/linker_litex_bootrom.ld'), help='Linker script used for the internal boot ROM stage-0 image.')
+    parser.add_argument('--use-litex-bios', action=argparse.BooleanOptionalAction, default=None,
+        help='Build a LiteX BIOS bootrom image instead of the repo-local SD stage-0. Defaults to enabled for bootrom-backed builds and disabled for spiflash builds.')
     parser.add_argument('--sd-card-size-bytes', type=lambda value: int(value, 0), default=DEFAULT_SD_CARD_SIZE_BYTES,
         help='Total raw SD card image size in bytes. Defaults to 4 GiB.')
     parser.add_argument('--boot-partition-size-mb', type=int, default=DEFAULT_SD_BOOT_PARTITION_SIZE_MB,
@@ -532,7 +643,11 @@ def main(argv: list[str] | None = None) -> int:
     target = resolve_litex_target(resolved_litex_target)
     default_boot_source = 'spiflash' if legacy_flash_output else target.boot_source
     boot_source = normalize_litex_boot_source(args.boot_source or default_boot_source)
+    use_litex_bios = args.use_litex_bios if args.use_litex_bios is not None else boot_source == 'bootrom'
     resolved_with_sdram = args.with_sdram or target.with_sdram
+
+    if use_litex_bios and boot_source != 'bootrom':
+        raise ValueError('LiteX BIOS output is only supported for bootrom-backed builds; pass --no-use-litex-bios or select --boot-source bootrom')
 
     default_ram_base = 0 if boot_source == 'spiflash' else target.main_ram_base
     default_ram_size = 0x0400_0000 if boot_source == 'spiflash' else target.default_ram_size
@@ -581,7 +696,7 @@ def main(argv: list[str] | None = None) -> int:
 
     output_arg = args.bootrom_output or args.flash_output
     if output_arg is None and output_dir is not None:
-        output_arg = output_dir / _default_stage0_output_name(boot_source)
+        output_arg = output_dir / _default_stage0_output_name(boot_source, use_litex_bios=use_litex_bios)
     if output_arg is None:
         raise ValueError('missing required output path: pass --bootrom-output or use --machine/--output-dir')
 
@@ -611,25 +726,44 @@ def main(argv: list[str] | None = None) -> int:
         with_timer=True,
         litex_target=resolved_litex_target,
         boot_source=boot_source,
+        with_bios=use_litex_bios,
         sdram_module=target.sdram_module,
     )
-    build_litex_sd_boot_artifacts(
-        soc=soc,
-        kernel_elf=kernel_elf,
-        dtb=dtb_path,
-        bootrom_output=output_arg,
-        sd_output=sd_output,
-        ram_base=ram_base,
-        ram_size=ram_size,
-        kernel_physical_base=kernel_physical_base,
-        rootfs_image=args.rootfs_image,
-        no_rootfs=args.no_rootfs,
-        stage0_source=args.stage0_source,
-        stage0_linker=stage0_linker,
-        sd_card_size_bytes=args.sd_card_size_bytes,
-        boot_partition_size_mb=args.boot_partition_size_mb,
-        emulator_bootrom_uart_layout=(args.emulator_bootrom_uart_layout or machine_mode),
-    )
+    if use_litex_bios:
+        bios_build_dir = (output_dir / 'litex-bios-work') if output_dir is not None else output_arg.parent / f'{output_arg.stem}.bios-work'
+        build_litex_bios_boot_artifacts(
+            soc=soc,
+            kernel_elf=kernel_elf,
+            dtb=dtb_path,
+            bootrom_output=output_arg,
+            sd_output=sd_output,
+            ram_base=ram_base,
+            ram_size=ram_size,
+            kernel_physical_base=kernel_physical_base,
+            bios_build_dir=bios_build_dir,
+            rootfs_image=args.rootfs_image,
+            no_rootfs=args.no_rootfs,
+            sd_card_size_bytes=args.sd_card_size_bytes,
+            boot_partition_size_mb=args.boot_partition_size_mb,
+        )
+    else:
+        build_litex_sd_boot_artifacts(
+            soc=soc,
+            kernel_elf=kernel_elf,
+            dtb=dtb_path,
+            bootrom_output=output_arg,
+            sd_output=sd_output,
+            ram_base=ram_base,
+            ram_size=ram_size,
+            kernel_physical_base=kernel_physical_base,
+            rootfs_image=args.rootfs_image,
+            no_rootfs=args.no_rootfs,
+            stage0_source=args.stage0_source,
+            stage0_linker=stage0_linker,
+            sd_card_size_bytes=args.sd_card_size_bytes,
+            boot_partition_size_mb=args.boot_partition_size_mb,
+            emulator_bootrom_uart_layout=(args.emulator_bootrom_uart_layout or machine_mode),
+        )
     return 0
 
 

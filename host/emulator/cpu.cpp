@@ -122,7 +122,7 @@ constexpr uint64_t SERIAL_BASE = 0x08000000ULL;
 constexpr uint64_t TIMER_BASE = 0x08001000ULL;
 constexpr uint64_t PVBLK_BASE = 0x08002000ULL;
 constexpr uint64_t LITEX_BOOTROM_BASE = 0x00000000ULL;
-constexpr uint64_t LITEX_BOOTROM_SIZE = 0x00008000ULL;
+constexpr uint64_t LITEX_BOOTROM_SIZE = 0x00020000ULL;
 constexpr uint64_t LITEX_BOOTROM_RAM_BASE = 0x40000000ULL;
 constexpr uint64_t LITEX_FLASH_BASE = 0x20000000ULL;
 constexpr uint64_t LITEX_FLASH_WINDOW_SIZE = 0x01000000ULL;
@@ -1527,11 +1527,9 @@ bool Little64CPU::loadProgramLiteXBootRomImage(const std::vector<uint8_t>& bootr
         .addRam(LITEX_BOOTROM_RAM_BASE, LITEX_BOOTROM_RAM_SIZE, "RAM")
         .addLiteDramDfiiStub(LITEX_SDRAM_CSR_BASE, "LITEDRAM");
     if (_disk_image && _disk_image->isValid()) {
-        cfg.addLiteSdCard(LITEX_SDCARD_BASE, _disk_image->path(), _disk_image->isReadOnly(), "LITESDCARD")
-            .addLiteUart(LITEX_BOOTROM_SD_UART_BASE, "LITEUART");
-    } else {
-        cfg.addLiteUart(LITEX_UART_BASE, "LITEUART");
+        cfg.addLiteSdCard(LITEX_SDCARD_BASE, _disk_image->path(), _disk_image->isReadOnly(), "LITESDCARD");
     }
+    cfg.addLiteUart(LITEX_BOOTROM_SD_UART_BASE, "LITEUART");
     cfg.addTimer(TIMER_BASE, "TIMER");
     cfg.applyTo(_bus, _devices, this, &_clock);
 

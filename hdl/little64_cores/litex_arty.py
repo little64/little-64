@@ -5,12 +5,13 @@ import os
 from dataclasses import dataclass, replace
 from typing import Literal
 
-from migen import ClockDomain, If, Instance, Module, Replicate, Signal
+from migen import ClockDomain, If, Instance, Module, Replicate, ResetInserter, Signal
 
 from litex.build.generic_platform import IOStandard, Misc, Pins, Subsignal
 from litex.build.io import SDRInput, SDROutput, SDRTristate
 from litex.build.xilinx.common import XilinxSDRTristate
 from litex.gen import LiteXModule
+from litex.soc.interconnect import stream
 from litex.soc.interconnect.csr import CSR, CSRField, CSRStatus, CSRStorage
 from litex.soc.cores.clock import S7IDELAYCTRL, S7PLL
 
@@ -61,6 +62,7 @@ class Little64ArtyNativeSDCardMapping:
     data2: str
     data3: str
     det: str | None = None
+    det_active_low: bool = False
 
 
 ArtySDCardMode = Literal['native', 'spi']
@@ -89,6 +91,7 @@ LITTLE64_ARTY_NATIVE_SDCARD_MAPPINGS = {
         data2='R18',
         data3='U17',
         det='P18',
+        det_active_low=True,
     ),
 }
 
@@ -148,6 +151,7 @@ def resolve_arty_native_sdcard_mapping(
     data2: str | None = None,
     data3: str | None = None,
     det: str | None = None,
+    det_active_low: bool | None = None,
 ) -> Little64ArtyNativeSDCardMapping:
     if connector == 'arduino':
         mapping = LITTLE64_ARTY_NATIVE_SDCARD_MAPPINGS[ARTY_NATIVE_SDCARD_PRESET_ARDUINO_IO34_40]
@@ -163,6 +167,7 @@ def resolve_arty_native_sdcard_mapping(
                 data2=f'{connector}:5',
                 data3=f'{connector}:0',
                 det=f'{connector}:6',
+                det_active_low=True,
             )
         elif adapter == 'numato':
             mapping = Little64ArtyNativeSDCardMapping(
@@ -175,6 +180,7 @@ def resolve_arty_native_sdcard_mapping(
                 data2=f'{connector}:0',
                 data3=f'{connector}:4',
                 det=None,
+                det_active_low=False,
             )
         else:
             raise ValueError(f'Unsupported Arty native SD card adapter: {adapter}')
@@ -190,6 +196,7 @@ def resolve_arty_native_sdcard_mapping(
         data2=data2 or mapping.data2,
         data3=data3 or mapping.data3,
         det=det if det is not None else mapping.det,
+        det_active_low=mapping.det_active_low if det_active_low is None else det_active_low,
     )
 
 
@@ -208,6 +215,7 @@ def resolve_arty_sdcard_mapping(
     data2: str | None = None,
     data3: str | None = None,
     det: str | None = None,
+    det_active_low: bool | None = None,
 ) -> Little64ArtySDCardMapping:
     if mode == ARTY_SDCARD_MODE_SPI:
         return resolve_arty_spi_sdcard_mapping(
@@ -229,6 +237,7 @@ def resolve_arty_sdcard_mapping(
             data2=data2,
             data3=data3,
             det=det,
+            det_active_low=det_active_low,
         )
     raise ValueError(f'Unsupported Arty SD card mode: {mode}')
 
@@ -259,6 +268,14 @@ def arty_native_sdcard_extension(mapping: Little64ArtyNativeSDCardMapping) -> li
         resource[0] += (Subsignal('cd', Pins(mapping.det)),)
     resource[0] += (IOStandard('LVCMOS33'),)
     return resource
+
+
+class _Little64NativeSDCardPads:
+    def __init__(self, *, data, cmd, clk, cd):
+        self.data = data
+        self.cmd = cmd
+        self.clk = clk
+        self.cd = cd
 
 
 def _import_digilent_arty_platform():
@@ -319,6 +336,61 @@ def _little64_sd_output_enable_bus(oe, width: int):
     if len(oe) == 1:
         return Replicate(oe, width)
     raise ValueError(f'Unsupported SD output-enable width: {len(oe)} for {width} lanes')
+
+
+@ResetInserter()
+class _Little64ArtyEdgeStartSDPHYR(LiteXModule):
+    def __init__(self, sdpads_layout, cmd=False, data=False, data_width=1, skip_start_bit=False):
+        assert cmd or data
+        self.pads_in = pads_in = stream.Endpoint(sdpads_layout)
+        self.source = source = stream.Endpoint([('data', 8)])
+
+        pads_in_data = pads_in.cmd.i[:data_width] if cmd else pads_in.data.i[:data_width]
+
+        start = Signal()
+        run = Signal()
+        if data and data_width > 1:
+            # Multi-lane data can show a skewed preamble beat before the all-zero
+            # start bit settles across every lane, so keep the upstream zero-detect.
+            self.comb += start.eq(pads_in_data == 0)
+            self.sync += If(
+                pads_in.valid,
+                run.eq(start | run),
+            )
+        else:
+            was_idle = Signal(reset=1)
+            idle_value = (1 << data_width) - 1
+            idle = Signal()
+
+            self.comb += [
+                idle.eq(pads_in_data == idle_value),
+                start.eq(was_idle & (pads_in_data == 0)),
+            ]
+
+            self.sync += If(
+                pads_in.valid,
+                was_idle.eq(idle),
+                run.eq(start | run),
+            )
+
+        self.converter = converter = stream.Converter(data_width, 8, reverse=True)
+        self.buf = buf = stream.Buffer([('data', 8)])
+        self.comb += [
+            converter.sink.valid.eq(pads_in.valid & (run if skip_start_bit else (start | run))),
+            converter.sink.data.eq(pads_in_data),
+            converter.source.connect(buf.sink),
+            buf.source.connect(source),
+        ]
+
+
+def _patch_litesdcard_sdphyr_for_native_arty() -> None:
+    import litesdcard.phy as litesdcard_phy
+
+    if getattr(litesdcard_phy, '_little64_arty_sdphyr_patched', False):
+        return
+
+    litesdcard_phy.SDPHYR = _Little64ArtyEdgeStartSDPHYR
+    litesdcard_phy._little64_arty_sdphyr_patched = True
 
 
 class _Little64ForcedCMDWaveTristateImpl(Module):
@@ -523,6 +595,7 @@ class Little64LiteXArtySoC(Little64LiteXSoC):
 
         effective_with_sdram = with_sdram or resolved_target.with_sdram
         effective_with_sdcard = with_sdcard or resolved_target.with_sdcard
+        self._little64_arty_sdcard_mapping = sdcard_mapping
 
         platform = create_arty_platform(variant=board_variant, toolchain=toolchain)
         if effective_with_sdcard:
@@ -571,11 +644,84 @@ class Little64LiteXArtySoC(Little64LiteXSoC):
         )
         self._configure_debug_leds()
 
+    def _add_native_sdcard(self, name: str = 'sdcard', *, invert_card_detect: bool = False) -> None:
+        from litex.soc.interconnect import wishbone as litex_wishbone
+        from litex.soc.interconnect.csr_eventmanager import EventManager, EventSourceLevel, EventSourcePulse
+        from litesdcard.core import SDCore
+        from litesdcard.frontend.dma import SDBlock2MemDMA, SDMem2BlockDMA
+        from litesdcard.phy import SDPHY
+
+        self.check_if_exists(f'{name}_phy')
+        self.check_if_exists(f'{name}_core')
+
+        requested_pads = self.platform.request(name)
+        sdcard_pads = requested_pads
+        if invert_card_detect and hasattr(requested_pads, 'cd'):
+            card_detect_active_high = Signal(name='little64_sdcard_cd_active_high')
+            self.comb += card_detect_active_high.eq(~requested_pads.cd)
+            sdcard_pads = _Little64NativeSDCardPads(
+                data=requested_pads.data,
+                cmd=requested_pads.cmd,
+                clk=requested_pads.clk,
+                cd=card_detect_active_high,
+            )
+
+        sdcard_phy = SDPHY(sdcard_pads, self.platform.device, self.clk_freq, cmd_timeout=10e-1, data_timeout=10e-1)
+        sdcard_core = SDCore(sdcard_phy)
+        self.add_module(name=f'{name}_phy', module=sdcard_phy)
+        self.add_module(name=f'{name}_core', module=sdcard_core)
+
+        self.check_if_exists(f'{name}_block2mem')
+        block2mem_bus = litex_wishbone.Interface(
+            data_width=self.bus.data_width,
+            adr_width=self.bus.get_address_width(standard='wishbone'),
+            addressing='word',
+        )
+        sdcard_block2mem = SDBlock2MemDMA(bus=block2mem_bus, endianness=self.cpu.endianness)
+        self.add_module(name=f'{name}_block2mem', module=sdcard_block2mem)
+        self.comb += sdcard_core.source.connect(sdcard_block2mem.sink)
+        dma_bus = getattr(self, 'dma_bus', self.bus)
+        dma_bus.add_master(name=f'{name}_block2mem', master=block2mem_bus)
+
+        self.check_if_exists(f'{name}_mem2block')
+        mem2block_bus = litex_wishbone.Interface(
+            data_width=self.bus.data_width,
+            adr_width=self.bus.get_address_width(standard='wishbone'),
+            addressing='word',
+        )
+        sdcard_mem2block = SDMem2BlockDMA(bus=mem2block_bus, endianness=self.cpu.endianness)
+        self.add_module(name=f'{name}_mem2block', module=sdcard_mem2block)
+        self.comb += sdcard_mem2block.source.connect(sdcard_core.sink)
+        dma_bus.add_master(name=f'{name}_mem2block', master=mem2block_bus)
+
+        self.check_if_exists(f'{name}_irq')
+        sdcard_irq = EventManager()
+        self.add_module(name=f'{name}_irq', module=sdcard_irq)
+        sdcard_irq.card_detect = EventSourcePulse(description='SDCard has been ejected/inserted.')
+        sdcard_irq.block2mem_dma = EventSourcePulse(description='Block2Mem DMA terminated.')
+        sdcard_irq.mem2block_dma = EventSourcePulse(description='Mem2Block DMA terminated.')
+        sdcard_irq.cmd_done = EventSourceLevel(description='Command completed.')
+        sdcard_irq.finalize()
+
+        self.comb += [
+            sdcard_irq.block2mem_dma.trigger.eq(sdcard_block2mem.irq),
+            sdcard_irq.mem2block_dma.trigger.eq(sdcard_mem2block.irq),
+            sdcard_irq.card_detect.trigger.eq(sdcard_phy.card_detect_irq),
+            sdcard_irq.cmd_done.trigger.eq(sdcard_core.cmd_event.fields.done),
+        ]
+        if self.irq.enabled:
+            self.irq.add(f'{name}_irq', use_loc_if_exists=True)
+
     def _configure_sdcard(self, *, mode: str, sdcard_image_path: str | Path | None) -> None:
         if mode == ARTY_SDCARD_MODE_NATIVE:
             if sdcard_image_path is not None:
                 raise ValueError('sdcard_image_path is only supported for simulation-backed native LiteSDCard mode')
-            self.add_sdcard('sdcard', use_emulator=False)
+            _patch_litesdcard_sdphyr_for_native_arty()
+            invert_card_detect = False
+            mapping = getattr(self, '_little64_arty_sdcard_mapping', None)
+            if isinstance(mapping, Little64ArtyNativeSDCardMapping):
+                invert_card_detect = mapping.det_active_low and mapping.det is not None
+            self._add_native_sdcard('sdcard', invert_card_detect=invert_card_detect)
             if hasattr(self, 'sdcard_phy') and hasattr(self.sdcard_phy, 'sdpads'):
                 self.add_module(name='sdcard_debug', module=_Little64NativeSDDebug(self.sdcard_phy.sdpads))
             return
@@ -602,6 +748,12 @@ class Little64LiteXArtySoC(Little64LiteXSoC):
         self.arty_led_store_activity = Signal(name='arty_led_store_activity')
         self.arty_led_running_heartbeat = Signal(name='arty_led_running_heartbeat')
         self.arty_led_irq_pending = Signal(name='arty_led_irq_pending')
+        self.arty_led_irq_enable = Signal(name='arty_led_irq_enable')
+        self.arty_led_irq_pending_latched = Signal(name='arty_led_irq_pending_latched')
+        self.arty_led_irq_pending_masked = Signal(name='arty_led_irq_pending_masked')
+        self.arty_led_lockup_reason_bit0 = Signal(name='arty_led_lockup_reason_bit0')
+        self.arty_led_lockup_reason_bit1 = Signal(name='arty_led_lockup_reason_bit1')
+        self.arty_led_lockup_reason_bit2 = Signal(name='arty_led_lockup_reason_bit2')
         self.arty_led_sd_cmd_output_activity = Signal(name='arty_led_sd_cmd_output_activity')
         self.arty_led_sd_cmd_output_enable_activity = Signal(name='arty_led_sd_cmd_output_enable_activity')
         self.arty_led_sd_cmd_released_input_activity = Signal(name='arty_led_sd_cmd_released_input_activity')
@@ -673,6 +825,12 @@ class Little64LiteXArtySoC(Little64LiteXSoC):
             self.arty_led_d_bus_activity.eq(_make_stretched_level(d_bus_request, name='arty_d_bus_activity')),
             self.arty_led_store_activity.eq(_make_stretched_level(store_request, name='arty_store_activity')),
             self.arty_led_irq_pending.eq(_make_stretched_level(irq_pending, name='arty_irq_pending')),
+            self.arty_led_irq_enable.eq(_make_stretched_level(self.cpu.debug_cpu_ie, name='arty_irq_enable')),
+            self.arty_led_irq_pending_latched.eq(_make_stretched_level(self.cpu.debug_irq_pending_latched, name='arty_irq_pending_latched')),
+            self.arty_led_irq_pending_masked.eq(_make_stretched_level(self.cpu.debug_irq_pending_masked, name='arty_irq_pending_masked')),
+            self.arty_led_lockup_reason_bit0.eq(self.cpu.debug_lockup_reason[0]),
+            self.arty_led_lockup_reason_bit1.eq(self.cpu.debug_lockup_reason[1]),
+            self.arty_led_lockup_reason_bit2.eq(self.cpu.debug_lockup_reason[2]),
             self.arty_led_running_heartbeat.eq(heartbeat_toggle & ~self.cpu.halted & ~self.cpu.locked_up),
             self.arty_led_sd_cmd_output_activity.eq(_make_stretched_transition(sd_cmd_o, name='arty_sd_cmd_output')),
             self.arty_led_sd_cmd_output_enable_activity.eq(_make_stretched_transition(sd_cmd_oe, name='arty_sd_cmd_output_enable')),
@@ -707,12 +865,19 @@ class Little64LiteXArtySoC(Little64LiteXSoC):
             rgb_led1.b.eq(~self.arty_led_sd_cmd_released_input_activity if ARTY_RGB_LED_ACTIVE_LOW else self.arty_led_sd_cmd_released_input_activity),
         ]
 
-        for rgb_led in self.arty_rgb_led_pads[2:]:
-            self.comb += [
-                rgb_led.r.eq(1 if ARTY_RGB_LED_ACTIVE_LOW else 0),
-                rgb_led.g.eq(1 if ARTY_RGB_LED_ACTIVE_LOW else 0),
-                rgb_led.b.eq(1 if ARTY_RGB_LED_ACTIVE_LOW else 0),
-            ]
+        rgb_led2 = self.arty_rgb_led_pads[2]
+        self.comb += [
+            rgb_led2.r.eq(~self.arty_led_irq_enable if ARTY_RGB_LED_ACTIVE_LOW else self.arty_led_irq_enable),
+            rgb_led2.g.eq(~self.arty_led_irq_pending_latched if ARTY_RGB_LED_ACTIVE_LOW else self.arty_led_irq_pending_latched),
+            rgb_led2.b.eq(~self.arty_led_irq_pending_masked if ARTY_RGB_LED_ACTIVE_LOW else self.arty_led_irq_pending_masked),
+        ]
+
+        rgb_led3 = self.arty_rgb_led_pads[3]
+        self.comb += [
+            rgb_led3.r.eq(~self.arty_led_lockup_reason_bit0 if ARTY_RGB_LED_ACTIVE_LOW else self.arty_led_lockup_reason_bit0),
+            rgb_led3.g.eq(~self.arty_led_lockup_reason_bit1 if ARTY_RGB_LED_ACTIVE_LOW else self.arty_led_lockup_reason_bit1),
+            rgb_led3.b.eq(~self.arty_led_lockup_reason_bit2 if ARTY_RGB_LED_ACTIVE_LOW else self.arty_led_lockup_reason_bit2),
+        ]
 
     def _configure_main_ram(
         self,
